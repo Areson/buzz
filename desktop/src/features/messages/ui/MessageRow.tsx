@@ -255,7 +255,7 @@ export const MessageRow = React.memo(
         <article
           className={cn(
             "group/message rounded-2xl px-2 py-1 transition-colors",
-            isThreadReplyLayout ? "space-y-1" : "flex items-start gap-2.5",
+            isThreadReplyLayout ? "space-y-0" : "flex items-start gap-2.5",
             highlighted ? "bg-primary/10 ring-1 ring-primary/30" : "",
           )}
           data-message-id={message.id}
@@ -298,7 +298,9 @@ export const MessageRow = React.memo(
                   </div>
                 </div>
               </div>
-              <div className="min-w-0 space-y-0.5">{messageBodyNode}</div>
+              <div className="-mt-0.5 min-w-0 space-y-0.5 pl-[26px]">
+                {messageBodyNode}
+              </div>
             </>
           ) : (
             <>

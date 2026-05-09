@@ -207,7 +207,7 @@ function buildVisibleThreadReplies(params: {
   appendExpandedReplies({
     entries,
     parentId: openThreadHeadId,
-    depth: 1,
+    depth: 0,
     directChildrenByParentId,
     descendantStatsByMessageId,
     expandedReplyIds,
