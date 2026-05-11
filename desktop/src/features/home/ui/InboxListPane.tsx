@@ -1,7 +1,6 @@
 import { Inbox, Search } from "lucide-react";
 
 import type { InboxFilter, InboxItem } from "@/features/home/lib/inbox";
-import { groupInboxItems } from "@/features/home/lib/inbox";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
@@ -36,8 +35,6 @@ export function InboxListPane({
   searchValue,
   selectedId,
 }: InboxListPaneProps) {
-  const groups = groupInboxItems(items);
-
   return (
     <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border/70 bg-background">
       <div
@@ -88,7 +85,7 @@ export function InboxListPane({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
         data-testid="home-inbox-list"
       >
-        {groups.length === 0 ? (
+        {items.length === 0 ? (
           <div className="flex h-full min-h-64 items-center justify-center px-6 text-center">
             <div>
               <p className="text-sm font-medium text-foreground">
@@ -100,106 +97,93 @@ export function InboxListPane({
             </div>
           </div>
         ) : (
-          groups.map((group) => (
-            <div
-              className="border-b border-border/60 last:border-b-0"
-              key={group.label}
-            >
-              <div className="sticky top-0 z-10 bg-background px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/95">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  {group.label}
-                </p>
-              </div>
+          <div className="divide-y divide-border/60">
+            {items.map((item) => {
+              const isSelected = item.id === selectedId;
+              const isDone = doneSet.has(item.id);
 
-              <div>
-                {group.items.map((item) => {
-                  const isSelected = item.id === selectedId;
-                  const isDone = doneSet.has(item.id);
+              return (
+                <button
+                  className={cn(
+                    "flex w-full items-start gap-2.5 border-l px-4 py-2 text-left transition-colors",
+                    isSelected
+                      ? "border-l-primary bg-muted/30"
+                      : "border-l-transparent hover:bg-muted/25 active:bg-muted/40",
+                  )}
+                  data-testid={`home-inbox-item-${item.id}`}
+                  key={item.id}
+                  onClick={() => onSelect(item.id)}
+                  type="button"
+                >
+                  <div className="relative">
+                    <UserAvatar
+                      avatarUrl={item.avatarUrl}
+                      className="h-8 w-8 rounded-md"
+                      displayName={item.senderLabel}
+                      size="md"
+                    />
+                    {!isDone ? (
+                      <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" />
+                    ) : null}
+                  </div>
 
-                  return (
-                    <button
-                      className={cn(
-                        "flex w-full items-start gap-2.5 border-l px-4 py-2 text-left transition-colors",
-                        isSelected
-                          ? "border-l-primary bg-muted/30"
-                          : "border-l-transparent hover:bg-muted/25 active:bg-muted/40",
-                      )}
-                      data-testid={`home-inbox-item-${item.id}`}
-                      key={item.id}
-                      onClick={() => onSelect(item.id)}
-                      type="button"
-                    >
-                      <div className="relative">
-                        <UserAvatar
-                          avatarUrl={item.avatarUrl}
-                          className="h-8 w-8 rounded-md"
-                          displayName={item.senderLabel}
-                          size="md"
-                        />
-                        {!isDone ? (
-                          <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" />
-                        ) : null}
-                      </div>
-
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start gap-2">
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-start gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <p
-                                className={cn(
-                                  "truncate text-sm text-foreground",
-                                  isDone ? "font-normal" : "font-bold",
-                                )}
-                              >
-                                {item.senderLabel}
-                              </p>
-                              {item.isActionRequired ? (
-                                <span className="inline-flex shrink-0 items-center text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-600 dark:text-amber-300">
-                                  Needs action
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                          <span
+                        <div className="flex items-center gap-2">
+                          <p
                             className={cn(
-                              "shrink-0 text-xs text-muted-foreground",
-                              isDone ? "font-normal" : "font-semibold",
+                              "truncate text-sm text-foreground",
+                              isDone ? "font-normal" : "font-bold",
                             )}
                           >
-                            {item.timestampLabel}
-                          </span>
-                        </div>
-
-                        <p
-                          className={cn(
-                            "mt-0.5 line-clamp-2 text-sm leading-5",
-                            isDone
-                              ? "font-normal text-muted-foreground"
-                              : "font-semibold text-foreground",
-                          )}
-                        >
-                          {item.preview}
-                        </p>
-
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          {item.channelLabel ? (
-                            <span
-                              className={cn(
-                                "text-[11px] text-muted-foreground",
-                                isDone ? "font-normal" : "font-semibold",
-                              )}
-                            >
-                              #{item.channelLabel}
+                            {item.senderLabel}
+                          </p>
+                          {item.isActionRequired ? (
+                            <span className="inline-flex shrink-0 items-center text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-600 dark:text-amber-300">
+                              Needs action
                             </span>
                           ) : null}
                         </div>
                       </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))
+                      <span
+                        className={cn(
+                          "shrink-0 text-xs text-muted-foreground",
+                          isDone ? "font-normal" : "font-semibold",
+                        )}
+                      >
+                        {item.timestampLabel}
+                      </span>
+                    </div>
+
+                    <p
+                      className={cn(
+                        "mt-0.5 line-clamp-2 text-sm leading-5",
+                        isDone
+                          ? "font-normal text-muted-foreground"
+                          : "font-semibold text-foreground",
+                      )}
+                    >
+                      {item.preview}
+                    </p>
+
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      {item.channelLabel ? (
+                        <span
+                          className={cn(
+                            "text-[11px] text-muted-foreground",
+                            isDone ? "font-normal" : "font-semibold",
+                          )}
+                        >
+                          #{item.channelLabel}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         )}
       </div>
     </section>

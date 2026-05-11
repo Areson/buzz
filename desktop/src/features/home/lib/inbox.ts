@@ -7,6 +7,7 @@ import type {
   FeedItem,
   FeedItemCategory,
   HomeFeedResponse,
+  RelayEvent,
 } from "@/shared/api/types";
 import { resolveMentionNames } from "@/shared/lib/resolveMentionNames";
 
@@ -41,6 +42,12 @@ export type InboxReply = {
   content: string;
   fullTimestampLabel: string;
   id: string;
+};
+
+export type InboxContextMessage = InboxReply & {
+  depth: number;
+  isSelected: boolean;
+  mentionNames: string[];
 };
 
 export type InboxGroup = {
@@ -188,6 +195,18 @@ function formatInboxTimestamp(unixSeconds: number) {
 
 export function formatInboxFullTimestamp(unixSeconds: number) {
   return fullTimeFormatter.format(new Date(unixSeconds * 1_000));
+}
+
+export function relayEventFromFeedItem(item: FeedItem): RelayEvent {
+  return {
+    content: item.content,
+    created_at: item.createdAt,
+    id: item.id,
+    kind: item.kind,
+    pubkey: item.pubkey,
+    sig: "",
+    tags: item.tags,
+  };
 }
 
 export function groupInboxItems(items: InboxItem[]): InboxGroup[] {

@@ -4,11 +4,13 @@ import { RefreshCcw } from "lucide-react";
 import { useChannelsQuery } from "@/features/channels/hooks";
 import {
   type InboxFilter,
+  type InboxContextMessage,
   type InboxReply,
   buildInboxItems,
   formatInboxFullTimestamp,
 } from "@/features/home/lib/inbox";
 import { useFeedItemState } from "@/features/home/useFeedItemState";
+import { useInboxThreadContext } from "@/features/home/useInboxThreadContext";
 import { InboxDetailPane } from "@/features/home/ui/InboxDetailPane";
 import { InboxListPane } from "@/features/home/ui/InboxListPane";
 import { useChannelMessagesQuery } from "@/features/messages/hooks";
@@ -16,7 +18,8 @@ import { getThreadReference } from "@/features/messages/lib/threading";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { resolveUserLabel } from "@/features/profile/lib/identity";
 import { deleteMessage, sendChannelMessage } from "@/shared/api/tauri";
-import type { HomeFeedResponse } from "@/shared/api/types";
+import type { HomeFeedResponse, RelayEvent } from "@/shared/api/types";
+import { resolveMentionNames } from "@/shared/lib/resolveMentionNames";
 import { Button } from "@/shared/ui/button";
 import { Skeleton } from "@/shared/ui/skeleton";
 
@@ -62,6 +65,23 @@ function HomeLoadingState() {
   );
 }
 
+function getContextMessageDepth(
+  event: RelayEvent,
+  eventById: ReadonlyMap<string, RelayEvent>,
+): number {
+  let depth = 0;
+  let parentId = getThreadReference(event.tags).parentId;
+  const seen = new Set<string>([event.id]);
+
+  while (parentId && eventById.has(parentId) && !seen.has(parentId)) {
+    depth += 1;
+    seen.add(parentId);
+    parentId = getThreadReference(eventById.get(parentId)?.tags ?? []).parentId;
+  }
+
+  return depth;
+}
+
 type HomeViewProps = {
   feed?: HomeFeedResponse;
   isLoading?: boolean;
@@ -104,14 +124,14 @@ export function HomeView({
         : [],
     [feed],
   );
+  const selectedFeedItem =
+    feedItems.find((item) => item.id === selectedItemId) ?? null;
 
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data;
   const selectedChannelIdCandidate = React.useMemo(() => {
-    if (!selectedItemId) return null;
-    const match = feedItems.find((item) => item.id === selectedItemId);
-    return match?.channelId ?? null;
-  }, [feedItems, selectedItemId]);
+    return selectedFeedItem?.channelId ?? null;
+  }, [selectedFeedItem]);
   const selectedChannel = React.useMemo(() => {
     if (!selectedChannelIdCandidate || !channels) return null;
     return (
@@ -122,26 +142,20 @@ export function HomeView({
 
   const channelMessagesQuery = useChannelMessagesQuery(selectedChannel);
   const channelMessages = channelMessagesQuery.data;
-  const threadEvents = React.useMemo(() => {
-    if (!selectedItemId || !channelMessages) return [];
-    return channelMessages
-      .filter((event) => {
-        if (event.id === selectedItemId) return false;
-        const ref = getThreadReference(event.tags);
-        return ref.parentId === selectedItemId || ref.rootId === selectedItemId;
-      })
-      .sort((a, b) => a.created_at - b.created_at);
-  }, [channelMessages, selectedItemId]);
+  const threadContext = useInboxThreadContext(
+    selectedFeedItem,
+    channelMessages,
+  );
 
   const feedProfilePubkeys = React.useMemo(
     () => [
       ...new Set([
         ...feedItems.map((item) => item.pubkey),
-        ...threadEvents.map((event) => event.pubkey),
+        ...threadContext.events.map((event) => event.pubkey),
         ...(currentPubkey ? [currentPubkey] : []),
       ]),
     ],
-    [currentPubkey, feedItems, threadEvents],
+    [currentPubkey, feedItems, threadContext.events],
   );
   const feedProfilesQuery = useUsersBatchQuery(feedProfilePubkeys, {
     enabled: feedProfilePubkeys.length > 0,
@@ -170,32 +184,37 @@ export function HomeView({
   }, [filter, inboxItems, searchValue]);
   const selectedItem =
     filteredItems.find((item) => item.id === selectedItemId) ?? null;
-  const threadReplies = React.useMemo<InboxReply[]>(
-    () =>
-      threadEvents.map((event) => ({
-        id: event.id,
-        authorLabel: resolveUserLabel({
-          pubkey: event.pubkey,
-          currentPubkey,
-          profiles: feedProfiles,
-          preferResolvedSelfLabel: true,
-        }),
-        avatarUrl:
-          feedProfiles?.[event.pubkey.toLowerCase()]?.avatarUrl ?? null,
-        content: event.content,
-        fullTimestampLabel: formatInboxFullTimestamp(event.created_at),
-      })),
-    [currentPubkey, feedProfiles, threadEvents],
-  );
+  const contextMessages = React.useMemo<InboxContextMessage[]>(() => {
+    if (!selectedItem) {
+      return [];
+    }
+
+    const eventById = new Map(
+      threadContext.events.map((event) => [event.id, event]),
+    );
+
+    return threadContext.events.map((event) => ({
+      id: event.id,
+      authorLabel: resolveUserLabel({
+        pubkey: event.pubkey,
+        currentPubkey,
+        profiles: feedProfiles,
+        preferResolvedSelfLabel: true,
+      }),
+      avatarUrl: feedProfiles?.[event.pubkey.toLowerCase()]?.avatarUrl ?? null,
+      content: event.content,
+      depth: getContextMessageDepth(event, eventById),
+      fullTimestampLabel: formatInboxFullTimestamp(event.created_at),
+      isSelected: event.id === selectedItem.id,
+      mentionNames: resolveMentionNames(event.tags, feedProfiles) ?? [],
+    }));
+  }, [currentPubkey, feedProfiles, selectedItem, threadContext.events]);
   const selectedItemReplies = React.useMemo<InboxReply[]>(() => {
     if (!selectedItem) return [];
     const localReplies = localRepliesByItemId[selectedItem.id] ?? [];
-    const remoteIds = new Set(threadReplies.map((reply) => reply.id));
-    const pendingLocals = localReplies.filter(
-      (reply) => !remoteIds.has(reply.id),
-    );
-    return [...threadReplies, ...pendingLocals];
-  }, [localRepliesByItemId, selectedItem, threadReplies]);
+    const contextIds = new Set(contextMessages.map((message) => message.id));
+    return localReplies.filter((reply) => !contextIds.has(reply.id));
+  }, [contextMessages, localRepliesByItemId, selectedItem]);
   React.useEffect(() => {
     if (filteredItems.length === 0) {
       setSelectedItemId(null);
@@ -300,7 +319,9 @@ export function HomeView({
           isDone={selectedItem ? doneSet.has(selectedItem.id) : false}
           isDeletingMessage={isDeletingMessage}
           isSendingReply={isSendingReply}
+          isThreadContextLoading={threadContext.isLoading}
           item={selectedItem}
+          messages={contextMessages}
           replies={selectedItemReplies}
           onDelete={() => {
             if (!selectedItem || !canDelete) {

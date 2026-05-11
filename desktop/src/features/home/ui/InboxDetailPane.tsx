@@ -10,7 +10,11 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
-import type { InboxItem, InboxReply } from "@/features/home/lib/inbox";
+import type {
+  InboxContextMessage,
+  InboxItem,
+  InboxReply,
+} from "@/features/home/lib/inbox";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
@@ -37,7 +41,9 @@ type InboxDetailPaneProps = {
   isDone: boolean;
   isDeletingMessage?: boolean;
   isSendingReply?: boolean;
+  isThreadContextLoading?: boolean;
   item: InboxItem | null;
+  messages?: InboxContextMessage[];
   replies?: InboxReply[];
   onDelete: () => void;
   onOpenChannel: (channelId: string) => void;
@@ -57,7 +63,9 @@ export function InboxDetailPane({
   isDone,
   isDeletingMessage = false,
   isSendingReply = false,
+  isThreadContextLoading = false,
   item,
+  messages = [],
   replies = [],
   onDelete,
   onOpenChannel,
@@ -96,6 +104,30 @@ export function InboxDetailPane({
   }
 
   const channelId = item.item.channelId;
+  const selectedMessage = messages.find((message) => message.isSelected);
+  const pendingReplyMessages: InboxContextMessage[] = replies.map((reply) => ({
+    ...reply,
+    depth: (selectedMessage?.depth ?? 0) + 1,
+    isSelected: false,
+    mentionNames: [],
+  }));
+  const displayMessages =
+    messages.length > 0
+      ? [...messages, ...pendingReplyMessages]
+      : [
+          {
+            authorLabel: item.senderLabel,
+            avatarUrl: item.avatarUrl,
+            content: item.preview,
+            depth: 0,
+            fullTimestampLabel: item.fullTimestampLabel,
+            id: item.id,
+            isSelected: true,
+            mentionNames: item.mentionNames,
+          },
+          ...pendingReplyMessages,
+        ];
+  const hasConversationContext = displayMessages.length > 1;
 
   return (
     <section
@@ -192,49 +224,71 @@ export function InboxDetailPane({
 
       <div className="min-h-0 flex-1 overflow-y-auto py-6">
         <div>
-          <div className="px-6 pb-5">
-            <Markdown
-              className="max-w-none text-left text-[15px] text-foreground"
-              content={item.preview}
-              mentionNames={item.mentionNames}
-              tight
-            />
+          <div className="px-6 pb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            {hasConversationContext
+              ? "Conversation context"
+              : item.categoryLabel}
+            {isThreadContextLoading ? (
+              <span className="ml-2 font-normal normal-case tracking-normal">
+                Loading context...
+              </span>
+            ) : null}
           </div>
-          {replies.length > 0 ? (
-            <div
-              className="border-t border-border/60 px-6 pt-5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground"
-              data-testid="home-inbox-replies-header"
-            >
-              {replies.length === 1 ? "1 reply" : `${replies.length} replies`}
-            </div>
-          ) : null}
-          {replies.map((reply) => (
-            <div
-              className="px-6 py-5"
-              data-testid="home-inbox-reply"
-              key={reply.id}
-            >
-              <div className="mb-3 flex items-center gap-3">
-                <UserAvatar
-                  avatarUrl={reply.avatarUrl}
-                  className="h-8 w-8 rounded-md"
-                  displayName={reply.authorLabel}
-                  size="md"
-                />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-foreground">
-                    {reply.authorLabel}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {reply.fullTimestampLabel}
-                  </p>
+          {displayMessages.map((message) => (
+            <div className="px-6 py-3" key={message.id}>
+              <div
+                className={cn(
+                  "relative rounded-2xl px-3 py-2",
+                  message.isSelected
+                    ? "bg-primary/10 ring-1 ring-primary/25"
+                    : "",
+                )}
+                data-testid={
+                  message.isSelected
+                    ? "home-inbox-selected-message"
+                    : "home-inbox-context-message"
+                }
+                style={{
+                  marginLeft: `${Math.min(message.depth, 6) * 24}px`,
+                }}
+              >
+                {message.depth > 0 ? (
+                  <div
+                    aria-hidden="true"
+                    className="absolute bottom-2 top-2 border-l border-border/70"
+                    style={{ left: "-12px" }}
+                  />
+                ) : null}
+                <div className="mb-3 flex items-center gap-3">
+                  <UserAvatar
+                    avatarUrl={message.avatarUrl}
+                    className="h-8 w-8 rounded-md"
+                    displayName={message.authorLabel}
+                    size="md"
+                  />
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-semibold text-foreground">
+                        {message.authorLabel}
+                      </p>
+                      {message.isSelected ? (
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">
+                          Inbox item
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {message.fullTimestampLabel}
+                    </p>
+                  </div>
                 </div>
+                <Markdown
+                  className="max-w-none text-left text-[15px] text-foreground"
+                  content={message.content}
+                  mentionNames={message.mentionNames}
+                  tight
+                />
               </div>
-              <Markdown
-                className="max-w-none text-left text-[15px] text-foreground"
-                content={reply.content}
-                tight
-              />
             </div>
           ))}
         </div>
