@@ -47,6 +47,7 @@ import {
 import { HuddleBar, HuddleProvider } from "@/features/huddle";
 import { AppSidebar } from "@/features/sidebar/ui/AppSidebar";
 import { useWorkspaces } from "@/features/workspaces/useWorkspaces";
+import { useApplyTemplate } from "@/features/channel-templates/useApplyTemplate";
 import { relayClient } from "@/shared/api/relayClient";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { useDeferredStartup } from "@/shared/hooks/useDeferredStartup";
@@ -261,6 +262,8 @@ export function AppShell() {
 
   const createChannelMutation = useCreateChannelMutation();
   const createForumMutation = useCreateChannelMutation();
+  const { applyCanvas, applyAgents } = useApplyTemplate();
+
   const openDmMutation = useOpenDmMutation();
   const hideDmMutation = useHideDmMutation();
   const handleOpenBrowseChannels = React.useCallback(() => {
@@ -344,6 +347,23 @@ export function AppShell() {
       await openSearchHit(anchor);
     },
   );
+
+  // Prevent webview file:/// navigation on file drop outside the composer.
+  // Scoped to file drags only (text drag-and-drop into inputs still works).
+  // Composer's onDrop fires first (React synthetic before window bubble).
+  React.useEffect(() => {
+    function preventNavigation(e: DragEvent) {
+      if (e.dataTransfer?.types.includes("Files")) {
+        e.preventDefault();
+      }
+    }
+    window.addEventListener("dragover", preventNavigation);
+    window.addEventListener("drop", preventNavigation);
+    return () => {
+      window.removeEventListener("dragover", preventNavigation);
+      window.removeEventListener("drop", preventNavigation);
+    };
+  }, []);
 
   React.useEffect(() => {
     let isCancelled = false;
@@ -599,6 +619,7 @@ export function AppShell() {
                     name,
                     visibility,
                     ttlSeconds,
+                    templateId,
                   }) => {
                     const createdChannel =
                       await createChannelMutation.mutateAsync({
@@ -609,13 +630,16 @@ export function AppShell() {
                         ttlSeconds,
                       });
 
+                    await applyCanvas(templateId, createdChannel.id, name);
                     await goChannel(createdChannel.id);
+                    void applyAgents(templateId, createdChannel.id);
                   }}
                   onCreateForum={async ({
                     description,
                     name,
                     visibility,
                     ttlSeconds,
+                    templateId,
                   }) => {
                     const createdForum = await createForumMutation.mutateAsync({
                       name,
@@ -625,7 +649,9 @@ export function AppShell() {
                       ttlSeconds,
                     });
 
+                    await applyCanvas(templateId, createdForum.id, name);
                     await goChannel(createdForum.id);
+                    void applyAgents(templateId, createdForum.id);
                   }}
                   onHideDm={handleHideDm}
                   onOpenBrowseChannels={handleOpenBrowseChannels}

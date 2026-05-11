@@ -9,6 +9,7 @@ mod models;
 pub mod nostr_convert;
 mod prevent_sleep;
 mod relay;
+mod templates;
 mod util;
 
 use app_state::{build_app_state, resolve_persisted_identity, AppState};
@@ -493,6 +494,7 @@ pub fn run() {
             upload_media,
             pick_and_upload_media,
             upload_media_bytes,
+            download_image,
             list_relay_members,
             get_my_relay_membership,
             add_relay_member,
@@ -515,6 +517,11 @@ pub fn run() {
             update_persona,
             delete_persona,
             set_persona_active,
+            list_channel_templates,
+            create_channel_template,
+            update_channel_template,
+            delete_channel_template,
+            duplicate_channel_template,
             list_teams,
             create_team,
             update_team,
