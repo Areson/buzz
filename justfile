@@ -92,7 +92,7 @@ _ensure-sidecar-stubs:
     set -euo pipefail
     TARGET=$(rustc -vV | sed -n 's|host: ||p')
     mkdir -p desktop/src-tauri/binaries
-    for bin in sprout-acp sprout-mcp-server git-credential-nostr; do
+    for bin in sprout-acp sprout-mcp-server sprout-agent sprout-dev-mcp git-credential-nostr; do
         touch "desktop/src-tauri/binaries/${bin}-${TARGET}"
     done
 
@@ -108,6 +108,8 @@ desktop-release-build target="aarch64-apple-darwin":
     mkdir -p desktop/src-tauri/binaries
     touch "desktop/src-tauri/binaries/sprout-acp-$TARGET"
     touch "desktop/src-tauri/binaries/sprout-mcp-server-$TARGET"
+    touch "desktop/src-tauri/binaries/sprout-agent-$TARGET"
+    touch "desktop/src-tauri/binaries/sprout-dev-mcp-$TARGET"
     touch "desktop/src-tauri/binaries/git-credential-nostr-$TARGET"
     pnpm install
     cd {{desktop_dir}} && pnpm tauri build --target {{target}}
@@ -185,7 +187,7 @@ staging *ARGS: _ensure-sidecar-stubs
     #!/usr/bin/env bash
     set -euo pipefail
     pnpm install
-    cargo build --release -p sprout-acp -p sprout-mcp
+    cargo build --release -p sprout-acp -p sprout-mcp -p sprout-agent -p sprout-dev-mcp
     cd {{desktop_dir}}
     source ../scripts/instance-env.sh
     export SPROUT_RELAY_URL="wss://sprout-oss.stage.blox.sqprod.co"
