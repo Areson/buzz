@@ -222,93 +222,99 @@ export function InboxDetailPane({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto py-6">
-        <div>
-          <div className="px-6 pb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            {hasConversationContext
-              ? "Conversation context"
-              : item.categoryLabel}
-            {isThreadContextLoading ? (
-              <span className="ml-2 font-normal normal-case tracking-normal">
-                Loading context...
-              </span>
-            ) : null}
-          </div>
-          {displayMessages.map((message) => (
-            <div className="px-6 py-3" key={message.id}>
-              <div
-                className={cn(
-                  "relative rounded-2xl px-3 py-2",
-                  message.isSelected
-                    ? "bg-primary/10 ring-1 ring-primary/25"
-                    : "",
-                )}
-                data-testid={
-                  message.isSelected
-                    ? "home-inbox-selected-message"
-                    : "home-inbox-context-message"
-                }
-                style={{
-                  marginLeft: `${Math.min(message.depth, 6) * 24}px`,
-                }}
-              >
-                {message.depth > 0 ? (
-                  <div
-                    aria-hidden="true"
-                    className="absolute bottom-2 top-2 border-l border-border/70"
-                    style={{ left: "-12px" }}
-                  />
-                ) : null}
-                <div className="mb-3 flex items-center gap-3">
-                  <UserAvatar
-                    avatarUrl={message.avatarUrl}
-                    className="h-8 w-8 rounded-md"
-                    displayName={message.authorLabel}
-                    size="md"
-                  />
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <p className="truncate text-sm font-semibold text-foreground">
-                        {message.authorLabel}
-                      </p>
-                      {message.isSelected ? (
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">
-                          Inbox item
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {message.fullTimestampLabel}
-                    </p>
-                  </div>
-                </div>
-                <Markdown
-                  className="max-w-none text-left text-[15px] text-foreground"
-                  content={message.content}
-                  mentionNames={message.mentionNames}
-                  tight
-                />
-              </div>
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div className="absolute inset-0 overflow-y-auto overscroll-contain pb-32 pt-6">
+          <div>
+            <div className="px-6 pb-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              {hasConversationContext
+                ? "Conversation context"
+                : item.categoryLabel}
+              {isThreadContextLoading ? (
+                <span className="ml-2 font-normal normal-case tracking-normal">
+                  Loading context...
+                </span>
+              ) : null}
             </div>
-          ))}
+            {displayMessages.map((message) => (
+              <div className="px-6 py-3" key={message.id}>
+                <div
+                  className={cn(
+                    "relative rounded-2xl px-3 py-2",
+                    message.isSelected
+                      ? "bg-primary/10 ring-1 ring-primary/25"
+                      : "",
+                  )}
+                  data-testid={
+                    message.isSelected
+                      ? "home-inbox-selected-message"
+                      : "home-inbox-context-message"
+                  }
+                  style={{
+                    marginLeft: `${Math.min(message.depth, 6) * 24}px`,
+                  }}
+                >
+                  {message.depth > 0 ? (
+                    <div
+                      aria-hidden="true"
+                      className="absolute bottom-2 top-2 border-l border-border/70"
+                      style={{ left: "-12px" }}
+                    />
+                  ) : null}
+                  <div className="mb-3 flex items-center gap-3">
+                    <UserAvatar
+                      avatarUrl={message.avatarUrl}
+                      className="h-8 w-8 rounded-md"
+                      displayName={message.authorLabel}
+                      size="md"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <p className="truncate text-sm font-semibold text-foreground">
+                          {message.authorLabel}
+                        </p>
+                        {message.isSelected ? (
+                          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">
+                            Inbox item
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {message.fullTimestampLabel}
+                      </p>
+                    </div>
+                  </div>
+                  <Markdown
+                    className="max-w-none text-left text-[15px] text-foreground"
+                    content={message.content}
+                    mentionNames={message.mentionNames}
+                    tight
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+          <div className="pointer-events-auto">
+            <MessageComposer
+              channelId={item.item.channelId}
+              channelName={item.channelLabel ?? "channel"}
+              containerClassName="px-6 pb-4 sm:px-6 [&>div]:max-w-none"
+              disabled={!canReply}
+              draftKey={`inbox-reply:${item.id}`}
+              isSending={isSendingReply}
+              onSend={onSendReply}
+              placeholder={
+                canReply
+                  ? `Send reply to ${item.channelLabel ? `#${item.channelLabel} thread` : "channel thread"}`
+                  : (disabledReplyReason ??
+                    "Replies are not available for this item.")
+              }
+            />
+          </div>
         </div>
       </div>
-
-      <MessageComposer
-        channelId={item.item.channelId}
-        channelName={item.channelLabel ?? "channel"}
-        containerClassName="px-6 pb-4 sm:px-6"
-        disabled={!canReply}
-        draftKey={`inbox-reply:${item.id}`}
-        isSending={isSendingReply}
-        onSend={onSendReply}
-        placeholder={
-          canReply
-            ? `Send reply to ${item.channelLabel ? `#${item.channelLabel} thread` : "channel thread"}`
-            : (disabledReplyReason ??
-              "Replies are not available for this item.")
-        }
-      />
     </section>
   );
 }
