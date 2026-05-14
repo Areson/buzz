@@ -3,16 +3,19 @@ use super::{
     spawn_agent_child, sync_managed_agent_processes, BackendKind, ManagedAgentProcess,
 };
 use crate::app_state::AppState;
+use crate::commands::{collect_profile_sync_params, ProfileSyncParams};
+use crate::relay::sync_managed_agent_profile;
 use crate::util;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
 /// Restore managed agents that were running before the app was closed.
 ///
-/// Split into three phases to minimise lock contention with the frontend:
+/// Split into four phases to minimise lock contention with the frontend:
 ///   A (under lock): sync process state, cleanup, collect agents to start
 ///   B (no locks):   resolve commands and spawn processes in parallel
 ///   C (re-lock):    write back PIDs and status to records on disk
+///   D (no locks):   fire-and-forget profile sync for started agents
 pub fn restore_managed_agents_on_launch(
     app: &tauri::AppHandle,
     shutdown_started: &AtomicBool,
@@ -119,41 +122,76 @@ pub fn restore_managed_agents_on_launch(
         return Ok(());
     }
 
-    // ── Phase C (re-acquire lock): write back PIDs and status to records ──
-    let _store_guard = state
-        .managed_agents_store_lock
-        .lock()
-        .map_err(|error| error.to_string())?;
-    let mut records = load_managed_agents(app)?;
-    let mut runtimes = state
-        .managed_agent_processes
-        .lock()
-        .map_err(|error| error.to_string())?;
+    // ── Phase C (re-acquire lock): write back PIDs, collect profile sync params ──
+    let sync_params_list: Vec<ProfileSyncParams>;
+    {
+        let _store_guard = state
+            .managed_agents_store_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let mut records = load_managed_agents(app)?;
+        let mut runtimes = state
+            .managed_agent_processes
+            .lock()
+            .map_err(|error| error.to_string())?;
 
-    for (pubkey, result) in spawn_results {
-        let record = match find_managed_agent_mut(&mut records, &pubkey) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        match result {
-            Ok((child, log_path)) => {
-                let now = util::now_iso();
-                record.updated_at = now.clone();
-                record.runtime_pid = Some(child.id());
-                record.last_started_at = Some(now);
-                record.last_stopped_at = None;
-                record.last_exit_code = None;
-                record.last_error = None;
-                runtimes.insert(pubkey, ManagedAgentProcess { child, log_path });
-            }
-            Err(error) => {
-                record.updated_at = util::now_iso();
-                record.last_error = Some(error);
+        let mut started_pubkeys = Vec::new();
+        for (pubkey, result) in spawn_results {
+            let record = match find_managed_agent_mut(&mut records, &pubkey) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            match result {
+                Ok((child, log_path)) => {
+                    let now = util::now_iso();
+                    record.updated_at = now.clone();
+                    record.runtime_pid = Some(child.id());
+                    record.last_started_at = Some(now);
+                    record.last_stopped_at = None;
+                    record.last_exit_code = None;
+                    record.last_error = None;
+                    runtimes.insert(pubkey.clone(), ManagedAgentProcess { child, log_path });
+                    started_pubkeys.push(pubkey);
+                }
+                Err(error) => {
+                    record.updated_at = util::now_iso();
+                    record.last_error = Some(error);
+                }
             }
         }
-    }
 
-    save_managed_agents(app, &records)?;
+        // Collect profile sync params for successfully started agents.
+        sync_params_list = started_pubkeys
+            .iter()
+            .filter_map(|pk| {
+                let record = records.iter().find(|r| r.pubkey == *pk)?;
+                collect_profile_sync_params(app, record)
+            })
+            .collect();
+
+        save_managed_agents(app, &records)?;
+    } // lock dropped
+
+    // ── Phase D (no locks): fire-and-forget profile sync for started agents ──
+    for params in sync_params_list {
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let state = app_handle.state::<AppState>();
+            if let Err(e) = sync_managed_agent_profile(
+                &state,
+                &params.relay_url,
+                &params.agent_keys,
+                &params.display_name,
+                params.avatar_url.as_deref(),
+                params.auth_tag.as_deref(),
+                Some(params.respond_to.as_str()),
+            )
+            .await
+            {
+                eprintln!("sprout-desktop: profile sync on restore failed for agent: {e}");
+            }
+        });
+    }
 
     Ok(())
 }

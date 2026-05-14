@@ -484,6 +484,42 @@ pub async fn create_managed_agent(
     })
 }
 
+/// Parameters needed to sync an agent's kind:0 profile to the relay.
+/// Collected under the managed_agents_store_lock, used after the lock is dropped.
+pub struct ProfileSyncParams {
+    pub agent_keys: Keys,
+    pub relay_url: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub auth_tag: Option<String>,
+    pub respond_to: String,
+}
+
+/// Collect profile sync parameters from a managed agent record.
+/// Returns `None` if the agent keys cannot be parsed (best-effort).
+pub fn collect_profile_sync_params(
+    app: &AppHandle,
+    record: &ManagedAgentRecord,
+) -> Option<ProfileSyncParams> {
+    let agent_keys = Keys::parse(&record.private_key_nsec).ok()?;
+    let avatar_url = record
+        .persona_id
+        .as_deref()
+        .and_then(|pid| {
+            let personas = load_personas(app).ok()?;
+            personas.iter().find(|p| p.id == pid)?.avatar_url.clone()
+        })
+        .or_else(|| managed_agent_avatar_url(&record.agent_command));
+    Some(ProfileSyncParams {
+        agent_keys,
+        relay_url: record.relay_url.clone(),
+        display_name: record.name.clone(),
+        avatar_url,
+        auth_tag: record.auth_tag.clone(),
+        respond_to: record.respond_to.as_str().to_string(),
+    })
+}
+
 #[tauri::command]
 pub async fn start_managed_agent(
     pubkey: String,
@@ -493,8 +529,21 @@ pub async fn start_managed_agent(
     // Snapshot the workspace owner pubkey for the legacy auth_tag fallback.
     // Read outside the records lock to keep lock ordering simple.
     let owner_hex = workspace_owner_hex(&state)?;
-    // Collect backend info and handle local vs provider under lock.
-    let (backend, cached_binary_path, agent_json) = {
+
+    // Phase 1 (under lock): spawn process, collect profile sync params.
+    enum StartResult {
+        Local {
+            summary: ManagedAgentSummary,
+            sync_params: Option<ProfileSyncParams>,
+        },
+        Provider {
+            backend: BackendKind,
+            cached_binary_path: Option<String>,
+            agent_json: serde_json::Value,
+        },
+    }
+
+    let start_result = {
         let _store_guard = state
             .managed_agents_store_lock
             .lock()
@@ -512,55 +561,86 @@ pub async fn start_managed_agent(
         let record = find_managed_agent_mut(&mut records, &pubkey)?;
 
         if record.backend == BackendKind::Local {
-            // Local: spawn in-process and return immediately.
             start_managed_agent_process(&app, record, &mut runtimes, Some(&owner_hex))?;
+            let sync_params = collect_profile_sync_params(&app, record);
             save_managed_agents(&app, &records)?;
             let record = records
                 .iter()
                 .find(|r| r.pubkey == pubkey)
                 .ok_or_else(|| format!("agent {pubkey} not found"))?;
-            return build_managed_agent_summary(&app, record, &runtimes);
+            let summary = build_managed_agent_summary(&app, record, &runtimes)?;
+            StartResult::Local {
+                summary,
+                sync_params,
+            }
+        } else {
+            let payload = build_deploy_payload(record);
+            StartResult::Provider {
+                backend: record.backend.clone(),
+                cached_binary_path: record.provider_binary_path.clone(),
+                agent_json: payload,
+            }
         }
+    }; // lock dropped
 
-        let payload = build_deploy_payload(record);
-        (
-            record.backend.clone(),
-            record.provider_binary_path.clone(),
-            payload,
-        )
-    };
-
-    // Provider backend: deploy via shared helper (async, outside lock).
-    if let BackendKind::Provider { ref id, ref config } = backend {
-        deploy_to_provider(
-            &app,
-            &state,
-            &pubkey,
-            id,
-            config,
+    match start_result {
+        StartResult::Local {
+            summary,
+            sync_params,
+        } => {
+            // Phase 2: best-effort profile sync (async, outside lock).
+            if let Some(params) = sync_params {
+                if let Err(e) = sync_managed_agent_profile(
+                    &state,
+                    &params.relay_url,
+                    &params.agent_keys,
+                    &params.display_name,
+                    params.avatar_url.as_deref(),
+                    params.auth_tag.as_deref(),
+                    Some(params.respond_to.as_str()),
+                )
+                .await
+                {
+                    eprintln!("sprout-desktop: profile sync on agent start failed: {e}");
+                }
+            }
+            Ok(summary)
+        }
+        StartResult::Provider {
+            backend,
+            cached_binary_path,
             agent_json,
-            cached_binary_path.as_deref(),
-        )
-        .await?;
+        } => {
+            if let BackendKind::Provider { ref id, ref config } = backend {
+                deploy_to_provider(
+                    &app,
+                    &state,
+                    &pubkey,
+                    id,
+                    config,
+                    agent_json,
+                    cached_binary_path.as_deref(),
+                )
+                .await?;
 
-        // Return updated summary.
-        let _store_guard = state
-            .managed_agents_store_lock
-            .lock()
-            .map_err(|e| e.to_string())?;
-        let records = load_managed_agents(&app)?;
-        let runtimes = state
-            .managed_agent_processes
-            .lock()
-            .map_err(|e| e.to_string())?;
-        let record = records
-            .iter()
-            .find(|r| r.pubkey == pubkey)
-            .ok_or_else(|| format!("agent {pubkey} not found"))?;
-        return build_managed_agent_summary(&app, record, &runtimes);
+                let _store_guard = state
+                    .managed_agents_store_lock
+                    .lock()
+                    .map_err(|e| e.to_string())?;
+                let records = load_managed_agents(&app)?;
+                let runtimes = state
+                    .managed_agent_processes
+                    .lock()
+                    .map_err(|e| e.to_string())?;
+                let record = records
+                    .iter()
+                    .find(|r| r.pubkey == pubkey)
+                    .ok_or_else(|| format!("agent {pubkey} not found"))?;
+                return build_managed_agent_summary(&app, record, &runtimes);
+            }
+            Err(format!("agent {pubkey} has unsupported backend kind"))
+        }
     }
-
-    Err(format!("agent {pubkey} has unsupported backend kind"))
 }
 
 #[tauri::command]
