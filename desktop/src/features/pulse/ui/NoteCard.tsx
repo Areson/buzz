@@ -1,4 +1,11 @@
-import { Bot, UserMinus, UserPlus } from "lucide-react";
+import {
+  Bot,
+  MessageCircle,
+  Share2,
+  SmilePlus,
+  UserMinus,
+  UserPlus,
+} from "lucide-react";
 
 import type { UserNote } from "@/shared/api/socialTypes";
 import type { UserProfileSummary } from "@/shared/api/types";
@@ -13,6 +20,9 @@ type NoteCardProps = {
   isOwnNote: boolean;
   isFollowing: boolean;
   onFollow?: (pubkey: string) => void;
+  onReact?: (note: UserNote) => void;
+  onReply?: (note: UserNote) => void;
+  onShare?: (note: UserNote) => void;
   onUnfollow?: (pubkey: string) => void;
 };
 
@@ -38,13 +48,16 @@ export function NoteCard({
   isOwnNote,
   isFollowing,
   onFollow,
+  onReact,
+  onReply,
+  onShare,
   onUnfollow,
 }: NoteCardProps) {
   const displayName = profile?.displayName ?? `${note.pubkey.slice(0, 8)}...`;
   const avatarUrl = profile?.avatarUrl ?? null;
 
   return (
-    <article className="group flex items-start gap-2.5 rounded-2xl px-1 py-4 transition-colors hover:bg-muted/20 sm:px-2">
+    <article className="group flex items-start gap-2.5 rounded-2xl px-1 pb-1 pt-4 transition-colors hover:bg-muted/20 sm:px-2">
       <div className="relative shrink-0">
         <UserAvatar
           avatarUrl={avatarUrl}
@@ -101,13 +114,37 @@ export function NoteCard({
           ) : null}
         </div>
 
-        <div className="mt-0.5 text-sm text-foreground">
+        <div className="mt-0.5 pb-3 text-sm text-foreground">
           <Markdown content={note.content} tight />
         </div>
 
-        {!isOwnNote ? (
-          <div className="mt-2 flex items-center gap-3 text-[11px] font-medium text-muted-foreground">
-            {isFollowing ? (
+        <div className="flex flex-wrap items-center gap-3 text-[11px] font-medium text-muted-foreground">
+          <button
+            className="inline-flex items-center gap-1 hover:text-foreground"
+            onClick={() => onReact?.(note)}
+            type="button"
+          >
+            <SmilePlus className="h-3.5 w-3.5" />
+            React
+          </button>
+          <button
+            className="inline-flex items-center gap-1 hover:text-foreground"
+            onClick={() => onReply?.(note)}
+            type="button"
+          >
+            <MessageCircle className="h-3.5 w-3.5" />
+            Reply
+          </button>
+          <button
+            className="inline-flex items-center gap-1 hover:text-foreground"
+            onClick={() => onShare?.(note)}
+            type="button"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+            Share
+          </button>
+          {!isOwnNote ? (
+            isFollowing ? (
               <button
                 className="hover:text-foreground"
                 onClick={() => onUnfollow?.(note.pubkey)}
@@ -123,9 +160,9 @@ export function NoteCard({
               >
                 Follow
               </button>
-            )}
-          </div>
-        ) : null}
+            )
+          ) : null}
+        </div>
       </div>
     </article>
   );
