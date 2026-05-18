@@ -85,6 +85,7 @@ pub async fn cmd_get_reactions(client: &SproutClient, event_id: &str) -> Result<
         let emoji = e
             .get("content")
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
             .unwrap_or("+")
             .to_string();
         let pubkey = e
@@ -95,7 +96,7 @@ pub async fn cmd_get_reactions(client: &SproutClient, event_id: &str) -> Result<
         groups.entry(emoji).or_default().push(pubkey);
     }
 
-    let reactions: Vec<serde_json::Value> = groups
+    let mut reactions: Vec<serde_json::Value> = groups
         .into_iter()
         .map(|(emoji, pubkeys)| {
             serde_json::json!({
@@ -105,6 +106,10 @@ pub async fn cmd_get_reactions(client: &SproutClient, event_id: &str) -> Result<
             })
         })
         .collect();
+    reactions.sort_by(|a, b| {
+        a.get("emoji").and_then(|v| v.as_str()).unwrap_or("")
+            .cmp(b.get("emoji").and_then(|v| v.as_str()).unwrap_or(""))
+    });
 
     let output = serde_json::json!({ "reactions": reactions });
     println!("{}", serde_json::to_string(&output).unwrap_or_default());

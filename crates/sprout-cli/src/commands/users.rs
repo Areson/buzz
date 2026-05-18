@@ -58,11 +58,7 @@ pub async fn cmd_get_users(
             Some(profile)
         })
         .collect();
-    if profiles.len() == 1 {
-        println!("{}", serde_json::to_string(&profiles[0]).unwrap_or_default());
-    } else {
-        println!("{}", serde_json::to_string(&profiles).unwrap_or_default());
-    }
+    println!("{}", serde_json::to_string(&profiles).unwrap_or_default());
     Ok(())
 }
 

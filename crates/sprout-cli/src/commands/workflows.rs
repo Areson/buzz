@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-use crate::client::{extract_d_tag, normalize_write_response, SproutClient};
+use crate::client::{extract_d_tag, normalize_write_response, print_create_response, SproutClient};
 use crate::error::CliError;
 use crate::validate::{parse_uuid, read_or_stdin, sdk_err, validate_uuid};
 
@@ -43,11 +43,27 @@ pub async fn cmd_get_workflow(client: &SproutClient, workflow_id: &str) -> Resul
         "#d": [workflow_id]
     });
     let resp = client.query(&filter).await?;
-    println!("{resp}");
+    let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
+    if let Some(e) = events.first() {
+        let normalized = serde_json::json!({
+            "workflow_id": extract_d_tag(e),
+            "content": e.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+            "created_at": e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0),
+            "pubkey": e.get("pubkey").and_then(|v| v.as_str()).unwrap_or(""),
+        });
+        println!("{normalized}");
+    } else {
+        println!("null");
+    }
     Ok(())
 }
 
-/// Get workflow run history — query kinds [46001, 46002, 46003] (triggered, step_started, step_completed).
+/// Get workflow run history — query kinds [46001, 46002, 46003].
+///
+/// NOTE: The relay does not currently emit workflow execution events (46001-46003).
+/// Run history is stored in the workflow_runs DB table, not as Nostr events.
+/// This command will return an empty array until the relay adds event emission
+/// or a dedicated REST endpoint for run history.
 pub async fn cmd_get_workflow_runs(
     client: &SproutClient,
     workflow_id: &str,
@@ -98,13 +114,7 @@ pub async fn cmd_create_workflow(
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
-    let mut normalized: serde_json::Value =
-        serde_json::from_str(&resp).unwrap_or(serde_json::json!({}));
-    normalized["workflow_id"] = serde_json::json!(workflow_id.to_string());
-    if normalized.get("accepted").is_none() {
-        normalized["accepted"] = serde_json::json!(true);
-    }
-    println!("{normalized}");
+    print_create_response(&resp, "workflow_id", &workflow_id.to_string());
     Ok(())
 }
 

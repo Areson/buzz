@@ -220,20 +220,7 @@ impl SproutClient {
     /// `filter` is a Nostr filter object (will be wrapped in an array).
     /// Returns the raw JSON response (array of events).
     pub async fn query(&self, filter: &serde_json::Value) -> Result<String, CliError> {
-        let url = format!("{}/query", self.relay_url);
-        let body_bytes = serde_json::to_vec(&[filter])
-            .map_err(|e| CliError::Other(format!("filter serialization failed: {e}")))?;
-        let auth = sign_nip98(&self.keys, "POST", &url, Some(&body_bytes))?;
-
-        let req = self
-            .http
-            .post(&url)
-            .header("Authorization", &auth)
-            .header("Content-Type", "application/json")
-            .body(body_bytes);
-        let resp = self.with_auth_tag(req).send().await?;
-
-        self.handle_response(resp).await
+        self.query_multi(std::slice::from_ref(filter)).await
     }
 
     /// Execute a one-shot query with multiple filters via the HTTP bridge.
@@ -458,8 +445,7 @@ pub fn normalize_relay_url(url: &str) -> String {
 
 /// Normalize raw event JSON array into consistent shape.
 /// Each event becomes: {id, pubkey, kind, content, created_at, tags}
-pub fn normalize_events(raw: &str) -> String {
-    let events: Vec<serde_json::Value> = serde_json::from_str(raw).unwrap_or_default();
+pub fn normalize_events(events: &[serde_json::Value]) -> String {
     let normalized: Vec<serde_json::Value> = events
         .iter()
         .map(|e| {
@@ -513,12 +499,22 @@ pub fn extract_p_tags(event: &serde_json::Value) -> Vec<serde_json::Value> {
                     let a = t.as_array().unwrap();
                     serde_json::json!({
                         "pubkey": a.get(1).and_then(|v| v.as_str()).unwrap_or(""),
-                        "role": a.get(2).and_then(|v| v.as_str()).unwrap_or("member"),
+                        "role": a.get(3).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("member"),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Print a create-command response, injecting the generated entity ID.
+pub fn print_create_response(resp: &str, id_key: &str, id_val: &str) {
+    let mut v: serde_json::Value = serde_json::from_str(resp).unwrap_or(serde_json::json!({}));
+    v[id_key] = serde_json::json!(id_val);
+    if v.get("accepted").is_none() {
+        v["accepted"] = serde_json::json!(true);
+    }
+    println!("{v}");
 }
 
 /// Normalize a relay write-response into a consistent JSON object.

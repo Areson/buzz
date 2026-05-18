@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::client::{extract_d_tag, normalize_write_response, SproutClient};
 use crate::error::CliError;
-use crate::validate::{parse_uuid, sdk_err};
+use crate::validate::{parse_uuid, sdk_err, validate_hex64};
 
 /// List DM conversations by querying kind:41001 (relay-confirmed DMs) filtered by our pubkey.
 pub async fn cmd_list_dms(client: &SproutClient, limit: Option<u32>) -> Result<(), CliError> {
@@ -52,6 +52,9 @@ pub async fn cmd_open_dm(client: &SproutClient, pubkeys: &[String]) -> Result<()
     if pubkeys.is_empty() || pubkeys.len() > 8 {
         return Err(CliError::Usage("--pubkey: must provide 1-8 pubkeys".into()));
     }
+    for pk in pubkeys {
+        validate_hex64(pk)?;
+    }
     let dm_id = Uuid::new_v4().to_string();
     let refs: Vec<&str> = pubkeys.iter().map(String::as_str).collect();
 
@@ -60,16 +63,30 @@ pub async fn cmd_open_dm(client: &SproutClient, pubkeys: &[String]) -> Result<()
     use nostr::{EventBuilder, Kind, Tag};
     let mut tags: Vec<Tag> = refs
         .iter()
-        .map(|pk| Tag::parse(&["p", pk]).unwrap())
-        .collect();
-    tags.push(Tag::parse(&["d", &dm_id]).unwrap());
+        .map(|pk| Tag::parse(&["p", pk])
+            .map_err(|e| CliError::Other(format!("tag error: {e}"))))
+        .collect::<Result<Vec<_>, _>>()?;
+    tags.push(Tag::parse(&["d", &dm_id])
+        .map_err(|e| CliError::Other(format!("tag error: {e}")))?);
     let builder = EventBuilder::new(Kind::Custom(41010), "", tags);
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
+    // Try to extract relay-assigned channel_id from response message.
+    // Relay returns: {"event_id":"...","accepted":true,"message":"response:{\"channel_id\":\"...\",\"created\":true}"}
+    let relay_dm_id = serde_json::from_str::<serde_json::Value>(&resp)
+        .ok()
+        .and_then(|v| v.get("message")?.as_str().map(|s| s.to_string()))
+        .and_then(|msg| {
+            let json_part = msg.strip_prefix("response:")?;
+            serde_json::from_str::<serde_json::Value>(json_part).ok()
+        })
+        .and_then(|v| v.get("channel_id")?.as_str().map(|s| s.to_string()));
+    let final_dm_id = relay_dm_id.unwrap_or(dm_id);
+
     let mut normalized: serde_json::Value =
         serde_json::from_str(&resp).unwrap_or(serde_json::json!({}));
-    normalized["dm_id"] = serde_json::json!(dm_id);
+    normalized["dm_id"] = serde_json::json!(final_dm_id);
     if normalized.get("accepted").is_none() {
         normalized["accepted"] = serde_json::json!(true);
     }

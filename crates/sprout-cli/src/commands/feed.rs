@@ -25,8 +25,7 @@ pub async fn cmd_get_feed(
     let resp = client.query(&filter).await?;
     let mut events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
     events.sort_by_key(|e| Reverse(e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0)));
-    let raw_sorted = serde_json::to_string(&events).unwrap_or_default();
-    println!("{}", normalize_events(&raw_sorted));
+    println!("{}", normalize_events(&events));
     Ok(())
 }
 

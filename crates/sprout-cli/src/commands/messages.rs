@@ -257,8 +257,7 @@ pub async fn cmd_get_messages(
     let resp = client.query(&filter).await?;
     let mut events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
     events.sort_by_key(|e| e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0));
-    let raw_sorted = serde_json::to_string(&events).unwrap_or_default();
-    println!("{}", normalize_events(&raw_sorted));
+    println!("{}", normalize_events(&events));
     Ok(())
 }
 
@@ -277,6 +276,7 @@ pub async fn cmd_get_thread(
     // 1. Replies referencing this event via e-tag (no kind restriction)
     // 2. The root event itself by ID
     let reply_filter = serde_json::json!({
+        "kinds": [9, 40002, 40003, 40008, 45003],
         "#h": [channel_id],
         "#e": [event_id],
         "limit": limit
@@ -288,8 +288,7 @@ pub async fn cmd_get_thread(
     let resp = client.query_multi(&[reply_filter, root_filter]).await?;
     let mut events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
     events.sort_by_key(|e| e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0));
-    let raw_sorted = serde_json::to_string(&events).unwrap_or_default();
-    println!("{}", normalize_events(&raw_sorted));
+    println!("{}", normalize_events(&events));
     Ok(())
 }
 
@@ -304,7 +303,8 @@ pub async fn cmd_search(
         "limit": limit
     });
     let resp = client.query(&filter).await?;
-    println!("{}", normalize_events(&resp));
+    let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
+    println!("{}", normalize_events(&events));
     Ok(())
 }
 
