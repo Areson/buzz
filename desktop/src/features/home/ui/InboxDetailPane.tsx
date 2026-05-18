@@ -1,5 +1,4 @@
 import {
-  ArrowUpRight,
   CheckCheck,
   Mail,
   MailOpen,
@@ -24,6 +23,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import {
@@ -187,7 +187,7 @@ export function InboxDetailPane({
       ref={detailPaneRef}
     >
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="absolute inset-x-0 top-0 z-40 flex min-h-[44px] items-center justify-between gap-3 bg-background/70 px-6 py-[6px] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55">
+        <div className="absolute inset-x-0 top-0 z-40 flex min-h-[44px] items-center justify-between gap-3 bg-background/70 py-[6px] pl-6 pr-3 backdrop-blur-xl supports-[backdrop-filter]:bg-background/55">
           <div className="min-w-0">
             {canOpenChannel && contextChannelId && onOpenContext ? (
               <button
@@ -210,30 +210,13 @@ export function InboxDetailPane({
 
           <TooltipProvider delayDuration={200}>
             <div className="flex shrink-0 items-center gap-1">
-              {canOpenChannel && contextChannelId && onOpenContext ? (
-                <HeaderIconAction
-                  label="Open context"
-                  onClick={() => onOpenContext(contextChannelId, item.id)}
-                  icon={<ArrowUpRight className="h-4 w-4" />}
-                />
-              ) : null}
-              <HeaderIconAction
-                label={isDone ? "Mark unread" : "Mark done"}
-                onClick={onToggleDone}
-                icon={
-                  isDone ? (
-                    <MailOpen className="h-4 w-4" />
-                  ) : (
-                    <CheckCheck className="h-4 w-4" />
-                  )
-                }
+              <HeaderMoreMenu
+                canDelete={canDelete}
+                isDeletingMessage={isDeletingMessage}
+                isDone={isDone}
+                onDelete={onDelete}
+                onToggleDone={onToggleDone}
               />
-              {canDelete ? (
-                <HeaderMoreMenu
-                  isDeletingMessage={isDeletingMessage}
-                  onDelete={onDelete}
-                />
-              ) : null}
             </div>
           </TooltipProvider>
         </div>
@@ -298,42 +281,18 @@ export function InboxDetailPane({
   );
 }
 
-function HeaderIconAction({
-  icon,
-  label,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-}) {
-  const button = (
-    <Button
-      aria-label={label}
-      className="h-8 w-8 rounded-full p-0 text-muted-foreground"
-      onClick={onClick}
-      size="icon"
-      type="button"
-      variant="ghost"
-    >
-      {icon}
-    </Button>
-  );
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
 function HeaderMoreMenu({
+  canDelete,
   isDeletingMessage,
+  isDone,
   onDelete,
+  onToggleDone,
 }: {
+  canDelete: boolean;
   isDeletingMessage: boolean;
+  isDone: boolean;
   onDelete: () => void;
+  onToggleDone: () => void;
 }) {
   const trigger = (
     <Button
@@ -356,14 +315,25 @@ function HeaderMoreMenu({
         <TooltipContent>More actions</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem
-          className="text-destructive focus:text-destructive"
-          disabled={isDeletingMessage}
-          onClick={onDelete}
-        >
-          <Trash2 className="h-4 w-4" />
-          Delete message
+        <DropdownMenuItem onClick={onToggleDone}>
+          {isDone ? (
+            <MailOpen className="h-4 w-4" />
+          ) : (
+            <CheckCheck className="h-4 w-4" />
+          )}
+          {isDone ? "Unmark as read" : "Mark as read"}
         </DropdownMenuItem>
+        {canDelete ? <DropdownMenuSeparator /> : null}
+        {canDelete ? (
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            disabled={isDeletingMessage}
+            onClick={onDelete}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete message
+          </DropdownMenuItem>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
