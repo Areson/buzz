@@ -1,7 +1,8 @@
 import * as React from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Cpu } from "lucide-react";
+import { Cpu, Users } from "lucide-react";
 
+import { useMeshLlmOffers } from "@/features/settings/hooks/useMeshLlmOffers";
 import { Switch } from "@/shared/ui/switch";
 import { Input } from "@/shared/ui/input";
 
@@ -58,6 +59,7 @@ export function MeshComputeSettingsCard() {
   const [endpoint, setEndpoint] = React.useState<MeshEndpointInfo | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const { offers, error: offersError } = useMeshLlmOffers();
 
   // Load the persisted prefs + the iroh endpoint identity on mount.
   React.useEffect(() => {
@@ -234,6 +236,54 @@ export function MeshComputeSettingsCard() {
             </div>
           </div>
         </fieldset>
+
+        {/* ── Offers visible from other members ──────────────────── */}
+        <section>
+          <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
+            <Users className="h-4 w-4 text-muted-foreground" />
+            Compute offered by other members
+          </h3>
+          {offersError ? (
+            <p className="text-xs text-destructive">{offersError}</p>
+          ) : null}
+          {offers.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Nobody else on this relay is currently sharing compute.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2" data-testid="mesh-offers-list">
+              {offers.map((entry) => (
+                <li
+                  className="rounded border border-border/60 bg-muted/20 px-3 py-2 text-xs"
+                  key={`${entry.pubkey}:${entry.d_tag}`}
+                >
+                  <div className="font-medium text-foreground">
+                    <code className="break-all">
+                      {entry.pubkey.slice(0, 16)}…{entry.pubkey.slice(-4)}
+                    </code>
+                    {" · "}
+                    <span className="text-muted-foreground">{entry.d_tag}</span>
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {entry.offer.models.length === 0
+                      ? "No models advertised"
+                      : entry.offer.models
+                          .map((m) => m.label ?? m.id)
+                          .join(", ")}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    {entry.offer.caps.max_vram_mb != null
+                      ? `${entry.offer.caps.max_vram_mb} MB VRAM · `
+                      : ""}
+                    {entry.offer.caps.max_concurrency != null
+                      ? `${entry.offer.caps.max_concurrency} concurrent`
+                      : ""}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
         {/* ── Identity ────────────────────────────────────────────── */}
         {endpoint ? (

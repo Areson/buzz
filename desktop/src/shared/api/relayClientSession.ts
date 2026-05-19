@@ -9,6 +9,7 @@ import type { PresenceStatus, RelayEvent } from "@/shared/api/types";
 import {
   CHANNEL_EVENT_KINDS,
   HOME_MENTION_EVENT_KINDS,
+  KIND_MESH_LLM_DISCOVERY,
   KIND_STREAM_MESSAGE,
   KIND_TYPING_INDICATOR,
   KIND_USER_STATUS,
@@ -307,6 +308,24 @@ export class RelayClient {
   async subscribeToUserStatusUpdates(onEvent: (event: RelayEvent) => void) {
     return this.subscribe(
       { kinds: [KIND_USER_STATUS], "#d": ["general"], limit: 0 },
+      onEvent,
+    );
+  }
+
+  /**
+   * Subscribe to kind:31990 mesh-LLM compute-offer events.
+   *
+   * Pulls the most recent 200 offers (one per (pubkey, d_tag) address under
+   * NIP-33) so the UI sees the steady-state set of who is currently
+   * offering, then streams live updates. Consumers should treat an event
+   * with empty `content` as 'offer withdrawn' (NIP-33 delete-by-replace).
+   *
+   * Membership is enforced relay-side via the existing NIP-43 fan-out gate
+   * — this subscription will only deliver events authored by relay members.
+   */
+  async subscribeToMeshLlmOffers(onEvent: (event: RelayEvent) => void) {
+    return this.subscribe(
+      { kinds: [KIND_MESH_LLM_DISCOVERY], limit: 200 },
       onEvent,
     );
   }

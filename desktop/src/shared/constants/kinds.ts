@@ -20,6 +20,8 @@ export const KIND_READ_STATE = 30078;
 export const KIND_USER_STATUS = 30315;
 export const KIND_AGENT_OBSERVER_FRAME = 24200;
 export const KIND_REPO_ANNOUNCEMENT = 30617;
+/** Mesh-LLM compute-offer discovery. Parameterized replaceable (NIP-33). */
+export const KIND_MESH_LLM_DISCOVERY = 31990;
 
 // Human-visible "new content" message kinds. Used as the unread trigger set
 // (sidebar badges, catch-up queries) and as the Home-feed mention query.
