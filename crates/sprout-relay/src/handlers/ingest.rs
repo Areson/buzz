@@ -21,9 +21,9 @@ use sprout_core::kind::{
     KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
     KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_RECORDING_AVAILABLE, KIND_HUDDLE_STARTED,
     KIND_HUDDLE_TRACK_PUBLISHED, KIND_LONG_FORM, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
-    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
-    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MESH_LLM_DISCOVERY, KIND_NIP29_CREATE_GROUP,
+    KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA,
+    KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
     KIND_NIP43_LEAVE_REQUEST, KIND_PRESENCE_UPDATE, KIND_PROFILE, KIND_REACTION, KIND_READ_STATE,
     KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF,
     KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED,
@@ -215,6 +215,11 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         // Command kinds — DM management, workflows, approvals
         KIND_DM_OPEN | KIND_DM_ADD_MEMBER | KIND_DM_HIDE => Ok(Scope::MessagesWrite),
         KIND_WORKFLOW_DEF | KIND_WORKFLOW_TRIGGER => Ok(Scope::MessagesWrite),
+        // Mesh-LLM compute-offer discovery — relay members fan out their compute
+        // availability to other relay members. Same write scope as regular
+        // messages; the audience boundary is relay membership (enforced by
+        // NIP-43), not channel scope.
+        KIND_MESH_LLM_DISCOVERY => Ok(Scope::MessagesWrite),
         KIND_APPROVAL_GRANT | KIND_APPROVAL_DENY => Ok(Scope::MessagesWrite),
         _ => Err("restricted: unknown event kind"),
     }
@@ -322,6 +327,10 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | RELAY_ADMIN_REMOVE_MEMBER
             | RELAY_ADMIN_CHANGE_ROLE
             | KIND_NIP43_LEAVE_REQUEST
+            // Mesh-LLM compute-offer discovery is addressed by (pubkey, kind, d_tag)
+            // and consumed by every relay member; a stray `h` tag must not
+            // accidentally channel-scope it.
+            | KIND_MESH_LLM_DISCOVERY
     )
 }
 
@@ -1793,6 +1802,28 @@ mod tests {
     #[test]
     fn user_status_is_global_only() {
         assert!(is_global_only_kind(KIND_USER_STATUS));
+    }
+
+    #[test]
+    fn mesh_llm_discovery_requires_messages_write_scope() {
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(KIND_MESH_LLM_DISCOVERY, &dummy).unwrap(),
+            Scope::MessagesWrite,
+            "kind:31990 must require MessagesWrite — relay membership is enforced by the existing NIP-43 gate"
+        );
+    }
+
+    #[test]
+    fn mesh_llm_discovery_is_global_only() {
+        // kind:31990 is addressed by (pubkey, kind, d_tag); a stray `h` tag
+        // must not channel-scope it.
+        assert!(is_global_only_kind(KIND_MESH_LLM_DISCOVERY));
+    }
+
+    #[test]
+    fn mesh_llm_discovery_does_not_require_h_tag() {
+        assert!(!requires_h_channel_scope(KIND_MESH_LLM_DISCOVERY));
     }
 
     #[test]

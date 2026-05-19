@@ -41,6 +41,15 @@ pub struct RelayInfo {
     /// Relay's own signing pubkey (NIP-11 `self` field, NIP-43).
     #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
     pub relay_self: Option<String>,
+    /// Publicly-reachable URL of this relay's embedded iroh-relay endpoint,
+    /// used by mesh-LLM clients to wire their QUIC compute traffic through
+    /// the same trust boundary as Sprout relay membership.
+    ///
+    /// Absent unless the relay is configured to host an iroh-relay
+    /// (`SPROUT_IROH_RELAY_PUBLIC_URL`). Older clients that don't recognise
+    /// this field see no behaviour change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iroh_relay_url: Option<String>,
 }
 
 /// Protocol and resource limits advertised in the NIP-11 document.
@@ -102,7 +111,11 @@ impl RelayInfo {
     /// gates on NIP-43 events — i.e. has a stable key AND enforces
     /// membership. NIP-43 events are verified against `self`, so it is a
     /// programmer error to advertise NIP-43 without a `relay_self`.
-    pub fn build(relay_self: Option<&str>, advertise_nip43: bool) -> Self {
+    pub fn build(
+        relay_self: Option<&str>,
+        advertise_nip43: bool,
+        iroh_relay_url: Option<&str>,
+    ) -> Self {
         debug_assert!(
             !advertise_nip43 || relay_self.is_some(),
             "advertise_nip43=true requires relay_self=Some — NIP-43 events are verified against `self`"
@@ -123,6 +136,7 @@ impl RelayInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             limitation: Some(relay_limitation()),
             relay_self: relay_self.map(|s| s.to_string()),
+            iroh_relay_url: iroh_relay_url.map(|s| s.to_string()),
         }
     }
 }
@@ -131,11 +145,15 @@ impl RelayInfo {
 pub async fn relay_info_handler(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::state::AppState>>,
 ) -> axum::response::Json<RelayInfo> {
-    let (relay_self, advertise_nip43) = nip11_facts(&state);
-    axum::response::Json(RelayInfo::build(relay_self.as_deref(), advertise_nip43))
+    let (relay_self, advertise_nip43, iroh_relay_url) = nip11_facts(&state);
+    axum::response::Json(RelayInfo::build(
+        relay_self.as_deref(),
+        advertise_nip43,
+        iroh_relay_url.as_deref(),
+    ))
 }
 
-/// Derives the two NIP-11 facts that depend on runtime config:
+/// Derives the NIP-11 facts that depend on runtime config:
 ///
 /// - `relay_self`: the NIP-11 `self` pubkey, set whenever the relay has a
 ///   stable signing key. Consumed by NIP-29 (group metadata verification)
@@ -144,14 +162,19 @@ pub async fn relay_info_handler(
 /// - `advertise_nip43`: whether to list NIP-43 in `supported_nips`. True
 ///   only when membership is actually enforced AND we have a stable key
 ///   (NIP-43 events must be verifiable against `self`).
+/// - `iroh_relay_url`: the publicly-reachable iroh-relay URL (see
+///   [`crate::config::Config::iroh_relay_public_url`]).
 ///
 /// Centralised so the content-negotiated root handler and the dedicated
 /// `/info` endpoint can't drift apart.
-pub(crate) fn nip11_facts(state: &crate::state::AppState) -> (Option<String>, bool) {
+pub(crate) fn nip11_facts(
+    state: &crate::state::AppState,
+) -> (Option<String>, bool, Option<String>) {
     let has_stable_key = state.config.relay_private_key.is_some();
     let relay_self = has_stable_key.then(|| state.relay_keypair.public_key().to_hex());
     let advertise_nip43 = has_stable_key && state.config.require_relay_membership;
-    (relay_self, advertise_nip43)
+    let iroh_relay_url = state.config.iroh_relay_public_url.clone();
+    (relay_self, advertise_nip43, iroh_relay_url)
 }
 
 #[cfg(test)]
@@ -214,7 +237,7 @@ mod tests {
     /// Open relay, ephemeral key — both `self` and NIP-43 are absent.
     #[test]
     fn build_open_relay_ephemeral_key_omits_self_and_nip43() {
-        let info = RelayInfo::build(None, false);
+        let info = RelayInfo::build(None, false, None);
         assert!(info.relay_self.is_none());
         assert!(!info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -227,7 +250,7 @@ mod tests {
     #[test]
     fn build_open_relay_stable_key_advertises_self_but_not_nip43() {
         let pk = "0000000000000000000000000000000000000000000000000000000000000001";
-        let info = RelayInfo::build(Some(pk), false);
+        let info = RelayInfo::build(Some(pk), false, None);
         assert_eq!(info.relay_self.as_deref(), Some(pk));
         assert!(!info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -236,7 +259,7 @@ mod tests {
     #[test]
     fn build_membership_relay_advertises_self_and_nip43() {
         let pk = "0000000000000000000000000000000000000000000000000000000000000001";
-        let info = RelayInfo::build(Some(pk), true);
+        let info = RelayInfo::build(Some(pk), true, None);
         assert_eq!(info.relay_self.as_deref(), Some(pk));
         assert!(info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -247,6 +270,33 @@ mod tests {
     #[test]
     #[should_panic(expected = "advertise_nip43=true requires relay_self=Some")]
     fn build_nip43_without_self_panics_in_debug() {
-        let _ = RelayInfo::build(None, true);
+        let _ = RelayInfo::build(None, true, None);
+    }
+
+    /// `iroh_relay_url` is omitted from the NIP-11 doc when unset, so older
+    /// clients that don't recognise the field see no extra payload.
+    #[test]
+    fn build_omits_iroh_relay_url_when_unset() {
+        let info = RelayInfo::build(None, false, None);
+        assert!(info.iroh_relay_url.is_none());
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(
+            json.get("iroh_relay_url").is_none(),
+            "iroh_relay_url must be skipped when None: {json}"
+        );
+    }
+
+    /// When configured, the iroh-relay URL is advertised verbatim.
+    #[test]
+    fn build_advertises_iroh_relay_url_when_set() {
+        let url = "https://relay.example.com/iroh";
+        let info = RelayInfo::build(None, false, Some(url));
+        assert_eq!(info.iroh_relay_url.as_deref(), Some(url));
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            json.get("iroh_relay_url").and_then(|v| v.as_str()),
+            Some(url),
+            "iroh_relay_url must be serialised when Some: {json}"
+        );
     }
 }

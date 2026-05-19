@@ -23,6 +23,8 @@ pub mod error;
 pub mod nip42;
 /// NIP-98 HTTP Auth verification (kind:27235).
 pub mod nip98;
+/// Canonical URL builder for NIP-98 `u`-tag signing/verification.
+pub mod nip98_url;
 /// Per-connection rate limiting.
 pub mod rate_limit;
 /// OAuth scope parsing and enforcement.
@@ -32,6 +34,7 @@ pub use access::{check_read_access, check_write_access, require_scope, ChannelAc
 pub use error::AuthError;
 pub use nip42::{generate_challenge, verify_nip42_event};
 pub use nip98::verify_nip98_event;
+pub use nip98_url::{nip98_canonical_url, nip98_canonicalize};
 pub use rate_limit::{
     ip_rate_limit_key, rate_limit_key, LimitType, RateLimitConfig, RateLimitResult, RateLimiter,
 };

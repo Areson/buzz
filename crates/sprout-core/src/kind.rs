@@ -111,6 +111,16 @@ pub const KIND_NIP29_GROUP_ROLES: u32 = 39003;
 /// Workflow definition (parameterized replaceable, d=workflow_uuid).
 pub const KIND_WORKFLOW_DEF: u32 = 30620;
 
+/// Mesh-LLM compute-offer discovery announcement (parameterized replaceable,
+/// `d` = mesh node identifier).
+///
+/// Published by Sprout members willing to share their local LLM/compute with
+/// the rest of the relay. The event content carries the offer envelope
+/// (model id, max VRAM/RAM, iroh endpoint id), and is addressable so a member
+/// can replace their own offer atomically. Stored globally (`channel_id = NULL`)
+/// — relay membership, not channel scope, is the audience.
+pub const KIND_MESH_LLM_DISCOVERY: u32 = 31990;
+
 /// Lower bound of the NIP-33 parameterized replaceable range (30000–39999).
 pub const PARAM_REPLACEABLE_KIND_MIN: u32 = 30000;
 /// Upper bound of the NIP-33 parameterized replaceable range (30000–39999).
@@ -393,6 +403,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_WORKFLOW_DEF,
+    KIND_MESH_LLM_DISCOVERY,
     KIND_LONG_FORM,
     KIND_USER_STATUS,
     KIND_READ_STATE,
@@ -511,6 +522,7 @@ pub fn event_kind_i32(event: &nostr::Event) -> i32 {
 // Compile-time: new kinds are in the expected ranges.
 const _: () = assert!(is_replaceable(KIND_AGENT_PROFILE)); // 10100 ∈ 10000–19999
 const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_MESH_LLM_DISCOVERY)); // 31990 ∈ 30000–39999
 
 // Compile-time: NIP-34 parameterized replaceable kinds are in the correct range.
 const _: () = assert!(

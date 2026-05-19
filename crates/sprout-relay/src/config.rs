@@ -118,6 +118,21 @@ pub struct Config {
     /// When set, the relay serves the SPA from this directory for browser requests.
     /// When unset, no static file serving happens (relay behaves as before).
     pub web_dir: Option<std::path::PathBuf>,
+
+    // ── Mesh-LLM iroh-relay advertisement ────────────────────────────────────
+    /// Optional publicly-reachable URL of this relay's embedded iroh-relay
+    /// endpoint, advertised in the NIP-11 document as `iroh_relay_url`.
+    ///
+    /// Read by mesh-llm clients (desktop sidecar) so they can connect their
+    /// iroh endpoints to Sprout's own relay — keeping all mesh-LLM QUIC
+    /// traffic on the same trust boundary as the Sprout relay membership,
+    /// with **no out-of-band configuration** required from the user.
+    ///
+    /// Absent → NIP-11 omits the field (older clients unaffected). Set via
+    /// `SPROUT_IROH_RELAY_PUBLIC_URL`. Example:
+    /// `https://relay.example.com/iroh` (a path prefix is supported and
+    /// preserved by the NIP-98 canonicaliser).
+    pub iroh_relay_public_url: Option<String>,
 }
 
 impl Config {
@@ -319,6 +334,12 @@ impl Config {
                 let secret: [u8; 32] = rand::random();
                 hex::encode(secret)
             });
+        // Mesh-LLM iroh-relay advertisement (optional)
+        let iroh_relay_public_url = std::env::var("SPROUT_IROH_RELAY_PUBLIC_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         // Web UI static file serving
         let web_dir = std::env::var("SPROUT_WEB_DIR")
             .ok()
@@ -378,6 +399,7 @@ impl Config {
             git_max_concurrent_ops,
             git_hook_hmac_secret,
             web_dir,
+            iroh_relay_public_url,
         })
     }
 }
