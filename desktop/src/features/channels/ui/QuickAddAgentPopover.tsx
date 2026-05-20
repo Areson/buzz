@@ -77,6 +77,17 @@ function getItemKey(item: QuickAddAgentItem): string {
   }
 }
 
+/** Get the persona ID associated with an item (for team membership checks). */
+function getItemPersonaId(item: QuickAddAgentItem): string | null {
+  switch (item.kind) {
+    case "persona":
+      return item.persona.id;
+    case "running-available":
+    case "running-in-channel":
+      return item.agent.personaId ?? null;
+  }
+}
+
 function safeBotName(persona: AgentPersona, usedNames: Set<string>): string {
   const pool = persona.namePool ?? [];
   const name = pickBotName(pool, usedNames);
@@ -134,7 +145,7 @@ export function QuickAddAgentPopover({
     [teams, personas],
   );
 
-  // Build the sorted item list
+  // Build the full item list (flat, for mutations)
   const items: QuickAddAgentItem[] = React.useMemo(() => {
     const result: QuickAddAgentItem[] = [];
 
@@ -220,6 +231,38 @@ export function QuickAddAgentPopover({
     return result;
   }, [managedAgents, personas, channelMemberPubkeys, recentIds]);
 
+  // ── Grouped layout: team sections + ungrouped ─────────────────────────────
+
+  // Set of all persona IDs that belong to at least one usable team
+  const teamedPersonaIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    for (const team of usableTeams) {
+      for (const pid of team.personaIds) {
+        ids.add(pid);
+      }
+    }
+    return ids;
+  }, [usableTeams]);
+
+  // Items grouped by team
+  const teamGroups = React.useMemo(() => {
+    return usableTeams.map((team) => {
+      const memberItems = items.filter((item) => {
+        const personaId = getItemPersonaId(item);
+        return personaId !== null && team.personaIds.includes(personaId);
+      });
+      return { team, items: memberItems };
+    });
+  }, [usableTeams, items]);
+
+  // Ungrouped items (not in any team)
+  const ungroupedItems = React.useMemo(() => {
+    return items.filter((item) => {
+      const personaId = getItemPersonaId(item);
+      return personaId === null || !teamedPersonaIds.has(personaId);
+    });
+  }, [items, teamedPersonaIds]);
+
   // Reset state when popover closes
   React.useEffect(() => {
     if (!open) {
@@ -292,6 +335,15 @@ export function QuickAddAgentPopover({
 
   // ── Multi-select handlers ─────────────────────────────────────────────────
 
+  function enterMultiSelect(key: string) {
+    setMultiSelectMode(true);
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  }
+
   function toggleSelection(key: string) {
     setSelectedKeys((prev) => {
       const next = new Set(prev);
@@ -300,7 +352,6 @@ export function QuickAddAgentPopover({
       } else {
         next.add(key);
       }
-      // Exit multi-select mode if nothing selected
       if (next.size === 0) {
         setMultiSelectMode(false);
       }
@@ -310,29 +361,25 @@ export function QuickAddAgentPopover({
 
   function handleTeamClick(team: AgentTeam) {
     const resolution = resolveTeamPersonas(team, personas);
-    const personaKeys = resolution.resolvedPersonas.map(
-      (p) => `persona:${p.id}`,
-    );
 
-    // Enter multi-select mode and select all team personas
     setMultiSelectMode(true);
     setSelectedKeys((prev) => {
       const next = new Set(prev);
-      for (const key of personaKeys) {
-        // Only select if the item is actually in our addable list
-        const item = items.find((i) => getItemKey(i) === key);
-        if (item && item.kind !== "running-in-channel") {
-          next.add(key);
-        }
-      }
-      // Also select running agents that belong to team personas
       for (const persona of resolution.resolvedPersonas) {
+        // Find the matching item (running agent or persona)
         const runningItem = items.find(
           (i) =>
             i.kind === "running-available" && i.agent.personaId === persona.id,
         );
         if (runningItem) {
           next.add(getItemKey(runningItem));
+        } else {
+          const personaItem = items.find(
+            (i) => i.kind === "persona" && i.persona.id === persona.id,
+          );
+          if (personaItem && personaItem.kind !== "running-in-channel") {
+            next.add(getItemKey(personaItem));
+          }
         }
       }
       return next;
@@ -365,13 +412,11 @@ export function QuickAddAgentPopover({
     }
 
     try {
-      // Attach running agents individually
       for (const agent of toAttach) {
         await attachMutation.mutateAsync({ agent, ensureRunning: true });
         if (agent.personaId) pushRecent(agent.personaId);
       }
 
-      // Batch-create new agents
       if (toCreate.length > 0 && defaultProvider) {
         const inputs = toCreate.map(({ persona, instanceName }) => {
           const { provider } = resolvePersonaProvider(
@@ -419,7 +464,6 @@ export function QuickAddAgentPopover({
     if (!channelId) return;
 
     if (multiSelectMode) {
-      // In multi-select mode, toggle selection
       toggleSelection(getItemKey(item));
     } else {
       // Single-click fast path — add immediately
@@ -431,6 +475,20 @@ export function QuickAddAgentPopover({
     }
   }
 
+  function handleCheckboxClick(e: React.MouseEvent, item: QuickAddAgentItem) {
+    e.stopPropagation();
+    if (item.kind === "running-in-channel") return;
+    if (pendingKey) return;
+
+    const key = getItemKey(item);
+    if (multiSelectMode) {
+      toggleSelection(key);
+    } else {
+      // Clicking checkbox enters multi-select mode
+      enterMultiSelect(key);
+    }
+  }
+
   const isLoading =
     managedAgentsQuery.isLoading ||
     personasQuery.isLoading ||
@@ -438,6 +496,75 @@ export function QuickAddAgentPopover({
 
   if (!channelId) {
     return <>{children}</>;
+  }
+
+  // ── Render helpers ────────────────────────────────────────────────────────
+
+  function renderAgentRow(item: QuickAddAgentItem, indented: boolean) {
+    const itemKey = getItemKey(item);
+    const isInChannel = item.kind === "running-in-channel";
+    const isItemPending = pendingKey === itemKey || pendingKey === "batch";
+    const isSelected = selectedKeys.has(itemKey);
+
+    return (
+      <button
+        aria-selected={isInChannel || isSelected}
+        className={cn(
+          "group flex w-full items-center gap-2.5 py-1.5 text-left text-sm transition-colors",
+          indented ? "pl-6 pr-3" : "px-3",
+          isInChannel
+            ? "cursor-default opacity-50"
+            : "cursor-pointer hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+          isItemPending && "pointer-events-none opacity-60",
+          isSelected && "bg-accent/50",
+        )}
+        data-quick-add-item
+        disabled={isInChannel || Boolean(pendingKey)}
+        key={itemKey}
+        onClick={() => handleItemClick(item)}
+        role="option"
+        tabIndex={isInChannel ? -1 : 0}
+        type="button"
+      >
+        {/* Checkbox: always visible in multi-select, hover-reveal otherwise */}
+        {!isInChannel ? (
+          <div
+            className={cn(
+              "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-all",
+              multiSelectMode
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-100",
+              isSelected
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-muted-foreground/40",
+            )}
+            onClick={(e) => handleCheckboxClick(e, item)}
+            onKeyDown={() => {}}
+            aria-hidden="true"
+          >
+            {isSelected ? <Check className="h-3 w-3" /> : null}
+          </div>
+        ) : (
+          <div className="h-4 w-4 shrink-0" />
+        )}
+        <QuickAddAgentAvatar
+          avatarUrl={item.avatarUrl}
+          label={item.label}
+          isRunning={item.kind !== "persona"}
+        />
+        <span className="flex-1 truncate font-medium">{item.label}</span>
+        {isInChannel ? (
+          <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        ) : item.kind === "running-available" && !multiSelectMode ? (
+          <span className="shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+            running
+          </span>
+        ) : null}
+        {isItemPending ? (
+          <Spinner className="h-3.5 w-3.5 shrink-0 text-primary" />
+        ) : null}
+      </button>
+    );
   }
 
   return (
@@ -496,118 +623,61 @@ export function QuickAddAgentPopover({
             ) : null}
           </div>
 
-          {/* Scrollable content area — max-height clips mid-item to hint at more */}
+          {/* Scrollable content — clips mid-item to hint at more */}
           <div className="max-h-[13.75rem] flex-1 overflow-y-auto">
             {isLoading ? (
               <div className="flex items-center justify-center py-6">
                 <Spinner className="h-4 w-4 text-muted-foreground" />
               </div>
+            ) : items.length === 0 ? (
+              <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+                No agents available.
+              </div>
             ) : (
-              <>
-                {/* Teams section */}
-                {usableTeams.length > 0 ? (
-                  <div className="border-b py-1">
-                    {usableTeams.map((team) => {
-                      const resolution = resolveTeamPersonas(team, personas);
-                      return (
-                        <button
-                          className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
-                          data-quick-add-item
-                          key={team.id}
-                          onClick={() => handleTeamClick(team)}
-                          type="button"
-                        >
-                          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/50 bg-muted/30">
-                            <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                          </div>
-                          <span className="flex-1 truncate font-medium">
-                            {team.name}
-                          </span>
-                          <span className="shrink-0 text-[11px] text-muted-foreground">
-                            {resolution.resolvedPersonas.length}
-                          </span>
-                        </button>
-                      );
-                    })}
+              <div
+                aria-label="Available agents"
+                className="py-1"
+                role="listbox"
+              >
+                {/* Team groups */}
+                {teamGroups.map(({ team, items: teamItems }) => (
+                  <div key={team.id} className="mb-1">
+                    {/* Team header */}
+                    <button
+                      className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                      data-quick-add-item
+                      onClick={() => handleTeamClick(team)}
+                      type="button"
+                    >
+                      <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-muted">
+                        <Users className="h-3 w-3 text-muted-foreground" />
+                      </div>
+                      <span className="flex-1 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        {team.name}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                        {teamItems.length}
+                      </span>
+                    </button>
+                    {/* Team members (indented) */}
+                    {teamItems.map((item) => renderAgentRow(item, true))}
+                  </div>
+                ))}
+
+                {/* Ungrouped section */}
+                {ungroupedItems.length > 0 ? (
+                  <div className={cn(teamGroups.length > 0 && "border-t pt-1")}>
+                    {teamGroups.length > 0 ? (
+                      <div className="px-3 py-1">
+                        <span className="text-[11px] font-medium text-muted-foreground">
+                          Ungrouped
+                        </span>
+                      </div>
+                    ) : null}
+                    {ungroupedItems.map((item) => renderAgentRow(item, false))}
                   </div>
                 ) : null}
-
-                {/* Agents section */}
-                {items.length === 0 ? (
-                  <div className="px-3 py-4 text-center text-sm text-muted-foreground">
-                    No agents available.
-                  </div>
-                ) : (
-                  <div
-                    aria-label="Available agents"
-                    className="py-1"
-                    role="listbox"
-                  >
-                    {items.map((item) => {
-                      const itemKey = getItemKey(item);
-                      const isInChannel = item.kind === "running-in-channel";
-                      const isItemPending =
-                        pendingKey === itemKey || pendingKey === "batch";
-                      const isSelected = selectedKeys.has(itemKey);
-
-                      return (
-                        <button
-                          aria-selected={isInChannel || isSelected}
-                          className={cn(
-                            "flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm transition-colors",
-                            isInChannel
-                              ? "cursor-default opacity-50"
-                              : "cursor-pointer hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
-                            isItemPending && "pointer-events-none opacity-60",
-                            isSelected && "bg-accent/50",
-                          )}
-                          data-quick-add-item
-                          disabled={isInChannel || Boolean(pendingKey)}
-                          key={itemKey}
-                          onClick={() => handleItemClick(item)}
-                          role="option"
-                          tabIndex={isInChannel ? -1 : 0}
-                          type="button"
-                        >
-                          {multiSelectMode && !isInChannel ? (
-                            <div
-                              className={cn(
-                                "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
-                                isSelected
-                                  ? "border-primary bg-primary text-primary-foreground"
-                                  : "border-muted-foreground/40",
-                              )}
-                            >
-                              {isSelected ? (
-                                <Check className="h-3 w-3" />
-                              ) : null}
-                            </div>
-                          ) : null}
-                          <QuickAddAgentAvatar
-                            avatarUrl={item.avatarUrl}
-                            label={item.label}
-                            isRunning={item.kind !== "persona"}
-                          />
-                          <span className="flex-1 truncate font-medium">
-                            {item.label}
-                          </span>
-                          {isInChannel ? (
-                            <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          ) : item.kind === "running-available" &&
-                            !multiSelectMode ? (
-                            <span className="shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                              running
-                            </span>
-                          ) : null}
-                          {isItemPending ? (
-                            <Spinner className="h-3.5 w-3.5 shrink-0 text-primary" />
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
+              </div>
             )}
           </div>
 
