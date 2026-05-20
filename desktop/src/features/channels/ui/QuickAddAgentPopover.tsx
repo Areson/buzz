@@ -1,4 +1,4 @@
-import { Check, Plus, Settings2, Users } from "lucide-react";
+import { Check, Settings2, Users } from "lucide-react";
 import * as React from "react";
 
 import {
@@ -23,6 +23,7 @@ import type { AgentPersona, AgentTeam, ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { cn } from "@/shared/lib/cn";
+import { Button } from "@/shared/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Spinner } from "@/shared/ui/spinner";
 
@@ -474,10 +475,25 @@ export function QuickAddAgentPopover({
             }
           }}
         >
-          <div className="border-b px-3 py-2">
+          <div className="flex items-center border-b px-3 py-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Add agent
             </h3>
+            {multiSelectMode && selectedKeys.size > 0 ? (
+              <Button
+                className="ml-auto"
+                data-testid="quick-add-batch-confirm"
+                disabled={Boolean(pendingKey)}
+                onClick={() => void handleBatchAdd()}
+                size="sm"
+                type="button"
+              >
+                {pendingKey === "batch" ? (
+                  <Spinner className="h-3 w-3" />
+                ) : null}
+                Add ({selectedKeys.size})
+              </Button>
+            ) : null}
           </div>
 
           {/* Scrollable content area — max-height clips mid-item to hint at more */}
@@ -598,26 +614,6 @@ export function QuickAddAgentPopover({
           {errorMessage ? (
             <div className="border-t px-3 py-2">
               <p className="text-xs text-destructive">{errorMessage}</p>
-            </div>
-          ) : null}
-
-          {/* Multi-select confirm button */}
-          {multiSelectMode && selectedKeys.size > 0 ? (
-            <div className="border-t px-3 py-2">
-              <button
-                className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
-                data-testid="quick-add-batch-confirm"
-                disabled={Boolean(pendingKey)}
-                onClick={() => void handleBatchAdd()}
-                type="button"
-              >
-                {pendingKey === "batch" ? (
-                  <Spinner className="h-3.5 w-3.5" />
-                ) : (
-                  <Plus className="h-3.5 w-3.5" />
-                )}
-                Add ({selectedKeys.size})
-              </button>
             </div>
           ) : null}
 
