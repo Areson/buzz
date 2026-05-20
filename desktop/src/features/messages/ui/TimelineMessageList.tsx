@@ -4,13 +4,19 @@ import {
   formatDayHeading,
   isSameDay,
 } from "@/features/messages/lib/dateFormatters";
+import {
+  groupTimelineEntries,
+  type AnnotatedTimelineEntry,
+} from "@/features/messages/lib/groupTimelineEntries";
 import { buildMainTimelineEntries } from "@/features/messages/lib/threadPanel";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
+import { CompactMessageRow } from "./CompactMessageRow";
 import { DayDivider } from "./DayDivider";
 import { MessageRow } from "./MessageRow";
 import { MessageThreadSummaryRow } from "./MessageThreadSummaryRow";
+import { SystemEventGroupRow } from "./SystemEventGroupRow";
 import { SystemMessageRow } from "./SystemMessageRow";
 
 type TimelineMessageListProps = {
@@ -40,6 +46,14 @@ type TimelineMessageListProps = {
   searchQuery?: string;
 };
 
+/** Return the first message's createdAt for a given annotated entry. */
+function getEntryLeadTimestamp(entry: AnnotatedTimelineEntry): number {
+  if (entry.entryType === "system-event-group") {
+    return entry.entries[0].message.createdAt;
+  }
+  return entry.message.createdAt;
+}
+
 export const TimelineMessageList = React.memo(function TimelineMessageList({
   activeReplyTargetId = null,
   channelId,
@@ -58,10 +72,11 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   searchMatchingMessageIds,
   searchQuery,
 }: TimelineMessageListProps) {
-  const entries = React.useMemo(
-    () => buildMainTimelineEntries(messages),
-    [messages],
-  );
+  const annotated = React.useMemo(() => {
+    const raw = buildMainTimelineEntries(messages);
+    return groupTimelineEntries(raw);
+  }, [messages]);
+
   const dayGroups: Array<{
     key: string;
     label: string;
@@ -69,22 +84,48 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   }> = [];
   let currentDayGroup: (typeof dayGroups)[number] | null = null;
 
-  for (let i = 0; i < entries.length; i++) {
-    const { message, summary } = entries[i];
-    const prev = i > 0 ? entries[i - 1]?.message : null;
+  for (let i = 0; i < annotated.length; i++) {
+    const entry = annotated[i];
+    const leadTimestamp = getEntryLeadTimestamp(entry);
 
-    if (!prev || !isSameDay(prev.createdAt, message.createdAt)) {
+    // Day divider — start a new day group when the day changes
+    if (
+      !currentDayGroup ||
+      (i > 0 &&
+        !isSameDay(getEntryLeadTimestamp(annotated[i - 1]), leadTimestamp))
+    ) {
       currentDayGroup = {
-        key: `day-${message.createdAt}`,
-        label: formatDayHeading(message.createdAt),
+        key: `day-${leadTimestamp}`,
+        label: formatDayHeading(leadTimestamp),
         elements: [],
       };
       dayGroups.push(currentDayGroup);
     }
 
+    // --- System event group (accordion) ---
+    if (entry.entryType === "system-event-group") {
+      const groupKey = entry.entries.map((e) => e.message.id).join(",");
+      currentDayGroup.elements.push(
+        <div key={`sys-group-${groupKey}`} className="my-1">
+          <SystemEventGroupRow
+            entries={entry.entries}
+            currentPubkey={currentPubkey}
+            onToggleReaction={onToggleReaction}
+            personaLookup={personaLookup}
+            profiles={profiles}
+          />
+        </div>,
+      );
+      continue;
+    }
+
+    // --- Single entries ---
+    const { message, summary } = entry;
+
+    // --- Single system message (not grouped) ---
     if (message.kind === KIND_SYSTEM_MESSAGE) {
       const footer = messageFooters?.[message.id] ?? null;
-      currentDayGroup?.elements.push(
+      currentDayGroup.elements.push(
         <div key={message.id} className="flex flex-col gap-1">
           <SystemMessageRow
             message={message}
@@ -96,9 +137,17 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
           {footer}
         </div>,
       );
-    } else if (summary && onReply) {
+      continue;
+    }
+
+    // --- Search highlight state ---
+    const isSearchMatch = searchMatchingMessageIds?.has(message.id) ?? false;
+    const isSearchActive = message.id === searchActiveMessageId;
+
+    // --- Message with thread summary ---
+    if (summary && onReply) {
       const footer = messageFooters?.[message.id] ?? null;
-      currentDayGroup?.elements.push(
+      currentDayGroup.elements.push(
         <div key={message.id} className="flex flex-col gap-0">
           <MessageRow
             activeReplyTargetId={activeReplyTargetId}
@@ -129,16 +178,16 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
           {footer}
         </div>,
       );
-    } else {
-      const isSearchMatch = searchMatchingMessageIds?.has(message.id) ?? false;
-      const isSearchActive = message.id === searchActiveMessageId;
-      const footer = messageFooters?.[message.id] ?? null;
+      continue;
+    }
 
-      currentDayGroup?.elements.push(
+    // --- Compact message (continuation from same author) ---
+    if (entry.isGroupContinuation) {
+      const footer = messageFooters?.[message.id] ?? null;
+      currentDayGroup.elements.push(
         <div key={message.id} className="flex flex-col gap-1">
-          <MessageRow
+          <CompactMessageRow
             activeReplyTargetId={activeReplyTargetId}
-            channelId={channelId}
             highlighted={message.id === highlightedMessageId || isSearchActive}
             message={message}
             onDelete={
@@ -151,7 +200,6 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
                 ? onEdit
                 : undefined
             }
-            onMarkUnread={onMarkUnread}
             onToggleReaction={onToggleReaction}
             onReply={onReply}
             profiles={profiles}
@@ -160,7 +208,37 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
           {footer}
         </div>,
       );
+      continue;
     }
+
+    // --- Full message row ---
+    const footer = messageFooters?.[message.id] ?? null;
+    currentDayGroup.elements.push(
+      <div key={message.id} className="flex flex-col gap-1">
+        <MessageRow
+          activeReplyTargetId={activeReplyTargetId}
+          channelId={channelId}
+          highlighted={message.id === highlightedMessageId || isSearchActive}
+          message={message}
+          onDelete={
+            onDelete && currentPubkey && message.pubkey === currentPubkey
+              ? onDelete
+              : undefined
+          }
+          onEdit={
+            onEdit && currentPubkey && message.pubkey === currentPubkey
+              ? onEdit
+              : undefined
+          }
+          onMarkUnread={onMarkUnread}
+          onToggleReaction={onToggleReaction}
+          onReply={onReply}
+          profiles={profiles}
+          searchQuery={isSearchMatch ? searchQuery : undefined}
+        />
+        {footer}
+      </div>,
+    );
   }
 
   return dayGroups.map((group) => (
