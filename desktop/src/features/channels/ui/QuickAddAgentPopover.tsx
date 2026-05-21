@@ -519,49 +519,50 @@ export function QuickAddAgentPopover({
             ) : null}
           </div>
 
-          {/* Team toggles row — slides in between header and list */}
-          <AnimatePresence>
-            {selectMode ? (
-              <motion.div
-                key="team-row"
-                className="relative border-b px-3 pb-1 pt-0.5"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                style={{ overflow: "hidden" }}
-              >
-                <div className="flex items-center gap-1.5 overflow-x-auto">
-                  {usableTeams.map((team, index) => (
-                    <motion.div
-                      key={team.id}
-                      initial={{ opacity: 0, x: index === 0 ? 0 : 12 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{
-                        duration: 0.2,
-                        delay: index * 0.05,
-                      }}
-                      className="shrink-0"
+          {/* Team toggles row — always mounted, height animates based on selectMode */}
+          <motion.div
+            className="relative overflow-hidden"
+            initial={false}
+            animate={{
+              height: selectMode ? "auto" : 0,
+              opacity: selectMode ? 1 : 0,
+            }}
+            transition={{ duration: 0.2 }}
+          >
+            <div className="border-b px-3 pb-1 pt-0.5">
+              <div className="flex items-center gap-1.5 overflow-x-auto">
+                {usableTeams.map((team, index) => (
+                  <motion.div
+                    key={team.id}
+                    initial={false}
+                    animate={{
+                      opacity: selectMode ? 1 : 0,
+                      x: selectMode ? 0 : (index === 0 ? 0 : 12),
+                    }}
+                    transition={{
+                      duration: 0.2,
+                      delay: selectMode ? index * 0.05 : 0,
+                    }}
+                    className="shrink-0"
+                  >
+                    <Toggle
+                      className="h-6 rounded-full px-2.5 text-[11px]"
+                      onPressedChange={(pressed) =>
+                        handleTeamToggle(team, pressed)
+                      }
+                      pressed={selectedTeamIds.has(team.id)}
+                      size="sm"
+                      variant="subtle"
                     >
-                      <Toggle
-                        className="h-6 rounded-full px-2.5 text-[11px]"
-                        onPressedChange={(pressed) =>
-                          handleTeamToggle(team, pressed)
-                        }
-                        pressed={selectedTeamIds.has(team.id)}
-                        size="sm"
-                        variant="subtle"
-                      >
-                        {team.name}
-                      </Toggle>
-                    </motion.div>
-                  ))}
-                </div>
-                {/* Gradient fade on right edge — scroll affordance */}
-                <div className="pointer-events-none absolute right-0 top-0 h-full w-6 bg-gradient-to-l from-popover to-transparent" />
-              </motion.div>
-            ) : null}
-          </AnimatePresence>
+                      {team.name}
+                    </Toggle>
+                  </motion.div>
+                ))}
+              </div>
+              {/* Gradient fade on right edge — scroll affordance */}
+              <div className="pointer-events-none absolute right-0 top-0 h-full w-6 bg-gradient-to-l from-popover to-transparent" />
+            </div>
+          </motion.div>
 
           {/* Scrollable content — clips mid-item to hint at more */}
           <motion.div
