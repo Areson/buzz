@@ -492,7 +492,7 @@ export function QuickAddAgentPopover({
           }}
         >
           {/* Header with animated title / team toggles */}
-          <div className="relative flex min-h-10 items-center gap-2 border-b px-3 py-1.5">
+          <div className="relative flex min-h-10 items-center gap-2 border-b pl-3 pr-1.5 py-1.5">
             <AnimatePresence mode="wait">
               {selectMode ? (
                 <motion.div
