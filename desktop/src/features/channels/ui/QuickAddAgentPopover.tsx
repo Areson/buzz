@@ -493,53 +493,65 @@ export function QuickAddAgentPopover({
         >
           {/* Header with animated title / team toggles */}
           <div className="relative flex min-h-10 items-center gap-2 border-b pl-3 pr-1.5 py-1.5">
-            <AnimatePresence mode="wait">
+            {/* Title — always visible */}
+            <h3 className="shrink-0 text-sm font-semibold text-foreground">
+              Add agent
+              <AnimatePresence>
+                {selectMode ? (
+                  <motion.span
+                    initial={{ opacity: 0, width: 0 }}
+                    animate={{ opacity: 1, width: "auto" }}
+                    exit={{ opacity: 0, width: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="inline-block overflow-hidden"
+                  >
+                    s
+                  </motion.span>
+                ) : null}
+              </AnimatePresence>
+            </h3>
+
+            {/* Team toggles — appear to the right of title */}
+            <AnimatePresence>
               {selectMode ? (
                 <motion.div
                   key="team-chips"
-                  className="flex flex-1 items-center gap-1.5 overflow-x-auto"
+                  className="relative flex min-w-0 flex-1 items-center"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.15 }}
                 >
-                  {usableTeams.map((team, index) => (
-                    <motion.div
-                      key={team.id}
-                      initial={{ opacity: 0, x: index === 0 ? 0 : 12 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{
-                        duration: 0.2,
-                        delay: index * 0.05,
-                      }}
-                      className="shrink-0"
-                    >
-                      <Toggle
-                        className="h-8 rounded-full px-3 text-xs"
-                        onPressedChange={(pressed) =>
-                          handleTeamToggle(team, pressed)
-                        }
-                        pressed={selectedTeamIds.has(team.id)}
-                        size="sm"
-                        variant="outline"
+                  <div className="flex items-center gap-1.5 overflow-x-auto">
+                    {usableTeams.map((team, index) => (
+                      <motion.div
+                        key={team.id}
+                        initial={{ opacity: 0, x: index === 0 ? 0 : 12 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{
+                          duration: 0.2,
+                          delay: index * 0.05,
+                        }}
+                        className="shrink-0"
                       >
-                        {team.name}
-                      </Toggle>
-                    </motion.div>
-                  ))}
+                        <Toggle
+                          className="h-8 rounded-full px-3 text-xs"
+                          onPressedChange={(pressed) =>
+                            handleTeamToggle(team, pressed)
+                          }
+                          pressed={selectedTeamIds.has(team.id)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          {team.name}
+                        </Toggle>
+                      </motion.div>
+                    ))}
+                  </div>
+                  {/* Gradient fade on right edge — scroll affordance */}
+                  <div className="pointer-events-none absolute right-0 top-0 h-full w-6 bg-gradient-to-l from-popover to-transparent" />
                 </motion.div>
-              ) : (
-                <motion.h3
-                  key="title"
-                  className="text-sm font-semibold text-foreground"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  Add agent
-                </motion.h3>
-              )}
+              ) : null}
             </AnimatePresence>
 
             {/* Right side: Select / Cancel button */}
