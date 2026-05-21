@@ -492,10 +492,11 @@ export function QuickAddAgentPopover({
           }}
         >
           {/* Header with animated title / team toggles */}
-          <div className="relative flex min-h-10 items-center gap-2 border-b pl-3 pr-1.5 py-1.5">
-            {/* Title — always visible */}
+          {/* Header */}
+          <div className="flex min-h-10 items-center gap-2 border-b pl-3 pr-1.5 py-1.5">
             <h3 className="shrink-0 text-sm font-semibold text-foreground">
-              Add agent{selectMode ? (
+              Add agent
+              {selectMode ? (
                 <motion.span
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -507,50 +508,6 @@ export function QuickAddAgentPopover({
               ) : null}
             </h3>
 
-            {/* Team toggles — appear to the right of title */}
-            <AnimatePresence>
-              {selectMode ? (
-                <motion.div
-                  key="team-chips"
-                  className="relative flex min-w-0 flex-1 items-center"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <div className="flex items-center gap-1.5 overflow-x-auto">
-                    {usableTeams.map((team, index) => (
-                      <motion.div
-                        key={team.id}
-                        initial={{ opacity: 0, x: index === 0 ? 0 : 12 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{
-                          duration: 0.2,
-                          delay: index * 0.05,
-                        }}
-                        className="shrink-0"
-                      >
-                        <Toggle
-                          className="h-8 rounded-full px-3 text-xs"
-                          onPressedChange={(pressed) =>
-                            handleTeamToggle(team, pressed)
-                          }
-                          pressed={selectedTeamIds.has(team.id)}
-                          size="sm"
-                          variant="outline"
-                        >
-                          {team.name}
-                        </Toggle>
-                      </motion.div>
-                    ))}
-                  </div>
-                  {/* Gradient fade on right edge — scroll affordance */}
-                  <div className="pointer-events-none absolute right-0 top-0 h-full w-6 bg-gradient-to-l from-popover to-transparent" />
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-
-            {/* Right side: Select / Cancel button */}
             {usableTeams.length > 0 ? (
               <div className="ml-auto flex shrink-0 items-center">
                 <Button
@@ -572,8 +529,56 @@ export function QuickAddAgentPopover({
             ) : null}
           </div>
 
+          {/* Team toggles row — slides in between header and list */}
+          <AnimatePresence>
+            {selectMode ? (
+              <motion.div
+                key="team-row"
+                className="relative border-b px-3 py-2"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                style={{ overflow: "hidden" }}
+              >
+                <div className="flex items-center gap-1.5 overflow-x-auto">
+                  {usableTeams.map((team, index) => (
+                    <motion.div
+                      key={team.id}
+                      initial={{ opacity: 0, x: index === 0 ? 0 : 12 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{
+                        duration: 0.2,
+                        delay: index * 0.05,
+                      }}
+                      className="shrink-0"
+                    >
+                      <Toggle
+                        className="h-8 rounded-full px-3 text-xs"
+                        onPressedChange={(pressed) =>
+                          handleTeamToggle(team, pressed)
+                        }
+                        pressed={selectedTeamIds.has(team.id)}
+                        size="sm"
+                        variant="outline"
+                      >
+                        {team.name}
+                      </Toggle>
+                    </motion.div>
+                  ))}
+                </div>
+                {/* Gradient fade on right edge — scroll affordance */}
+                <div className="pointer-events-none absolute right-0 top-0 h-full w-6 bg-gradient-to-l from-popover to-transparent" />
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+
           {/* Scrollable content — clips mid-item to hint at more */}
-          <div className="max-h-[13.75rem] flex-1 overflow-y-auto">
+          <motion.div
+            className="max-h-[13.75rem] flex-1 overflow-y-auto"
+            layout
+            transition={{ duration: 0.2 }}
+          >
             {isLoading ? (
               <div className="flex items-center justify-center py-6">
                 <Spinner className="h-4 w-4 text-muted-foreground" />
@@ -649,7 +654,7 @@ export function QuickAddAgentPopover({
                 })}
               </div>
             )}
-          </div>
+          </motion.div>
 
           {errorMessage ? (
             <div className="border-t px-3 py-2">
