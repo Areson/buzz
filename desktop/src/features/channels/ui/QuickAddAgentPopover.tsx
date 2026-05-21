@@ -11,6 +11,7 @@ import {
   usePersonasQuery,
   useTeamsQuery,
 } from "@/features/agents/hooks";
+import { Toggle } from "@/shared/ui/toggle";
 import { useChannelMembersQuery } from "@/features/channels/hooks";
 import { getActivePersonas } from "@/features/agents/lib/catalog";
 import { resolvePersonaProvider } from "@/features/agents/lib/resolvePersonaProvider";
@@ -111,6 +112,9 @@ export function QuickAddAgentPopover({
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [selectMode, setSelectMode] = React.useState(false);
   const [selectedKeys, setSelectedKeys] = React.useState<Set<string>>(
+    new Set(),
+  );
+  const [selectedTeamIds, setSelectedTeamIds] = React.useState<Set<string>>(
     new Set(),
   );
 
@@ -227,6 +231,7 @@ export function QuickAddAgentPopover({
       setErrorMessage(null);
       setSelectMode(false);
       setSelectedKeys(new Set());
+      setSelectedTeamIds(new Set());
     }
   }, [open]);
 
@@ -292,6 +297,12 @@ export function QuickAddAgentPopover({
 
   // ── Multi-select handlers ─────────────────────────────────────────────────
 
+  function handleCancelSelect() {
+    setSelectMode(false);
+    setSelectedKeys(new Set());
+    setSelectedTeamIds(new Set());
+  }
+
   function toggleSelection(key: string) {
     setSelectedKeys((prev) => {
       const next = new Set(prev);
@@ -307,25 +318,45 @@ export function QuickAddAgentPopover({
     });
   }
 
-  function handleTeamChipClick(team: AgentTeam) {
+  function handleTeamToggle(team: AgentTeam, pressed: boolean) {
     const resolution = resolveTeamPersonas(team, personas);
+    const memberKeys: string[] = [];
+    for (const persona of resolution.resolvedPersonas) {
+      const runningItem = items.find(
+        (i) =>
+          i.kind === "running-available" && i.agent.personaId === persona.id,
+      );
+      if (runningItem) {
+        memberKeys.push(getItemKey(runningItem));
+      } else {
+        const personaItem = items.find(
+          (i) => i.kind === "persona" && i.persona.id === persona.id,
+        );
+        if (personaItem) {
+          memberKeys.push(getItemKey(personaItem));
+        }
+      }
+    }
+
+    setSelectedTeamIds((prev) => {
+      const next = new Set(prev);
+      if (pressed) {
+        next.add(team.id);
+      } else {
+        next.delete(team.id);
+      }
+      return next;
+    });
+
     setSelectedKeys((prev) => {
       const next = new Set(prev);
-      for (const persona of resolution.resolvedPersonas) {
-        // Find matching item (running agent or persona)
-        const runningItem = items.find(
-          (i) =>
-            i.kind === "running-available" && i.agent.personaId === persona.id,
-        );
-        if (runningItem) {
-          next.add(getItemKey(runningItem));
-        } else {
-          const personaItem = items.find(
-            (i) => i.kind === "persona" && i.persona.id === persona.id,
-          );
-          if (personaItem) {
-            next.add(getItemKey(personaItem));
-          }
+      if (pressed) {
+        for (const key of memberKeys) {
+          next.add(key);
+        }
+      } else {
+        for (const key of memberKeys) {
+          next.delete(key);
         }
       }
       return next;
@@ -463,27 +494,31 @@ export function QuickAddAgentPopover({
             }
           }}
         >
-          {/* Header with animated title / team chips */}
-          <div className="relative flex h-10 items-center border-b px-3">
+          {/* Header with animated title / team toggles */}
+          <div className="relative flex min-h-10 items-center border-b px-3">
             <AnimatePresence mode="wait">
               {selectMode ? (
                 <motion.div
                   key="team-chips"
-                  className="flex flex-1 items-center gap-1.5 overflow-x-auto"
+                  className="flex flex-1 items-center gap-1.5 overflow-x-auto py-1.5"
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: 20 }}
                   transition={{ duration: 0.2 }}
                 >
                   {usableTeams.map((team) => (
-                    <button
-                      className="shrink-0 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    <Toggle
+                      className="h-6 shrink-0 rounded-full px-2.5 text-[11px]"
                       key={team.id}
-                      onClick={() => handleTeamChipClick(team)}
-                      type="button"
+                      onPressedChange={(pressed) =>
+                        handleTeamToggle(team, pressed)
+                      }
+                      pressed={selectedTeamIds.has(team.id)}
+                      size="sm"
+                      variant="outline"
                     >
                       {team.name}
-                    </button>
+                    </Toggle>
                   ))}
                 </motion.div>
               ) : (
@@ -500,31 +535,24 @@ export function QuickAddAgentPopover({
               )}
             </AnimatePresence>
 
-            {/* Right side: Select toggle or Add (N) button */}
-            <div className="ml-auto flex shrink-0 items-center pl-2">
-              {multiSelectActive ? (
-                <Button
-                  data-testid="quick-add-batch-confirm"
-                  disabled={Boolean(pendingKey)}
-                  onClick={() => void handleBatchAdd()}
-                  size="sm"
-                  type="button"
-                >
-                  {pendingKey === "batch" ? (
-                    <Spinner className="h-3 w-3" />
-                  ) : null}
-                  Add ({selectedKeys.size})
-                </Button>
-              ) : usableTeams.length > 0 ? (
+            {/* Right side: Select / Cancel toggle */}
+            {usableTeams.length > 0 ? (
+              <div className="ml-auto flex shrink-0 items-center pl-2">
                 <button
                   className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-                  onClick={() => setSelectMode((prev) => !prev)}
+                  onClick={() => {
+                    if (selectMode) {
+                      handleCancelSelect();
+                    } else {
+                      setSelectMode(true);
+                    }
+                  }}
                   type="button"
                 >
-                  {selectMode ? "Done" : "Select"}
+                  {selectMode ? "Cancel" : "Select"}
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
           </div>
 
           {/* Scrollable content — clips mid-item to hint at more */}
@@ -627,6 +655,24 @@ export function QuickAddAgentPopover({
               <span>More options…</span>
             </button>
           </div>
+
+          {multiSelectActive ? (
+            <div className="border-t px-3 py-2">
+              <Button
+                className="w-full"
+                data-testid="quick-add-batch-confirm"
+                disabled={Boolean(pendingKey)}
+                onClick={() => void handleBatchAdd()}
+                size="sm"
+                type="button"
+              >
+                {pendingKey === "batch" ? (
+                  <Spinner className="h-3 w-3" />
+                ) : null}
+                Add ({selectedKeys.size})
+              </Button>
+            </div>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>
