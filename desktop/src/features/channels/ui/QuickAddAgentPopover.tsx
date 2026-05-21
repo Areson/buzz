@@ -640,10 +640,6 @@ export function QuickAddAgentPopover({
                         </span>
                         {isInChannel ? (
                           <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        ) : item.kind === "running-available" && !selectMode ? (
-                          <span className="shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                            running
-                          </span>
                         ) : null}
                         {isItemPending ? (
                           <Spinner className="h-3.5 w-3.5 shrink-0 text-primary" />
@@ -729,7 +725,7 @@ function QuickAddAgentAvatar({
     .toUpperCase();
 
   return (
-    <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/50 bg-muted/30">
+    <div className={cn("relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/50 bg-muted/30", !isRunning && "opacity-50")}>
       {avatarUrl ? (
         <img
           alt={label}
