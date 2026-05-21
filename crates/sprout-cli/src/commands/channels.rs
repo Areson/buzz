@@ -69,15 +69,20 @@ pub async fn cmd_list_channels(
         .iter()
         .filter(|e| {
             if let Some(vis) = visibility {
-                // Client-side visibility filter: check for ["visibility", vis] in tags
+                // NIP-29: relay emits ["public"] or ["private"] single-element tags
+                let nip29_tag = match vis {
+                    "open" => "public",
+                    _ => vis,
+                };
                 e.get("tags")
                     .and_then(|t| t.as_array())
                     .map(|tags| {
                         tags.iter().any(|tag| {
                             tag.as_array()
                                 .map(|a| {
-                                    a.first().and_then(|v| v.as_str()) == Some("visibility")
-                                        && a.get(1).and_then(|v| v.as_str()) == Some(vis)
+                                    a.len() == 1
+                                        && a.first().and_then(|v| v.as_str())
+                                            == Some(nip29_tag)
                                 })
                                 .unwrap_or(false)
                         })

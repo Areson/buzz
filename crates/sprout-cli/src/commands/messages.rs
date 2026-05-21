@@ -299,6 +299,7 @@ pub async fn cmd_search(
 ) -> Result<(), CliError> {
     let limit = limit.unwrap_or(20).min(100);
     let filter = serde_json::json!({
+        "kinds": [9, 40002, 45001, 45003],
         "search": query,
         "limit": limit
     });
@@ -315,7 +316,6 @@ pub async fn cmd_search(
 pub struct SendMessageParams {
     pub channel_id: String,
     pub content: String,
-    #[allow(dead_code)] // reserved for future kind routing
     pub kind: Option<u16>,
     pub reply_to: Option<String>,
     pub broadcast: bool,
@@ -381,15 +381,42 @@ pub async fn cmd_send_message(
     merge_mentions(&mut merged, &auto_resolved, MENTION_CAP);
     let mention_refs: Vec<&str> = merged.iter().map(|s| s.as_str()).collect();
 
-    let builder = sprout_sdk::build_message(
-        channel_uuid,
-        &final_content,
-        thread_ref.as_ref(),
-        &mention_refs,
-        p.broadcast,
-        &media_tags,
-    )
-    .map_err(|e| CliError::Other(format!("build_message failed: {e}")))?;
+    let builder = match p.kind {
+        Some(45001) => sprout_sdk::build_forum_post(
+            channel_uuid,
+            &final_content,
+            &mention_refs,
+            &media_tags,
+        )
+        .map_err(|e| CliError::Other(format!("build_forum_post failed: {e}")))?,
+        Some(45003) => {
+            let tr = thread_ref.as_ref().ok_or_else(|| {
+                CliError::Usage("--reply-to is required for forum comments (kind 45003)".into())
+            })?;
+            sprout_sdk::build_forum_comment(
+                channel_uuid,
+                &final_content,
+                tr,
+                &mention_refs,
+                &media_tags,
+            )
+            .map_err(|e| CliError::Other(format!("build_forum_comment failed: {e}")))?
+        }
+        None | Some(9) => sprout_sdk::build_message(
+            channel_uuid,
+            &final_content,
+            thread_ref.as_ref(),
+            &mention_refs,
+            p.broadcast,
+            &media_tags,
+        )
+        .map_err(|e| CliError::Other(format!("build_message failed: {e}")))?,
+        Some(k) => {
+            return Err(CliError::Usage(format!(
+                "--kind {k} is not supported (use 9, 45001, or 45003)"
+            )))
+        }
+    };
 
     let event = client.sign_event(builder)?;
 

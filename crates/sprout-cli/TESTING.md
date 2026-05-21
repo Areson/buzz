@@ -154,8 +154,11 @@ sprout channels join --channel "$CHANNEL_ID" | jq .
 # Expected: {"event_id":"...","accepted":true,"message":"..."}
 
 # channels leave
+# NOTE: Fails with 400 "cannot remove the last owner" if this identity is the
+# sole owner (which it is after channels create). To test leave successfully,
+# first add-member a second pubkey as owner. The relay enforces ≥1 owner.
 sprout channels leave --channel "$CHANNEL_ID" | jq .
-# Expected: {"event_id":"...","accepted":true,"message":"..."}
+# Expected: {"event_id":"...","accepted":true,"message":"..."} (or 400 if last owner)
 
 # Re-join so we can send messages
 sprout channels join --channel "$CHANNEL_ID" | jq .
@@ -370,8 +373,8 @@ sprout workflows list --channel "$CHANNEL_ID" | jq .
 sprout workflows get --workflow "$WF_ID" | jq .
 # Expected: {"workflow_id":"...","content":"<yaml>","created_at":N,"pubkey":"..."} or null
 
-# workflows update
-sprout workflows update --workflow "$WF_ID" \
+# workflows update (requires --channel)
+sprout workflows update --channel "$CHANNEL_ID" --workflow "$WF_ID" \
   --yaml 'name: test-wf-updated
 trigger:
   on: webhook
@@ -381,6 +384,9 @@ steps:
     text: "Updated"' | jq .
 
 # workflows trigger
+# NOTE: May return 400 "workflow not found" — the relay indexes workflow
+# definitions into a DB table asynchronously. If the definition event hasn't
+# been indexed yet, the trigger handler won't find it.
 sprout workflows trigger --workflow "$WF_ID" | jq .
 
 # workflows runs
@@ -439,9 +445,9 @@ sprout messages delete --event "not-hex" 2>&1; echo "exit: $?"
 # stderr: {"error":"user_error","message":"must be a 64-character hex string: not-hex"}
 # exit: 1
 
-# Exit 1: Invalid --type value
+# Exit 1: Invalid --type value (clap validates the enum — multi-line error)
 sprout channels create --name x --type invalid --visibility open 2>&1; echo "exit: $?"
-# stderr: {"error":"user_error","message":"--type must be 'stream' or 'forum' (got: invalid)"}
+# stderr: {"error":"user_error","message":"error: invalid value 'invalid' for '--type <CHANNEL_TYPE>'\n  [possible values: stream, forum]\n..."}
 # exit: 1
 
 # Exit 1: Invalid --direction value
@@ -456,7 +462,7 @@ sprout users set-profile 2>&1; echo "exit: $?"
 # Exit 3: No auth configured
 env -u SPROUT_PRIVATE_KEY \
   cargo run -p sprout-cli -- channels list 2>&1; echo "exit: $?"
-# stderr: {"error":"auth_error","message":"SPROUT_PRIVATE_KEY is required (use --private-key or set env var)"}
+# stderr: {"error":"auth_error","message":"auth error: SPROUT_PRIVATE_KEY is required (use --private-key or set env var)"}
 # exit: 3
 
 # Not-found returns null, not an error (exit 0)
@@ -479,7 +485,7 @@ SPROUT_PRIVATE_KEY="nsec1..." sprout channels list | jq .
 # No auth → exit 3
 env -u SPROUT_PRIVATE_KEY \
   cargo run -p sprout-cli -- channels list 2>&1; echo "exit: $?"
-# stderr: {"error":"auth_error","message":"SPROUT_PRIVATE_KEY is required (use --private-key or set env var)"}
+# stderr: {"error":"auth_error","message":"auth error: SPROUT_PRIVATE_KEY is required (use --private-key or set env var)"}
 # exit: 3
 ```
 
