@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { invoke } from "@tauri-apps/api/core";
+
 import { relayClient } from "@/shared/api/relayClient";
 import {
   applyWorkspace,
@@ -26,6 +28,8 @@ function resetWorkspaceState(): void {
   resetMediaCaches();
   clearSearchHitEventCache();
   clearAllDrafts();
+  // Kill all PTY sessions so orphaned shells don't accumulate across workspaces.
+  invoke("terminal_close_all_sessions").catch(() => {});
 }
 
 type WorkspaceInitResult =

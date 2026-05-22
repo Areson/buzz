@@ -215,6 +215,21 @@ impl TerminalRegistry {
         let _ = session.killer.kill();
         Ok(true)
     }
+
+    /// Close all active PTY sessions. Called on workspace switch to prevent
+    /// orphaned shell processes from accumulating.
+    pub fn close_all_sessions(&self) -> Result<u32, String> {
+        let mut guard = self.sessions.lock().map_err(|e| e.to_string())?;
+        let count = guard.by_session_id.len() as u32;
+        guard.session_id_by_channel.clear();
+        let sessions = std::mem::take(&mut guard.by_session_id);
+        drop(guard);
+
+        for mut session in sessions.into_values() {
+            let _ = session.killer.kill();
+        }
+        Ok(count)
+    }
 }
 
 impl Drop for TerminalRegistry {

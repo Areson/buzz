@@ -100,7 +100,7 @@ export function TerminalPanel({
       </button>
 
       {/* Header bar */}
-      <div className="flex h-8 shrink-0 items-center justify-between border-b border-border/40 bg-[#1a1b26] px-3">
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/5 bg-[#1a1b26] px-3">
         <span className="text-xs font-medium text-[#7aa2f7]">Terminal</span>
         <div className="flex items-center gap-1">
           <button

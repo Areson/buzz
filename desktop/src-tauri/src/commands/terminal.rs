@@ -38,3 +38,9 @@ pub fn terminal_close_session(
 ) -> Result<bool, String> {
     state.terminal_registry.close_session(&input.session_id)
 }
+
+/// Close all active PTY sessions. Called on workspace switch.
+#[tauri::command]
+pub fn terminal_close_all_sessions(state: State<'_, AppState>) -> Result<u32, String> {
+    state.terminal_registry.close_all_sessions()
+}

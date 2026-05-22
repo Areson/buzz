@@ -589,6 +589,7 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close_session,
+            terminal_close_all_sessions,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
