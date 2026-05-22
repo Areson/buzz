@@ -81,7 +81,7 @@ const KNOWN_ACP_PROVIDERS: &[KnownAcpProvider] = &[
         mcp_command: None,
         mcp_hooks: false,
         underlying_cli: Some("claude"),
-        cli_install_commands: &["npm install -g @anthropic-ai/claude-code"],
+        cli_install_commands: &["curl -fsSL https://claude.ai/install.sh | bash"],
         adapter_install_commands: &["npm install -g @agentclientprotocol/claude-agent-acp"],
         install_instructions_url: "https://github.com/agentclientprotocol/claude-agent-acp",
         install_hint: "Install the Claude Code ACP adapter via npm.",
