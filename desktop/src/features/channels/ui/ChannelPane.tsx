@@ -411,33 +411,35 @@ export const ChannelPane = React.memo(function ChannelPane({
                 }
                 showTopBorder={false}
               />
-              <div className="h-7 bg-background px-4 pb-1 pt-0 sm:px-6 -mt-1">
-                <div className="flex h-full w-full items-center gap-2">
-                  {hasComposerBotActivity ? (
-                    <div className="shrink-0">
-                      <BotActivityComposerAction
-                        agents={activityAgents}
-                        channelId={activeChannel?.id ?? null}
-                        onOpenAgentSession={onOpenAgentSession}
-                        openAgentSessionPubkey={openAgentSessionPubkey}
+              {hasComposerBotActivity || hasTypingActivity ? (
+                <div className="h-7 bg-background px-4 pb-1 pt-0 sm:px-6 -mt-1">
+                  <div className="flex h-full w-full items-center gap-2">
+                    {hasComposerBotActivity ? (
+                      <div className="shrink-0">
+                        <BotActivityComposerAction
+                          agents={activityAgents}
+                          channelId={activeChannel?.id ?? null}
+                          onOpenAgentSession={onOpenAgentSession}
+                          openAgentSessionPubkey={openAgentSessionPubkey}
+                          profiles={profiles}
+                          typingBotPubkeys={composerBotTypingPubkeys}
+                          variant="inline"
+                        />
+                      </div>
+                    ) : null}
+                    {hasTypingActivity ? (
+                      <TypingIndicatorRow
+                        channel={activeChannel}
+                        className="min-w-0 flex-1 px-0 py-0"
+                        currentPubkey={currentPubkey}
                         profiles={profiles}
-                        typingBotPubkeys={composerBotTypingPubkeys}
-                        variant="inline"
+                        typingPubkeys={typingPubkeys}
+                        variant="activity"
                       />
-                    </div>
-                  ) : null}
-                  {hasTypingActivity ? (
-                    <TypingIndicatorRow
-                      channel={activeChannel}
-                      className="min-w-0 flex-1 px-0 py-0"
-                      currentPubkey={currentPubkey}
-                      profiles={profiles}
-                      typingPubkeys={typingPubkeys}
-                      variant="activity"
-                    />
-                  ) : null}
+                    ) : null}
+                  </div>
                 </div>
-              </div>
+              ) : null}
               {activeChannel && isTerminalOpen ? (
                 <TerminalPanel
                   channelId={activeChannel.id}
