@@ -36,7 +36,7 @@ const overrides = new Map([
   ["src/app/AppShell.tsx", 825], // message edit state + handlers + ChannelPane edit prop threading + scrollback pagination + workflows view + projects view + memory-leak safeguards + home-badge state lifted here so it consumes the same NIP-RS read-state as the sidebar (single ReadStateManager) + terminal toggle shortcut
   ["src/features/channels/hooks.ts", 550], // canvas query + mutation hooks + DM hide mutation
   ["src/features/channels/ui/ChannelManagementSheet.tsx", 800],
-  ["src/features/channels/ui/ChannelPane.tsx", 530], // composer/timeline/sidebar orchestration + anchored agent activity footers + terminal panel integration
+  ["src/features/channels/ui/ChannelPane.tsx", 540], // composer/timeline/sidebar orchestration + anchored agent activity footers + terminal panel + status pill integration
   ["src/features/channels/ui/ChannelScreen.tsx", 550], // profile panel state + mutual exclusion wiring + ProfilePanelProvider context + agent typing classification
   ["src/features/notifications/hooks.ts", 535], // notification settings + feed notification lifecycle + profile batch resolution + truncated-pubkey guard + badge state
   ["src/features/home/ui/HomeView.tsx", 505], // inbox/feed orchestration + thread context + reply/delete flow + NIP-RS read-state projection wiring (useHomeInboxReadState)

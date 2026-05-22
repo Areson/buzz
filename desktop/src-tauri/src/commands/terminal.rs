@@ -44,3 +44,21 @@ pub fn terminal_close_session(
 pub fn terminal_close_all_sessions(state: State<'_, AppState>) -> Result<u32, String> {
     state.terminal_registry.close_all_sessions()
 }
+
+/// Check if a PTY session exists for a channel.
+#[tauri::command]
+pub fn terminal_has_session(
+    state: State<'_, AppState>,
+    channel_id: String,
+) -> Result<bool, String> {
+    state.terminal_registry.has_session(&channel_id)
+}
+
+/// Get the last line of output from a channel's terminal.
+#[tauri::command]
+pub fn terminal_get_last_line(
+    state: State<'_, AppState>,
+    channel_id: String,
+) -> Result<Option<String>, String> {
+    state.terminal_registry.get_last_line(&channel_id)
+}

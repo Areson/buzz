@@ -218,6 +218,40 @@ impl TerminalRegistry {
 
     /// Close all active PTY sessions. Called on workspace switch to prevent
     /// orphaned shell processes from accumulating.
+    /// Check if a PTY session exists for a given channel.
+    pub fn has_session(&self, channel_id: &str) -> Result<bool, String> {
+        let guard = self.sessions.lock().map_err(|e| e.to_string())?;
+        Ok(guard.session_id_by_channel.contains_key(channel_id))
+    }
+
+    /// Get the last line of output from a channel's terminal buffer.
+    pub fn get_last_line(&self, channel_id: &str) -> Result<Option<String>, String> {
+        let guard = self.sessions.lock().map_err(|e| e.to_string())?;
+        let session_id = match guard.session_id_by_channel.get(channel_id) {
+            Some(id) => id.clone(),
+            None => return Ok(None),
+        };
+        let session = match guard.by_session_id.get(&session_id) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let buf = session.buffer.lock().map_err(|e| e.to_string())?;
+        if buf.is_empty() {
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&buf);
+        // Find the last non-empty line.
+        let last_line = text
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .to_string();
+        // Strip ANSI escape sequences for display.
+        let stripped = strip_ansi(&last_line);
+        Ok(Some(stripped))
+    }
+
     pub fn close_all_sessions(&self) -> Result<u32, String> {
         let mut guard = self.sessions.lock().map_err(|e| e.to_string())?;
         let count = guard.by_session_id.len() as u32;
@@ -426,6 +460,45 @@ fn snapshot_buffer(buffer: &Arc<Mutex<Vec<u8>>>) -> Result<Option<String>, Strin
         return Ok(None);
     }
     Ok(Some(String::from_utf8_lossy(&guard).into_owned()))
+}
+
+/// Strip ANSI escape sequences from a string for clean display.
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip CSI sequences: ESC [ ... final_byte
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() || next == '~' {
+                        break;
+                    }
+                }
+            }
+            // Skip OSC sequences: ESC ] ... BEL/ST
+            else if chars.peek() == Some(&']') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next == '\x07' {
+                        break;
+                    }
+                    if next == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+        } else if c == '\r' || c == '\n' {
+            // Skip control chars
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 fn scrub_hermit_path(cmd: &mut CommandBuilder) {

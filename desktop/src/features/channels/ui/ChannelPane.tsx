@@ -10,7 +10,11 @@ import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping"
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { ChannelFindBar } from "@/features/search/ui/ChannelFindBar";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
-import { TerminalPanel, useTerminal } from "@/features/terminal";
+import {
+  TerminalPanel,
+  TerminalStatusPill,
+  useTerminal,
+} from "@/features/terminal";
 import {
   BotActivityComposerAction,
   type BotActivityAgent,
@@ -441,6 +445,11 @@ export const ChannelPane = React.memo(function ChannelPane({
                       typingPubkeys={typingPubkeys}
                       variant="activity"
                     />
+                  ) : null}
+                  {activeChannel ? (
+                    <div className="ml-auto shrink-0">
+                      <TerminalStatusPill channelId={activeChannel.id} />
+                    </div>
                   ) : null}
                 </div>
               </div>
