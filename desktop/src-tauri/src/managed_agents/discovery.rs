@@ -95,7 +95,7 @@ const KNOWN_ACP_PROVIDERS: &[KnownAcpProvider] = &[
         mcp_command: None,
         mcp_hooks: false,
         underlying_cli: Some("codex"),
-        cli_install_commands: &["npm install -g @openai/codex"],
+        cli_install_commands: &["curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
         adapter_install_commands: &["npm install -g @zed-industries/codex-acp"],
         install_instructions_url: "https://github.com/zed-industries/codex-acp",
         install_hint: "Install the Codex ACP adapter via npm.",
