@@ -111,7 +111,7 @@ function RelayIcon({
 }) {
   const iconUrl = relayIconUrl(workspace?.relayUrl);
   const fallbackIconUrl = "/sprout.svg";
-  const [src, setSrc] = React.useState(
+  const [src, setSrc] = React.useState<string | null>(
     associatedIconUrl ?? iconUrl ?? fallbackIconUrl,
   );
 

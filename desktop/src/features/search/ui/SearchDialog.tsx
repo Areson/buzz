@@ -85,6 +85,12 @@ type SearchDialogProps = {
   onOpenUser: (pubkey: string) => void;
 };
 
+type SearchResultSection = {
+  count: number;
+  results: SearchResult[];
+  title: string;
+};
+
 export function SearchDialog({
   channels,
   currentPubkey,
@@ -149,7 +155,7 @@ export function SearchDialog({
       })
       .slice(0, 5);
   }, [channels, debouncedQuery]);
-  const sections = React.useMemo(
+  const sections = React.useMemo<SearchResultSection[]>(
     () =>
       [
         {
