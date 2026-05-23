@@ -133,9 +133,28 @@ function ProviderRow({
                 </code>
               </p>
             ) : null}
-            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground/80">
-              {provider.binaryPath}
-            </p>
+            {provider.underlyingCliPath &&
+            provider.underlyingCliPath !== provider.binaryPath ? (
+              <div className="mt-1 space-y-0.5">
+                <p className="break-all font-mono text-[11px] text-muted-foreground/80">
+                  <span className="text-muted-foreground">CLI:</span>{" "}
+                  {provider.underlyingCliPath}
+                </p>
+                <p className="break-all font-mono text-[11px] text-muted-foreground/80">
+                  <span className="text-muted-foreground">ACP adapter:</span>{" "}
+                  {provider.binaryPath}
+                </p>
+              </div>
+            ) : (
+              <>
+                <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground/80">
+                  {provider.binaryPath}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground/60">
+                  ACP support built-in — no separate adapter needed.
+                </p>
+              </>
+            )}
           </>
         ) : provider.availability === "adapter_missing" ? (
           <>
@@ -281,9 +300,11 @@ export function DoctorSettingsPanel() {
 
       <div className="mt-5 space-y-4">
         <div className="rounded-xl border border-border/70 bg-muted/20 p-4">
-          <h3 className="text-sm font-semibold tracking-tight">ACP runtimes</h3>
+          <h3 className="text-sm font-semibold tracking-tight">
+            Agent CLIs and ACP runtimes
+          </h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            Known runtimes and their installation status.
+            Installation status of supported agent CLIs and their ACP runtimes.
           </p>
 
           <div className="mt-4 space-y-2">
