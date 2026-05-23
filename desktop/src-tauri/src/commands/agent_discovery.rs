@@ -128,6 +128,20 @@ fn run_install_command(step: &str, command: &str) -> InstallStepResult {
         cmd.env("PATH", path);
     }
 
+    // Detach from the controlling terminal so install scripts that read from
+    // /dev/tty (e.g. Codex's "Start Codex now? [y/N]") fall back to stdin
+    // (which is /dev/null) instead of blocking forever.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
     let mut child = match cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
