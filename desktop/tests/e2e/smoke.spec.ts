@@ -71,17 +71,6 @@ async function openSearchDialogWithShortcut(
     .toBe(true);
 }
 
-async function openSearchDialogWithButton(
-  page: import("@playwright/test").Page,
-) {
-  const searchDialog = page.getByTestId("search-dialog");
-  const openSearchButton = page.getByTestId("global-search");
-
-  await expect(openSearchButton).toBeVisible();
-  await openSearchButton.click();
-  await expect(searchDialog).toBeVisible();
-}
-
 test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
 });
@@ -249,7 +238,7 @@ test("opens relay-backed search from the sidebar and loads the exact result", as
 test("opens channel matches from search", async ({ page }) => {
   await page.goto("/");
 
-  await openSearchDialogWithButton(page);
+  await openSearchDialogWithShortcut(page);
 
   await page.getByTestId("search-input").fill("engineering");
   const results = page.getByTestId("search-results");
@@ -276,10 +265,31 @@ test("opens channel matches from search", async ({ page }) => {
   await expect(page.getByTestId("chat-title")).toHaveText("engineering");
 });
 
+test("topbar search keeps focus inline until enter", async ({ page }) => {
+  await page.goto("/");
+
+  const topbarSearch = page.getByTestId("global-search");
+  await expect(topbarSearch).toBeVisible();
+
+  await topbarSearch.fill("engineering");
+  const inlineResults = page.getByTestId("topbar-search-results");
+
+  await expect(page.getByTestId("search-dialog")).not.toBeVisible();
+  await expect(inlineResults).toContainText("Channels");
+  await expect(inlineResults).toContainText("engineering");
+
+  await topbarSearch.press("Enter");
+
+  await expect(page).toHaveURL(
+    /#\/channels\/1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9$/,
+  );
+  await expect(page.getByTestId("chat-title")).toHaveText("engineering");
+});
+
 test("opens people matches from global search", async ({ page }) => {
   await page.goto("/");
 
-  await openSearchDialogWithButton(page);
+  await openSearchDialogWithShortcut(page);
 
   await page.getByTestId("search-input").fill("alice");
   const results = page.getByTestId("search-results");
@@ -303,7 +313,7 @@ test("search results use your resolved profile label instead of You", async ({
 }) => {
   await page.goto("/");
 
-  await openSearchDialogWithButton(page);
+  await openSearchDialogWithShortcut(page);
 
   await page.getByTestId("search-input").fill("welcome");
   const results = page.getByTestId("search-results");
@@ -318,7 +328,7 @@ test("opens accessible unjoined channels from search in read-only mode", async (
 }) => {
   await page.goto("/");
 
-  await openSearchDialogWithButton(page);
+  await openSearchDialogWithShortcut(page);
 
   await page.getByTestId("search-input").fill("critique");
   const results = page.getByTestId("search-results");

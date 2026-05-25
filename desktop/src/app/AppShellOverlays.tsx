@@ -26,6 +26,7 @@ type AppShellOverlaysProps = {
   currentPubkey?: string;
   isChannelManagementOpen: boolean;
   isSearchOpen: boolean;
+  searchInitialQuery: string;
   onBrowseChannelJoin: (channelId: string) => Promise<void>;
   onBrowseDialogOpenChange: (open: boolean) => void;
   onChannelManagementOpenChange: (open: boolean) => void;
@@ -43,6 +44,7 @@ export function AppShellOverlays({
   currentPubkey,
   isChannelManagementOpen,
   isSearchOpen,
+  searchInitialQuery,
   onBrowseChannelJoin,
   onBrowseDialogOpenChange,
   onChannelManagementOpenChange,
@@ -72,6 +74,7 @@ export function AppShellOverlays({
           <SearchDialog
             channels={channels}
             currentPubkey={currentPubkey}
+            initialQuery={searchInitialQuery}
             onOpenChannel={onSelectChannel}
             onOpenResult={onOpenSearchResult}
             onOpenUser={onOpenSearchUser}

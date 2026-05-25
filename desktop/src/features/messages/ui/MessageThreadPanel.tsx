@@ -153,11 +153,7 @@ export function MessageThreadPanel({
     <>
       {isOverlay && <OverlayPanelBackdrop onClose={onClose} />}
       <aside
-        className={cn(
-          PANEL_BASE_CLASS,
-          !isOverlay && "pt-11",
-          isOverlay && PANEL_OVERLAY_CLASS,
-        )}
+        className={cn(PANEL_BASE_CLASS, isOverlay && PANEL_OVERLAY_CLASS)}
         data-testid="message-thread-panel"
         style={{ width: `${widthPx}px` }}
       >
@@ -179,12 +175,15 @@ export function MessageThreadPanel({
           </button>
         )}
 
-        <div className="flex items-center gap-3 px-4 py-3">
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex min-h-[44px] items-center gap-3 px-4 py-[6px]">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold tracking-tight">Thread</h2>
+            <h2 className="text-sm font-semibold tracking-tight text-foreground">
+              Thread
+            </h2>
           </div>
           <Button
             aria-label="Close thread"
+            className="pointer-events-auto h-7 w-7"
             data-testid="message-thread-close"
             onClick={onClose}
             size="icon"
@@ -196,7 +195,7 @@ export function MessageThreadPanel({
         </div>
 
         <div
-          className="min-h-0 flex-1 overflow-y-auto pb-24"
+          className="min-h-0 flex-1 overflow-y-auto pb-24 pt-11"
           data-testid="message-thread-body"
           onScroll={syncScrollState}
           ref={threadBodyRef}

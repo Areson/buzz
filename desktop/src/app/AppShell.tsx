@@ -169,6 +169,7 @@ export function AppShell() {
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
   const [isSearchOpen, setIsSearchOpen] = React.useState(false);
+  const [searchInitialQuery, setSearchInitialQuery] = React.useState("");
   const [browseDialogType, setBrowseDialogType] =
     React.useState<BrowseDialogType>(null);
   const [isNewDmOpen, setIsNewDmOpen] = React.useState(false);
@@ -313,10 +314,14 @@ export function AppShell() {
     setBrowseDialogType("forum");
     void refetchChannels();
   }, [refetchChannels]);
-  const handleOpenSearch = React.useCallback(() => {
-    setIsSearchOpen(true);
-    void refetchChannels();
-  }, [refetchChannels]);
+  const handleOpenSearch = React.useCallback(
+    (query = "") => {
+      setSearchInitialQuery(query);
+      setIsSearchOpen(true);
+      void refetchChannels();
+    },
+    [refetchChannels],
+  );
 
   const handleBrowseDialogOpenChange = React.useCallback((open: boolean) => {
     if (!open) {
@@ -617,9 +622,13 @@ export function AppShell() {
                 <AppHeaderControls
                   canGoBack={canGoBack}
                   canGoForward={canGoForward}
+                  channels={channels}
+                  currentPubkey={identityQuery.data?.pubkey}
                   onGoBack={goBack}
                   onGoForward={goForward}
-                  onOpenSearch={handleOpenSearch}
+                  onOpenChannel={(channelId) => void goChannel(channelId)}
+                  onOpenResult={handleOpenSearchResult}
+                  onOpenUser={handleOpenSearchUser}
                 />
                 <AppSidebar
                   activeWorkspace={workspacesHook.activeWorkspace}
@@ -700,25 +709,13 @@ export function AppShell() {
                     });
                     await goChannel(directMessage.id);
                   }}
-                  onSelectAgents={() => {
-                    void goAgents();
-                  }}
-                  onSelectChannel={(channelId) => {
-                    void goChannel(channelId);
-                  }}
-                  onSelectHome={() => {
-                    void goHome();
-                  }}
-                  onSelectProjects={() => {
-                    void goProjects();
-                  }}
-                  onSelectPulse={() => {
-                    void goPulse();
-                  }}
+                  onSelectAgents={() => void goAgents()}
+                  onSelectChannel={(channelId) => void goChannel(channelId)}
+                  onSelectHome={() => void goHome()}
+                  onSelectProjects={() => void goProjects()}
+                  onSelectPulse={() => void goPulse()}
                   onSelectSettings={handleOpenSettings}
-                  onSelectWorkflows={() => {
-                    void goWorkflows();
-                  }}
+                  onSelectWorkflows={() => void goWorkflows()}
                   onSetPresenceStatus={(status) =>
                     presenceSession.setStatus(status)
                   }
@@ -751,6 +748,7 @@ export function AppShell() {
                   currentPubkey={identityQuery.data?.pubkey}
                   isChannelManagementOpen={isChannelManagementOpen}
                   isSearchOpen={isSearchOpen}
+                  searchInitialQuery={searchInitialQuery}
                   onBrowseChannelJoin={handleBrowseChannelJoin}
                   onBrowseDialogOpenChange={handleBrowseDialogOpenChange}
                   onChannelManagementOpenChange={setIsChannelManagementOpen}
@@ -761,9 +759,7 @@ export function AppShell() {
                   onOpenSearchResult={handleOpenSearchResult}
                   onOpenSearchUser={handleOpenSearchUser}
                   onSearchOpenChange={setIsSearchOpen}
-                  onSelectChannel={(channelId) => {
-                    void goChannel(channelId);
-                  }}
+                  onSelectChannel={(channelId) => void goChannel(channelId)}
                 />
 
                 {settingsOpen ? (
