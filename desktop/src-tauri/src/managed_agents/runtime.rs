@@ -672,7 +672,13 @@ pub fn spawn_agent_child(
     // Resolve system prompt and model via the extracted helper. Re-reads
     // the persona store at spawn time so edits take effect without
     // deleting and recreating the agent.
-    let personas = super::load_personas(app).unwrap_or_default();
+    let personas = super::load_personas(app).unwrap_or_else(|e| {
+        eprintln!(
+            "sprout-desktop: failed to load personas for agent {} — spawning with no persona context: {e}",
+            record.name
+        );
+        Vec::new()
+    });
     let (effective_prompt, effective_model) = resolve_effective_prompt_and_model(
         record.persona_id.as_deref(),
         &personas,

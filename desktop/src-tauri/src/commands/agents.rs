@@ -46,7 +46,13 @@ fn build_deploy_payload(
 
     // Resolve system prompt and model via the persona (same as local spawn).
     // Re-reads the persona store so edits take effect without recreating the agent.
-    let personas = load_personas(app).unwrap_or_default();
+    let personas = load_personas(app).unwrap_or_else(|e| {
+        eprintln!(
+            "sprout-desktop: failed to load personas for deploy payload (agent {}) — proceeding without persona context: {e}",
+            record.name
+        );
+        Vec::new()
+    });
     let (effective_prompt, effective_model) =
         crate::managed_agents::resolve_effective_prompt_and_model(
             record.persona_id.as_deref(),

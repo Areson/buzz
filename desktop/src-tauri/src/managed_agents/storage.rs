@@ -40,7 +40,36 @@ pub fn load_managed_agents(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, S
 
     let content = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read agent store: {error}"))?;
-    serde_json::from_str(&content).map_err(|error| format!("failed to parse agent store: {error}"))
+    let mut records: Vec<ManagedAgentRecord> =
+        serde_json::from_str(&content).map_err(|error| format!("failed to parse agent store: {error}"))?;
+
+    // One-time migration: clear stale system_prompt/model snapshots on
+    // persona-backed agents. Before this fix, creation snapshotted the
+    // persona's values onto the agent record. With the new precedence logic
+    // (agent record wins when set), those stale snapshots would be treated as
+    // explicit user overrides and block persona updates from taking effect.
+    //
+    // Safe to clear unconditionally: the old code ignored agent-level overrides
+    // for persona-backed agents, so no user has ever set a meaningful override.
+    let mut migrated = false;
+    for record in &mut records {
+        if record.persona_id.is_some() {
+            if record.system_prompt.is_some() {
+                record.system_prompt = None;
+                migrated = true;
+            }
+            if record.model.is_some() {
+                record.model = None;
+                migrated = true;
+            }
+        }
+    }
+    if migrated {
+        // Persist the migration so it only runs once.
+        save_managed_agents(app, &records)?;
+    }
+
+    Ok(records)
 }
 
 pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> Result<(), String> {
