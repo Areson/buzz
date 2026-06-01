@@ -11,6 +11,7 @@ mod prevent_sleep;
 mod relay;
 mod templates;
 mod util;
+mod ws_relay;
 
 use app_state::{build_app_state, resolve_persisted_identity, AppState};
 use commands::*;

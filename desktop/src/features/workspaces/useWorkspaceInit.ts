@@ -11,7 +11,7 @@ import { clearSearchHitEventCache } from "@/app/navigation/searchHitEventCache";
 import { clearAllDrafts } from "@/features/messages/lib/useDrafts";
 import { resetAgentObserverStore } from "@/features/agents/observerRelayStore";
 
-import { initFirstWorkspace } from "./workspaceStorage";
+import { initFirstWorkspace, isServerlessWorkspace } from "./workspaceStorage";
 import type { Workspace } from "./types";
 
 /**
@@ -124,11 +124,19 @@ export function useWorkspaceInit(
       // and re-applied it on every reload, which silently overwrote any
       // imported key. `loadWorkspaces()` strips lingering `nsec` fields from
       // legacy entries; this site refuses to apply one even if present.
+      const serverless = isServerlessWorkspace(activeWorkspace);
+
+      // Tell the relay client singleton which transport to use *before*
+      // AppShell mounts and calls preconnect(). In serverless mode the connect
+      // handshake skips the NIP-42 AUTH wait.
+      relayClient.setServerless(serverless);
+
       try {
         await applyWorkspace(
           activeWorkspace.relayUrl,
           undefined,
           activeWorkspace.token,
+          serverless,
         );
       } catch (error) {
         console.error("Failed to apply workspace to backend:", error);

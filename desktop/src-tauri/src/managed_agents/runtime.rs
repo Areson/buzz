@@ -825,6 +825,18 @@ pub fn spawn_agent_child(
     command.env("RUST_LOG", child_rust_log_filter());
     command.env("SPROUT_PRIVATE_KEY", &record.private_key_nsec);
     command.env("SPROUT_RELAY_URL", &record.relay_url);
+    // Serverless mode: tell the ACP harness (and the sprout CLI it spawns for
+    // replies) to use plain-WS transport against a generic relay instead of the
+    // Sprout HTTP bridge. Inherited from the active workspace. See
+    // docs/SPROUT_LITE_MODE.md.
+    {
+        use tauri::Manager;
+        let serverless = app.state::<crate::app_state::AppState>().is_serverless();
+        command.env(
+            "SPROUT_SERVERLESS",
+            if serverless { "true" } else { "false" },
+        );
+    }
     command.env("SPROUT_ACP_AGENT_COMMAND", &resolved_agent_command);
     command.env("SPROUT_ACP_AGENT_ARGS", agent_args.join(","));
     match &resolved_mcp_command {

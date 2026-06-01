@@ -289,18 +289,40 @@ pub async fn create_channel(
         other => return Err(format!("invalid channel_type: {other}")),
     };
 
-    let builder = events::build_create_channel(
-        channel_uuid,
-        &name,
-        vis,
-        ct,
-        description.as_deref(),
-        ttl_seconds,
-    )?;
-    submit_event(builder, &state).await?;
+    let channel_uuid_string = channel_uuid.to_string();
+
+    if state.is_serverless() {
+        // No relay to process a kind:9007 command — publish the kind:39000
+        // metadata and a kind:39002 membership (self) directly so the channel
+        // is discoverable via get_channels.
+        let my_pubkey = {
+            let keys = state.keys.lock().map_err(|e| e.to_string())?;
+            keys.public_key().to_hex()
+        };
+        let meta = events::build_channel_metadata_serverless(
+            &channel_uuid_string,
+            &name,
+            vis,
+            ct,
+            description.as_deref(),
+            &[],
+        )?;
+        submit_event(meta, &state).await?;
+        let members = events::build_channel_members_serverless(&channel_uuid_string, &[my_pubkey])?;
+        submit_event(members, &state).await?;
+    } else {
+        let builder = events::build_create_channel(
+            channel_uuid,
+            &name,
+            vis,
+            ct,
+            description.as_deref(),
+            ttl_seconds,
+        )?;
+        submit_event(builder, &state).await?;
+    }
 
     // Re-fetch the canonical metadata event to return ChannelInfo.
-    let channel_uuid_string = channel_uuid.to_string();
     let events = query_relay(
         &state,
         &[serde_json::json!({

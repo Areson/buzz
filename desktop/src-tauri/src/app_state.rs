@@ -16,6 +16,12 @@ pub struct AppState {
     /// Workspace-provided relay URL override. Set by `apply_workspace` on app
     /// init and takes priority over env vars and compile-time defaults.
     pub relay_url_override: Mutex<Option<String>>,
+    /// Serverless mode flag. When true, the workspace points at a generic
+    /// public Nostr relay with no Sprout server infrastructure — no HTTP
+    /// `/query` or `/events` bridge, no Postgres, no NIP-98 auth. Reads and
+    /// writes are performed over the plain WebSocket (REQ/EVENT) instead.
+    /// Set by `apply_workspace`. See docs/SPROUT_LITE_MODE.md.
+    pub serverless: std::sync::atomic::AtomicBool,
     pub managed_agents_store_lock: Mutex<()>,
     pub channel_templates_store_lock: Mutex<()>,
     pub managed_agent_processes: Mutex<HashMap<String, ManagedAgentProcess>>,
@@ -68,6 +74,7 @@ pub fn build_app_state() -> AppState {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new()),
         relay_url_override: Mutex::new(None),
+        serverless: std::sync::atomic::AtomicBool::new(false),
         managed_agents_store_lock: Mutex::new(()),
         channel_templates_store_lock: Mutex::new(()),
         managed_agent_processes: Mutex::new(HashMap::new()),
@@ -82,6 +89,12 @@ pub fn build_app_state() -> AppState {
 }
 
 impl AppState {
+    /// Whether the active workspace is in serverless mode (generic relay,
+    /// no Sprout HTTP bridge). Reads the atomic flag set by `apply_workspace`.
+    pub fn is_serverless(&self) -> bool {
+        self.serverless.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Lock the huddle state mutex, converting a poisoned-lock error to a String.
     ///
     /// Convenience wrapper — replaces 15+ instances of

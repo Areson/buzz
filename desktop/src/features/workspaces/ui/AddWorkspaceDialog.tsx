@@ -29,12 +29,14 @@ export function AddWorkspaceDialog({
   const [name, setName] = React.useState("");
   const [relayUrl, setRelayUrl] = React.useState("");
   const [token, setToken] = React.useState("");
+  const [serverless, setServerless] = React.useState(false);
 
   const handleClose = React.useCallback(() => {
     onOpenChange(false);
     setName("");
     setRelayUrl("");
     setToken("");
+    setServerless(false);
   }, [onOpenChange]);
 
   const handleSubmit = React.useCallback(
@@ -48,14 +50,16 @@ export function AddWorkspaceDialog({
         id: crypto.randomUUID(),
         name: name.trim() || deriveWorkspaceName(relayUrl.trim()),
         relayUrl: normalizeRelayUrl(relayUrl.trim()),
-        token: token.trim() || undefined,
+        // Serverless workspaces never use a Sprout API token.
+        token: serverless ? undefined : token.trim() || undefined,
+        mode: serverless ? "serverless" : "sprout",
         addedAt: new Date().toISOString(),
       };
 
       onSubmit(workspace);
       handleClose();
     },
-    [name, relayUrl, token, onSubmit, handleClose],
+    [name, relayUrl, token, serverless, onSubmit, handleClose],
   );
 
   return (
@@ -64,11 +68,30 @@ export function AddWorkspaceDialog({
         <DialogHeader>
           <DialogTitle>Add Workspace</DialogTitle>
           <DialogDescription>
-            Connect to another Sprout relay. Each workspace has its own
-            channels, messages, and identity.
+            Connect to another Sprout relay, or a generic public Nostr relay in
+            serverless mode. Each workspace has its own channels, messages, and
+            identity.
           </DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+          <label className="flex items-start gap-2.5 rounded-md border border-border bg-muted/40 p-3">
+            <input
+              checked={serverless}
+              className="mt-0.5 h-4 w-4 accent-primary"
+              onChange={(e) => setServerless(e.target.checked)}
+              type="checkbox"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium text-foreground">
+                Serverless mode
+              </span>
+              <span className="text-xs text-muted-foreground">
+                Connect directly to a generic public Nostr relay — no Sprout
+                server, database, or auth. Channels and DMs only; search,
+                presence, and huddles are unavailable.
+              </span>
+            </span>
+          </label>
           <div className="flex flex-col gap-1.5">
             <label
               className="text-sm font-medium text-foreground"
@@ -80,7 +103,9 @@ export function AddWorkspaceDialog({
               autoFocus
               id="ws-relay-url"
               onChange={(e) => setRelayUrl(e.target.value)}
-              placeholder="wss://relay.example.com"
+              placeholder={
+                serverless ? "wss://relay.damus.io" : "wss://relay.example.com"
+              }
               type="text"
               value={relayUrl}
             />
@@ -103,24 +128,26 @@ export function AddWorkspaceDialog({
               value={name}
             />
           </div>
-          <div className="flex flex-col gap-1.5">
-            <label
-              className="text-sm font-medium text-foreground"
-              htmlFor="ws-token"
-            >
-              API Token
-              <span className="ml-1 text-xs font-normal text-muted-foreground">
-                (optional)
-              </span>
-            </label>
-            <Input
-              id="ws-token"
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="sprout_..."
-              type="password"
-              value={token}
-            />
-          </div>
+          {!serverless && (
+            <div className="flex flex-col gap-1.5">
+              <label
+                className="text-sm font-medium text-foreground"
+                htmlFor="ws-token"
+              >
+                API Token
+                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                  (optional)
+                </span>
+              </label>
+              <Input
+                id="ws-token"
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="sprout_..."
+                type="password"
+                value={token}
+              />
+            </div>
+          )}
           <p className="text-xs text-muted-foreground">
             Workspaces share your active identity. To use a different key,
             import it on the profile step (or in settings).

@@ -191,6 +191,13 @@ pub struct CliArgs {
     #[arg(long, env = "SPROUT_RELAY_URL", default_value = "ws://localhost:3000")]
     pub relay_url: String,
 
+    /// Serverless mode: the relay is a generic public Nostr relay with no
+    /// Sprout server. Reads/writes go over plain WebSocket (REQ/EVENT) instead
+    /// of the HTTP bridge, and NIP-42 AUTH is optional. See
+    /// docs/SPROUT_LITE_MODE.md.
+    #[arg(long, env = "SPROUT_SERVERLESS", default_value_t = false)]
+    pub serverless: bool,
+
     #[arg(long, env = "SPROUT_PRIVATE_KEY")]
     pub private_key: String,
 
@@ -431,6 +438,8 @@ pub struct ChannelFilter {
 pub struct Config {
     pub keys: Keys,
     pub relay_url: String,
+    /// Serverless mode (generic relay, plain-WS transport, optional AUTH).
+    pub serverless: bool,
     pub agent_command: String,
     pub agent_args: Vec<String>,
     pub mcp_command: String,
@@ -804,6 +813,7 @@ impl Config {
         let config = Config {
             keys,
             relay_url: args.relay_url,
+            serverless: args.serverless,
             agent_command,
             agent_args,
             mcp_command: args.mcp_command,
@@ -1169,6 +1179,7 @@ mod tests {
         Config {
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
+            serverless: false,
             agent_command: "goose".into(),
             agent_args: vec!["acp".into()],
             mcp_command: "sprout-mcp-server".into(),

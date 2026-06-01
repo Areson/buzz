@@ -151,6 +151,12 @@ pub async fn query_relay(
     state: &AppState,
     filters: &[serde_json::Value],
 ) -> Result<Vec<nostr::Event>, String> {
+    // Serverless mode: no HTTP bridge. Query the generic relay over WS.
+    if state.is_serverless() {
+        let relay_url = relay_ws_url_with_override(state);
+        return crate::ws_relay::query_relay_ws(state, &relay_url, filters).await;
+    }
+
     let url = format!("{}/query", relay_api_base_url_with_override(state));
     let body_bytes =
         serde_json::to_vec(filters).map_err(|e| format!("filter serialization failed: {e}"))?;
@@ -252,6 +258,17 @@ pub async fn sync_managed_agent_profile(
 ) -> Result<(), String> {
     // Build a signed kind:0 profile event (with optional NIP-OA auth tag).
     let event = build_profile_event(agent_keys, display_name, avatar_url, auth_tag)?;
+
+    // Serverless mode: publish the agent's profile over plain WS (no HTTP
+    // bridge, no NIP-98). Signed by the agent's keys.
+    if state.is_serverless() {
+        return crate::ws_relay::publish_signed_event_ws(&event, agent_keys, relay_url)
+            .await
+            .map_err(|e| {
+                format!("Created the agent, but could not sync its profile metadata: {e}")
+            });
+    }
+
     let event_json = event.as_json();
     let body_bytes = event_json.into_bytes();
 
@@ -298,6 +315,12 @@ pub async fn submit_event(
     builder: nostr::EventBuilder,
     state: &AppState,
 ) -> Result<SubmitEventResponse, String> {
+    // Serverless mode: no HTTP bridge. Publish to the generic relay over WS.
+    if state.is_serverless() {
+        let relay_url = relay_ws_url_with_override(state);
+        return crate::ws_relay::submit_event_ws(builder, state, &relay_url).await;
+    }
+
     // All synchronous work (signing) must complete before any .await
     // so the MutexGuard is dropped and the future remains Send.
     let url = format!("{}/events", relay_api_base_url_with_override(state));

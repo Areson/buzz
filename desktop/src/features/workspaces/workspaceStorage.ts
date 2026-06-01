@@ -1,4 +1,22 @@
-import type { Workspace } from "./types";
+import type { Workspace, WorkspaceMode } from "./types";
+
+/**
+ * Resolve a workspace's transport mode, defaulting legacy entries (which have
+ * no `mode` field) to `"sprout"`. Use this everywhere instead of reading
+ * `workspace.mode` directly.
+ */
+export function workspaceMode(
+  workspace: Pick<Workspace, "mode"> | null | undefined,
+): WorkspaceMode {
+  return workspace?.mode === "serverless" ? "serverless" : "sprout";
+}
+
+/** True when the workspace talks to a generic relay with no Sprout server. */
+export function isServerlessWorkspace(
+  workspace: Pick<Workspace, "mode"> | null | undefined,
+): boolean {
+  return workspaceMode(workspace) === "serverless";
+}
 
 const WORKSPACES_KEY = "sprout-workspaces";
 const ACTIVE_WORKSPACE_KEY = "sprout-active-workspace-id";
@@ -83,6 +101,7 @@ export function deriveWorkspaceName(relayUrl: string): string {
 export function initFirstWorkspace(
   relayUrl: string,
   pubkey: string,
+  mode: WorkspaceMode = "sprout",
 ): Workspace {
   const normalizedUrl = normalizeRelayUrl(relayUrl);
   const workspace: Workspace = {
@@ -90,6 +109,7 @@ export function initFirstWorkspace(
     name: deriveWorkspaceName(normalizedUrl),
     relayUrl: normalizedUrl,
     pubkey,
+    mode,
     addedAt: new Date().toISOString(),
   };
   saveWorkspaces([workspace]);

@@ -1175,11 +1175,13 @@ export async function applyWorkspace(
   relayUrl: string,
   nsec?: string,
   token?: string,
+  serverless?: boolean,
 ): Promise<void> {
   await invokeTauri("apply_workspace", {
     relayUrl,
     nsec: nsec ?? null,
     token: token ?? null,
+    serverless: serverless ?? false,
   });
 }
 

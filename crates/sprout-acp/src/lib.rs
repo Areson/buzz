@@ -910,10 +910,15 @@ async fn tokio_main() -> Result<()> {
         .filter(|s| !s.is_empty())
         .and_then(|s| sprout_sdk::nip_oa::parse_auth_tag(&s).ok());
 
-    let mut relay =
-        HarnessRelay::connect(&config.relay_url, &config.keys, &pubkey_hex, relay_auth_tag)
-            .await
-            .map_err(|e| anyhow::anyhow!("relay connect error: {e}"))?;
+    let mut relay = HarnessRelay::connect_with_mode(
+        &config.relay_url,
+        &config.keys,
+        &pubkey_hex,
+        relay_auth_tag,
+        config.serverless,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("relay connect error: {e}"))?;
 
     // Finding #22: tell the relay background task the watermark so it can use
     // `since = watermark - 5s` on the first REQ instead of `since=now`.
@@ -2794,6 +2799,7 @@ mod build_mcp_servers_tests {
         Config {
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
+            serverless: false,
             agent_command: "goose".into(),
             agent_args: vec!["acp".into()],
             mcp_command: "sprout-mcp-server".into(),

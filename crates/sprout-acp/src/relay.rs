@@ -59,6 +59,9 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for the TCP + WebSocket handshake in `do_connect`.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Timeout for a one-shot serverless WS query/publish (REQ→EOSE / EVENT→OK).
+const QUERY_WS_TIMEOUT: Duration = Duration::from_secs(10);
+
 use std::time::Instant;
 
 use futures_util::{SinkExt, StreamExt};
@@ -99,6 +102,13 @@ pub struct RestClient {
     pub keys: Keys,
     /// Optional NIP-OA auth tag JSON for `x-auth-tag` header (relay membership delegation).
     pub auth_tag_json: Option<String>,
+    /// Serverless mode: talk to a generic public Nostr relay over plain
+    /// WebSocket instead of the Sprout HTTP bridge (`/query`, `/events`).
+    /// When true, `base_url` is ignored and `ws_url` is used. See
+    /// docs/SPROUT_LITE_MODE.md.
+    pub serverless: bool,
+    /// WebSocket URL of the relay (used only in serverless mode).
+    pub ws_url: String,
 }
 
 /// Whether an HTTP status code is retriable (transient server/rate-limit errors).
@@ -259,6 +269,9 @@ impl RestClient {
     /// Accepts a slice of `nostr::Filter` (serialized as JSON array).
     /// Returns the events as a `serde_json::Value` (JSON array of event objects).
     pub async fn query(&self, filters: &[nostr::Filter]) -> Result<Value, RelayError> {
+        if self.serverless {
+            return self.query_ws(filters).await;
+        }
         let body_bytes = serde_json::to_vec(filters)
             .map_err(|e| RelayError::Http(format!("filter serialize error: {e}")))?;
         let resp = self.bridge_post("/query", &body_bytes).await?;
@@ -271,6 +284,9 @@ impl RestClient {
     ///
     /// The event must already be signed. Returns the relay response JSON.
     pub async fn submit_event(&self, event: &Event) -> Result<Value, RelayError> {
+        if self.serverless {
+            return self.submit_event_ws(event).await;
+        }
         let body_bytes = serde_json::to_vec(event)
             .map_err(|e| RelayError::Http(format!("event serialize error: {e}")))?;
         let resp = self.bridge_post("/events", &body_bytes).await?;
@@ -282,6 +298,194 @@ impl RestClient {
             return Ok(Value::Null);
         }
         serde_json::from_str(&text).map_err(|e| RelayError::Http(e.to_string()))
+    }
+
+    // ── Serverless WS transport ──────────────────────────────────────────
+
+    /// Query events over a plain WebSocket (serverless mode): open a socket,
+    /// send `REQ`, collect `EVENT`s until `EOSE`, then `CLOSE`. Answers a
+    /// NIP-42 AUTH challenge if the relay sends one. Returns a JSON array of
+    /// event objects (same shape as the HTTP `/query` bridge).
+    async fn query_ws(&self, filters: &[nostr::Filter]) -> Result<Value, RelayError> {
+        use futures_util::{SinkExt, StreamExt};
+
+        let parsed = self
+            .ws_url
+            .parse::<url::Url>()
+            .map_err(|e| RelayError::Http(format!("invalid relay URL: {e}")))?;
+        let (ws, _) = timeout(CONNECT_TIMEOUT, connect_async(parsed.as_str()))
+            .await
+            .map_err(|_| RelayError::ConnectionClosed)?
+            .map_err(|e| RelayError::WebSocket(Box::new(e)))?;
+        let (mut write, mut read) = ws.split();
+
+        let sub_id = format!("acp-q-{}", uuid::Uuid::new_v4());
+        let mut req = vec![Value::String("REQ".into()), Value::String(sub_id.clone())];
+        for f in filters {
+            req.push(serde_json::to_value(f).map_err(|e| RelayError::Http(e.to_string()))?);
+        }
+        write
+            .send(Message::Text(Value::Array(req).to_string().into()))
+            .await
+            .map_err(|e| RelayError::WebSocket(Box::new(e)))?;
+
+        let mut events: Vec<Value> = Vec::new();
+        let collect = timeout(QUERY_WS_TIMEOUT, async {
+            loop {
+                let raw = match read.next().await {
+                    Some(Ok(m)) => m,
+                    Some(Err(e)) => return Err(RelayError::WebSocket(Box::new(e))),
+                    None => return Err(RelayError::ConnectionClosed),
+                };
+                let Message::Text(text) = raw else { continue };
+                let Ok(arr) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                let Some(arr) = arr.as_array() else { continue };
+                let Some(tag) = arr.first().and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let sub_matches = arr.get(1).and_then(|v| v.as_str()) == Some(sub_id.as_str());
+                match tag {
+                    "EVENT" if sub_matches => {
+                        if let Some(ev) = arr.get(2) {
+                            events.push(ev.clone());
+                        }
+                    }
+                    "EOSE" if sub_matches => return Ok(()),
+                    "CLOSED" if sub_matches => return Ok(()),
+                    "AUTH" => {
+                        if let Some(challenge) = arr.get(1).and_then(|v| v.as_str()) {
+                            if let Ok(json) = self.ws_auth_message(challenge) {
+                                let _ = write.send(Message::Text(json.into())).await;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+
+        let _ = write
+            .send(Message::Text(
+                Value::Array(vec!["CLOSE".into(), sub_id.into()])
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        let _ = write.close().await;
+
+        // Timeout or early close → return whatever arrived (public relays are
+        // often slow to EOSE; partial results beat a hard failure).
+        match collect {
+            Ok(Ok(())) | Err(_) => Ok(Value::Array(events)),
+            Ok(Err(e)) => {
+                if events.is_empty() {
+                    Err(e)
+                } else {
+                    Ok(Value::Array(events))
+                }
+            }
+        }
+    }
+
+    /// Publish a signed event over a plain WebSocket (serverless mode) and wait
+    /// for the relay's `OK`. Answers a NIP-42 AUTH challenge if sent.
+    async fn submit_event_ws(&self, event: &Event) -> Result<Value, RelayError> {
+        use futures_util::{SinkExt, StreamExt};
+
+        let parsed = self
+            .ws_url
+            .parse::<url::Url>()
+            .map_err(|e| RelayError::Http(format!("invalid relay URL: {e}")))?;
+        let (ws, _) = timeout(CONNECT_TIMEOUT, connect_async(parsed.as_str()))
+            .await
+            .map_err(|_| RelayError::ConnectionClosed)?
+            .map_err(|e| RelayError::WebSocket(Box::new(e)))?;
+        let (mut write, mut read) = ws.split();
+
+        let event_id = event.id.to_hex();
+        let event_msg = Value::Array(vec![
+            "EVENT".into(),
+            serde_json::to_value(event).map_err(|e| RelayError::Http(e.to_string()))?,
+        ])
+        .to_string();
+
+        write
+            .send(Message::Text(event_msg.clone().into()))
+            .await
+            .map_err(|e| RelayError::WebSocket(Box::new(e)))?;
+
+        let result = timeout(QUERY_WS_TIMEOUT, async {
+            loop {
+                let raw = match read.next().await {
+                    Some(Ok(m)) => m,
+                    Some(Err(e)) => return Err(RelayError::WebSocket(Box::new(e))),
+                    None => return Err(RelayError::ConnectionClosed),
+                };
+                let Message::Text(text) = raw else { continue };
+                let Ok(arr) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                let Some(arr) = arr.as_array() else { continue };
+                let Some(tag) = arr.first().and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                match tag {
+                    "OK" if arr.get(1).and_then(|v| v.as_str()) == Some(event_id.as_str()) => {
+                        let accepted = arr.get(2).and_then(|v| v.as_bool()).unwrap_or(false);
+                        let message = arr
+                            .get(3)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        return Ok((accepted, message));
+                    }
+                    "AUTH" => {
+                        if let Some(challenge) = arr.get(1).and_then(|v| v.as_str()) {
+                            if let Ok(json) = self.ws_auth_message(challenge) {
+                                let _ = write.send(Message::Text(json.into())).await;
+                                let _ = write.send(Message::Text(event_msg.clone().into())).await;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+
+        let _ = write.close().await;
+
+        match result {
+            Ok(Ok((accepted, message))) => Ok(serde_json::json!({
+                "event_id": event_id,
+                "accepted": accepted,
+                "message": message,
+            })),
+            Ok(Err(e)) => Err(e),
+            // Best-effort: many relays accept silently or are slow to OK.
+            Err(_) => Ok(serde_json::json!({
+                "event_id": event_id,
+                "accepted": true,
+                "message": "published (no OK before timeout)",
+            })),
+        }
+    }
+
+    /// Build a NIP-42 `["AUTH", <event>]` message string for serverless writes.
+    fn ws_auth_message(&self, challenge: &str) -> Result<String, RelayError> {
+        let url = nostr::RelayUrl::parse(&self.ws_url)
+            .map_err(|e| RelayError::Http(format!("invalid relay URL: {e}")))?;
+        let event = EventBuilder::auth(challenge.to_string(), url)
+            .sign_with_keys(&self.keys)
+            .map_err(|e| RelayError::Http(format!("auth sign error: {e}")))?;
+        Ok(Value::Array(vec![
+            "AUTH".into(),
+            serde_json::to_value(&event).map_err(|e| RelayError::Http(e.to_string()))?,
+        ])
+        .to_string())
     }
 }
 
@@ -417,6 +621,8 @@ pub struct HarnessRelay {
     keys: Keys,
     /// Optional NIP-OA auth tag for relay membership delegation.
     auth_tag: Option<nostr::Tag>,
+    /// Serverless mode: generic relay, plain-WS reads/writes, AUTH optional.
+    serverless: bool,
     /// Handle to the background task (for clean shutdown).
     /// Wrapped in `Option` so `shutdown()` can take ownership without conflicting
     /// with `Drop` (which only has `&mut self`).
@@ -448,16 +654,32 @@ impl HarnessRelay {
     ///
     /// `auth_tag` is an optional NIP-OA owner attestation included in the AUTH
     /// event for relay membership delegation.
+    /// Server-mode convenience wrapper around [`HarnessRelay::connect_with_mode`].
+    /// Kept as part of the public API; the binary uses `connect_with_mode`.
+    #[allow(dead_code)]
     pub async fn connect(
         relay_url: &str,
         keys: &Keys,
         agent_pubkey_hex: &str,
         auth_tag: Option<nostr::Tag>,
     ) -> Result<Self, RelayError> {
+        Self::connect_with_mode(relay_url, keys, agent_pubkey_hex, auth_tag, false).await
+    }
+
+    /// Connect, optionally in serverless mode (generic relay, AUTH optional,
+    /// plain-WS reads/writes). See [`HarnessRelay::connect`].
+    pub async fn connect_with_mode(
+        relay_url: &str,
+        keys: &Keys,
+        agent_pubkey_hex: &str,
+        auth_tag: Option<nostr::Tag>,
+        serverless: bool,
+    ) -> Result<Self, RelayError> {
         // Perform the initial connection and auth handshake.
         // Finding #8: capture the handshake buffer and pass it to the background
         // task so buffered messages aren't silently discarded.
-        let (ws, handshake_buffer) = do_connect(relay_url, keys, auth_tag.as_ref()).await?;
+        let (ws, handshake_buffer) =
+            do_connect(relay_url, keys, auth_tag.as_ref(), serverless).await?;
 
         let (event_tx, event_rx) = mpsc::channel::<Option<SproutEvent>>(event_channel_capacity());
         let (observer_control_tx, observer_control_rx) =
@@ -480,6 +702,7 @@ impl HarnessRelay {
                 bg_relay_url,
                 bg_agent_pubkey_hex,
                 bg_auth_tag,
+                serverless,
             )
             .await;
         });
@@ -496,6 +719,7 @@ impl HarnessRelay {
             relay_url: relay_url.to_string(),
             keys: keys.clone(),
             auth_tag,
+            serverless,
             bg_handle: Some(bg_handle),
         })
     }
@@ -623,6 +847,8 @@ impl HarnessRelay {
                 .auth_tag
                 .as_ref()
                 .and_then(|t| serde_json::to_string(t.as_slice()).ok()),
+            serverless: self.serverless,
+            ws_url: self.relay_url.clone(),
         }
     }
 
@@ -895,10 +1121,20 @@ struct BgState {
     /// hours old), while still allowing startup-era channels to use the
     /// startup watermark via their `subscribe_since ≈ startup_watermark`.
     subscribe_since: HashMap<Uuid, u64>,
+    /// Serverless mode: generic relay, no NIP-42 handshake on (re)connect.
+    /// Threaded into `do_connect` from the reconnect paths.
+    serverless: bool,
 }
 
 impl BgState {
+    /// Server-mode constructor. Used by unit tests; the runtime path uses
+    /// [`BgState::with_serverless`].
+    #[allow(dead_code)]
     fn new() -> Self {
+        Self::with_serverless(false)
+    }
+
+    fn with_serverless(serverless: bool) -> Self {
         Self {
             active_subscriptions: HashMap::new(),
             last_seen: HashMap::new(),
@@ -912,6 +1148,7 @@ impl BgState {
             proactive_resubscribe_needed: false,
             startup_watermark: None,
             subscribe_since: HashMap::new(),
+            serverless,
         }
     }
 
@@ -1163,8 +1400,9 @@ async fn run_background_task(
     relay_url: String,
     agent_pubkey_hex: String,
     auth_tag: Option<nostr::Tag>,
+    serverless: bool,
 ) {
-    let mut state = BgState::new();
+    let mut state = BgState::with_serverless(serverless);
 
     // Finding #8: process any messages buffered during the initial auth handshake.
     // If a buffered message signals connection drop, trigger reconnect immediately.
@@ -2090,7 +2328,7 @@ async fn try_autonomous_reconnect(
             attempt + 1,
             backoffs.len()
         );
-        match do_connect(relay_url, keys, auth_tag).await {
+        match do_connect(relay_url, keys, auth_tag, state.serverless).await {
             Ok((new_ws, handshake_buffer)) => {
                 *ws = new_ws;
                 info!("autonomous reconnect succeeded (attempt {})", attempt + 1);
@@ -2205,7 +2443,7 @@ async fn wait_for_reconnect(
     let mut delay = Duration::from_secs(1);
     loop {
         info!("attempting relay reconnect to {relay_url}…");
-        match do_connect(relay_url, keys, auth_tag).await {
+        match do_connect(relay_url, keys, auth_tag, state.serverless).await {
             Ok((new_ws, handshake_buffer)) => {
                 *ws = new_ws;
                 info!("relay reconnected to {relay_url}");
@@ -2633,6 +2871,7 @@ async fn do_connect(
     relay_url: &str,
     keys: &Keys,
     auth_tag: Option<&nostr::Tag>,
+    serverless: bool,
 ) -> Result<(WsStream, VecDeque<RelayMessage>), RelayError> {
     let parsed = relay_url
         .parse::<url::Url>()
@@ -2646,6 +2885,14 @@ async fn do_connect(
 
     let mut ws = ws;
     let mut buffer: VecDeque<RelayMessage> = VecDeque::new();
+
+    // ── Serverless: generic relays don't require a NIP-42 handshake. ──────
+    // If a relay later sends an AUTH challenge it's answered by the
+    // background task / per-request WS helpers. Don't block here.
+    if serverless {
+        debug!("serverless mode: skipping NIP-42 handshake for {relay_url}");
+        return Ok((ws, buffer));
+    }
 
     // ── Step 1: Wait for AUTH challenge ───────────────────────────────────
     let challenge = wait_for_auth_challenge(&mut ws, &mut buffer, AUTH_TIMEOUT).await?;

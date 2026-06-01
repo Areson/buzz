@@ -76,6 +76,15 @@ export class RelayClient {
    */
   private terminal = false;
 
+  /**
+   * Serverless mode. When true, the relay is a generic public Nostr relay
+   * with no NIP-42 AUTH requirement and no Sprout server features. The
+   * connect handshake resolves as soon as the socket is open instead of
+   * waiting for an AUTH challenge. Set via {@link setServerless} on workspace
+   * apply. See docs/SPROUT_LITE_MODE.md.
+   */
+  private serverless = false;
+
   private connectionStateEmitter = new RelayConnectionStateEmitter("idle");
   private stallWatchdog = new RelayStallWatchdog({
     intervalMs: STALL_CHECK_INTERVAL_MS,
@@ -375,6 +384,15 @@ export class RelayClient {
     );
   }
 
+  /**
+   * Toggle serverless mode. Must be called before {@link preconnect} /
+   * connect (i.e. on workspace apply, while disconnected). In serverless mode
+   * the connect handshake does not wait for a NIP-42 AUTH challenge.
+   */
+  setServerless(serverless: boolean) {
+    this.serverless = serverless;
+  }
+
   async preconnect() {
     // Explicit re-engagement. If the session went terminal (auth rejection)
     // the caller is asking us to try again, so clear the latch.
@@ -460,22 +478,31 @@ export class RelayClient {
       config: {},
     });
 
-    await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        this.authRequest = null;
-        this.resetConnection(
-          new Error("Timed out while waiting for relay authentication."),
-        );
-        reject(new Error("Timed out while waiting for relay authentication."));
-      }, 8_000);
+    if (this.serverless) {
+      // Generic public relays don't require (or send) a NIP-42 AUTH challenge.
+      // Treat the socket as ready as soon as it's open. If a challenge does
+      // arrive later, handleAuthChallenge still signs and answers it.
+      this.authRequest = null;
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          this.authRequest = null;
+          this.resetConnection(
+            new Error("Timed out while waiting for relay authentication."),
+          );
+          reject(
+            new Error("Timed out while waiting for relay authentication."),
+          );
+        }, 8_000);
 
-      this.authRequest = {
-        pendingEventId: "",
-        resolve,
-        reject,
-        timeout,
-      };
-    });
+        this.authRequest = {
+          pendingEventId: "",
+          resolve,
+          reject,
+          timeout,
+        };
+      });
+    }
 
     this.reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
     await this.replayLiveSubscriptions();
@@ -755,7 +782,18 @@ export class RelayClient {
       relayUrl: this.relayUrl,
     });
 
-    if (generation !== this.connectionGeneration || !this.authRequest) {
+    if (generation !== this.connectionGeneration) {
+      return;
+    }
+
+    // Serverless mode doesn't block the connect handshake on AUTH (so
+    // `authRequest` is null), but a generic relay may still challenge and
+    // require auth for writes. Answer the challenge anyway — best effort, no
+    // pending handshake to resolve.
+    if (!this.authRequest) {
+      if (this.serverless) {
+        await this.sendRaw(["AUTH", event]);
+      }
       return;
     }
 

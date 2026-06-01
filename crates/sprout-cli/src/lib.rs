@@ -75,6 +75,12 @@ struct Cli {
     )]
     relay: String,
 
+    /// Serverless mode: the relay is a generic public Nostr relay with no
+    /// Sprout server. Reads/writes use plain WebSocket (REQ/EVENT) instead of
+    /// the HTTP bridge, and NIP-42 AUTH is optional. See docs/SPROUT_LITE_MODE.md.
+    #[arg(long, env = "SPROUT_SERVERLESS", default_value_t = false)]
+    serverless: bool,
+
     /// Nostr private key (hex or nsec). This is the CLI's identity.
     #[arg(long, env = "SPROUT_PRIVATE_KEY")]
     private_key: Option<String>,
@@ -1064,6 +1070,8 @@ pub enum PackCmd {
 
 async fn run(cli: Cli) -> Result<(), CliError> {
     let relay_url = client::normalize_relay_url(&cli.relay);
+    // In serverless mode we need the WebSocket URL (ws/wss), not the HTTP form.
+    let ws_url = client::to_ws_url(&cli.relay);
 
     // Pack commands are local-only — no relay connection needed.
     if let Cmd::Pack(ref sub) = cli.command {
@@ -1097,7 +1105,14 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         _ => (None, None),
     };
 
-    let client = SproutClient::new(relay_url, keys, auth_tag, auth_tag_json)?;
+    let client = SproutClient::new(
+        relay_url,
+        ws_url,
+        cli.serverless,
+        keys,
+        auth_tag,
+        auth_tag_json,
+    )?;
 
     match cli.command {
         Cmd::Messages(sub) => commands::messages::dispatch(sub, &client, &cli.format).await,

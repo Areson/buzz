@@ -718,6 +718,74 @@ pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuild
     Ok(EventBuilder::new(Kind::Custom(46031), note.unwrap_or("")).tags(tags))
 }
 
+// ── Serverless mode: direct addressable-event builders ──────────────────────
+//
+// In serverless mode there is no Sprout relay to process command events
+// (kind 9007 create-channel, 41010 dm-open) and materialize the resulting
+// addressable metadata. The client builds those addressable events itself and
+// publishes them straight to the generic relay. The shapes here must match
+// what `nostr_convert::channel_info_from_event` expects to parse back.
+//
+// - kind 39000 — channel metadata: `d`=channel_id, `name`, `about`, `t`=type,
+//   `public`/`private`/`hidden`, and `p`=participants for DMs.
+// - kind 39002 — channel membership: `d`=channel_id, one `p` per member.
+//   `get_channels` finds a user's channels via {kinds:[39002], #p:[me]}.
+
+/// Kind 39000 — channel metadata, published directly (serverless mode).
+pub fn build_channel_metadata_serverless(
+    channel_id: &str,
+    name: &str,
+    visibility: &str,
+    channel_type: &str,
+    about: Option<&str>,
+    participants: &[String],
+) -> Result<EventBuilder, String> {
+    let mut tags = vec![
+        tag(vec!["d", channel_id])?,
+        tag(vec!["name", name])?,
+        tag(vec!["t", channel_type])?,
+    ];
+
+    match visibility {
+        "open" => tags.push(tag(vec!["public"])?),
+        "private" => tags.push(tag(vec!["private"])?),
+        other => return Err(format!("invalid visibility: {other}")),
+    }
+
+    if channel_type == "dm" {
+        tags.push(tag(vec!["hidden"])?);
+    }
+
+    if let Some(a) = about {
+        if !a.is_empty() {
+            tags.push(tag(vec!["about", a])?);
+        }
+    }
+
+    for pk in participants {
+        check_pubkey(pk)?;
+        tags.push(tag(vec!["p", &pk.to_ascii_lowercase()])?);
+    }
+
+    Ok(EventBuilder::new(Kind::Custom(39000), "").tags(tags))
+}
+
+/// Kind 39002 — channel membership, published directly (serverless mode).
+///
+/// One addressable event per channel (`d`=channel_id) listing all members as
+/// `p` tags. Replaceable: re-publishing supersedes the previous member list.
+pub fn build_channel_members_serverless(
+    channel_id: &str,
+    member_pubkeys: &[String],
+) -> Result<EventBuilder, String> {
+    let mut tags = vec![tag(vec!["d", channel_id])?];
+    for pk in member_pubkeys {
+        check_pubkey(pk)?;
+        tags.push(tag(vec!["p", &pk.to_ascii_lowercase()])?);
+    }
+    Ok(EventBuilder::new(Kind::Custom(39002), "").tags(tags))
+}
+
 // ── Transport ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -798,5 +866,79 @@ mod tests {
         assert_eq!(tags[2], vec!["reason", "returned"]);
         assert_eq!(tags.len(), 3, "self unarchive must not carry auth tag");
         assert_eq!(event.pubkey.to_hex(), TARGET_HEX);
+    }
+
+    // ── Serverless builders ──────────────────────────────────────────────────
+
+    const PK_A: &str = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+    const PK_B: &str = "4d2e3f4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60";
+
+    fn sign(builder: EventBuilder) -> nostr::Event {
+        builder.sign_with_keys(&Keys::generate()).unwrap()
+    }
+
+    #[test]
+    fn serverless_channel_metadata_open_stream() {
+        let event = sign(
+            build_channel_metadata_serverless(
+                "chan-1",
+                "general",
+                "open",
+                "stream",
+                Some("the main channel"),
+                &[],
+            )
+            .unwrap(),
+        );
+        assert_eq!(event.kind, Kind::Custom(39000));
+        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+        assert!(tags.contains(&vec!["d".into(), "chan-1".into()]));
+        assert!(tags.contains(&vec!["name".into(), "general".into()]));
+        assert!(tags.contains(&vec!["t".into(), "stream".into()]));
+        assert!(tags.contains(&vec!["public".into()]));
+        assert!(tags.contains(&vec!["about".into(), "the main channel".into()]));
+        // Not a DM: must not be hidden.
+        assert!(!tags
+            .iter()
+            .any(|t| t.first().map(String::as_str) == Some("hidden")));
+    }
+
+    #[test]
+    fn serverless_channel_metadata_dm_is_hidden_and_private() {
+        let event = sign(
+            build_channel_metadata_serverless(
+                "dm-1",
+                "Direct message",
+                "private",
+                "dm",
+                None,
+                &[PK_A.to_string()],
+            )
+            .unwrap(),
+        );
+        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+        assert!(tags.contains(&vec!["t".into(), "dm".into()]));
+        assert!(tags.contains(&vec!["private".into()]));
+        assert!(tags.contains(&vec!["hidden".into()]));
+        assert!(tags.contains(&vec!["p".into(), PK_A.to_string()]));
+    }
+
+    #[test]
+    fn serverless_channel_metadata_rejects_bad_visibility() {
+        let result = build_channel_metadata_serverless("c", "n", "weird", "stream", None, &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn serverless_members_lists_all_pubkeys() {
+        let event = sign(
+            build_channel_members_serverless("chan-1", &[PK_A.to_string(), PK_B.to_string()])
+                .unwrap(),
+        );
+        assert_eq!(event.kind, Kind::Custom(39002));
+        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+        assert_eq!(tags[0], vec!["d".to_string(), "chan-1".to_string()]);
+        assert!(tags.contains(&vec!["p".into(), PK_A.to_string()]));
+        assert!(tags.contains(&vec!["p".into(), PK_B.to_string()]));
     }
 }
