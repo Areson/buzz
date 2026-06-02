@@ -531,16 +531,31 @@ export class RelayClient {
       this.relayUrl = await getRelayWsUrl();
     }
 
+    console.info(
+      `[relay] connecting live WS to ${this.relayUrl} (serverless=${this.serverless})`,
+    );
+
     const generation = ++this.connectionGeneration;
     this.onMessageChannel = new Channel<unknown>((message) => {
       void this.handleWsMessage(message, generation);
     });
 
-    this.wsId = await invoke<number>("plugin:websocket|connect", {
-      url: this.relayUrl,
-      onMessage: this.onMessageChannel,
-      config: {},
-    });
+    try {
+      this.wsId = await invoke<number>("plugin:websocket|connect", {
+        url: this.relayUrl,
+        onMessage: this.onMessageChannel,
+        config: {},
+      });
+      console.info(
+        `[relay] live WS connected to ${this.relayUrl} (id=${this.wsId})`,
+      );
+    } catch (error) {
+      console.error(
+        `[relay] live WS connect FAILED to ${this.relayUrl}:`,
+        error,
+      );
+      throw error;
+    }
 
     if (this.serverless) {
       // Generic public relays don't require (or send) a NIP-42 AUTH challenge.
@@ -666,9 +681,15 @@ export class RelayClient {
 
   private async sendRaw(payload: unknown[]) {
     if (this.wsId === null) {
+      console.error(
+        `[relay] sendRaw FAILED — socket not connected; payload=${payload[0]}`,
+      );
       throw new Error("Relay socket is not connected.");
     }
 
+    console.debug(
+      `[relay] → ${payload[0]} ${JSON.stringify(payload).slice(0, 160)}`,
+    );
     await invoke("plugin:websocket|send", {
       id: this.wsId,
       message: {
@@ -728,9 +749,15 @@ export class RelayClient {
     timeoutMessage: string,
     sendErrorMessage: string,
   ) {
+    console.info(
+      `[relay] publishEvent kind=${event.kind} id=${event.id.slice(0, 8)} → ${this.relayUrl}`,
+    );
     return new Promise<RelayEvent>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
         this.pendingEvents.delete(event.id);
+        console.warn(
+          `[relay] publishEvent TIMEOUT id=${event.id.slice(0, 8)} (no OK in 8s) — ${timeoutMessage}`,
+        );
         reject(new Error(timeoutMessage));
       }, 8_000);
 
@@ -868,8 +895,14 @@ export class RelayClient {
   private handleEvent(subId: string, event: RelayEvent) {
     const subscription = this.subscriptions.get(subId);
     if (!subscription) {
+      console.debug(
+        `[relay] ← EVENT for UNKNOWN sub ${subId} (kind ${event.kind})`,
+      );
       return;
     }
+    console.debug(
+      `[relay] ← EVENT sub=${subId.slice(0, 12)} kind=${event.kind} (${subscription.mode})`,
+    );
 
     if (subscription.mode === "history") {
       subscription.events.push(event);
@@ -921,6 +954,9 @@ export class RelayClient {
   }
 
   private handleOk(eventId: string, success: boolean, message: string) {
+    console.info(
+      `[relay] OK id=${eventId.slice(0, 8)} accepted=${success} msg=${JSON.stringify(message)}`,
+    );
     if (this.authRequest && this.authRequest.pendingEventId === eventId) {
       window.clearTimeout(this.authRequest.timeout);
       const authRequest = this.authRequest;

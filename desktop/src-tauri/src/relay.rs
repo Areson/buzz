@@ -171,7 +171,21 @@ pub async fn query_relay(
     // Serverless mode: no HTTP bridge. Query the generic relay over WS.
     if state.is_serverless() {
         let relay_urls = relay_ws_urls_with_override(state);
-        return crate::ws_relay::query_relay_ws(state, &relay_urls, filters).await;
+        eprintln!(
+            "sprout-desktop: [serverless] query → {relay_urls:?} filters={}",
+            serde_json::to_string(filters).unwrap_or_default()
+        );
+        let r = crate::ws_relay::query_relay_ws(state, &relay_urls, filters).await;
+        match &r {
+            Ok(events) => {
+                eprintln!(
+                    "sprout-desktop: [serverless] query OK {} event(s)",
+                    events.len()
+                )
+            }
+            Err(e) => eprintln!("sprout-desktop: [serverless] query ERR: {e}"),
+        }
+        return r;
     }
 
     let url = format!("{}/query", relay_api_base_url_with_override(state));
@@ -340,7 +354,16 @@ pub async fn submit_event(
     // Serverless mode: no HTTP bridge. Publish to the generic relay over WS.
     if state.is_serverless() {
         let relay_urls = relay_ws_urls_with_override(state);
-        return crate::ws_relay::submit_event_ws(builder, state, &relay_urls).await;
+        eprintln!("sprout-desktop: [serverless] submit_event → {relay_urls:?}");
+        let r = crate::ws_relay::submit_event_ws(builder, state, &relay_urls).await;
+        match &r {
+            Ok(resp) => eprintln!(
+                "sprout-desktop: [serverless] submit_event OK accepted={} msg={:?}",
+                resp.accepted, resp.message
+            ),
+            Err(e) => eprintln!("sprout-desktop: [serverless] submit_event ERR: {e}"),
+        }
+        return r;
     }
 
     // All synchronous work (signing) must complete before any .await

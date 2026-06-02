@@ -719,6 +719,45 @@ export async function getEventById(eventId: string): Promise<RelayEvent> {
   return JSON.parse(eventJson) as RelayEvent;
 }
 
+/**
+ * Fetch channel message history over the multi-relay pool (serverless mode).
+ * Reads from the same relay set used for writes so reads/writes converge
+ * (the live-WS path is single-relay and split-brains in serverless mode).
+ */
+export async function queryChannelMessages(
+  channelId: string,
+  kinds: number[],
+  limit: number,
+  until?: number,
+): Promise<RelayEvent[]> {
+  return invokeTauri<RelayEvent[]>("query_channel_messages", {
+    channelId,
+    kinds,
+    limit,
+    until: until ?? null,
+  });
+}
+
+/**
+ * Open a persistent live subscription for a channel across ALL relays
+ * (serverless). New events are emitted as `serverless-event:<channelId>` Tauri
+ * events. Returns the subscription id for teardown. Standard Nostr realtime —
+ * subscribe to every relay at once and merge.
+ */
+export async function subscribeChannelMessages(
+  channelId: string,
+  kinds: number[],
+): Promise<string> {
+  return invokeTauri<string>("subscribe_channel_messages", {
+    channelId,
+    kinds,
+  });
+}
+
+export async function unsubscribeChannelMessages(subId: string): Promise<void> {
+  await invokeTauri("unsubscribe_channel_messages", { subId });
+}
+
 export async function sendChannelMessage(
   channelId: string,
   content: string,

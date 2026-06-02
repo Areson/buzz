@@ -13,12 +13,16 @@ import {
   resolveReplyRootId,
 } from "@/features/messages/lib/threading";
 import { relayClient } from "@/shared/api/relayClient";
+import { listen } from "@tauri-apps/api/event";
 import {
   addReaction,
   deleteMessage,
   editMessage,
+  queryChannelMessages,
   removeReaction,
   sendChannelMessage,
+  subscribeChannelMessages,
+  unsubscribeChannelMessages,
 } from "@/shared/api/tauri";
 import type { Channel, Identity, RelayEvent } from "@/shared/api/types";
 
@@ -40,9 +44,30 @@ function isEncryptedChannel(channel: Channel | null): boolean {
 // from the on-render overlay.
 import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay.mjs";
 import {
+  CHANNEL_EVENT_KINDS,
   KIND_STREAM_MESSAGE,
   KIND_SYSTEM_MESSAGE,
 } from "@/shared/constants/kinds";
+
+/**
+ * Fetch channel history. In serverless mode, non-encrypted channels go through
+ * the Rust multi-relay pool (`queryChannelMessages`) so reads hit the same
+ * relay set as writes — the live-WS path is single-relay and split-brains.
+ * Encrypted channels and server mode keep the existing live-WS path.
+ */
+async function fetchHistoryForChannel(
+  channel: Channel,
+  limit: number,
+): Promise<RelayEvent[]> {
+  if (isActiveWorkspaceServerless() && !isEncryptedChannel(channel)) {
+    return queryChannelMessages(channel.id, [...CHANNEL_EVENT_KINDS], limit);
+  }
+  return relayClient.fetchChannelHistory(
+    channel.id,
+    limit,
+    isEncryptedChannel(channel),
+  );
+}
 
 type MessageQueryContext = {
   optimisticId: string;
@@ -146,10 +171,9 @@ export function useChannelMessagesQuery(channel: Channel | null) {
         throw new Error("No channel selected.");
       }
 
-      const history = await relayClient.fetchChannelHistory(
-        channel.id,
+      const history = await fetchHistoryForChannel(
+        channel,
         CHANNEL_HISTORY_LIMIT,
-        isEncryptedChannel(channel),
       );
       const currentMessages =
         queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
@@ -171,18 +195,17 @@ export function useChannelSubscription(channel: Channel | null) {
   const channelType = channel?.channelType ?? null;
   const encrypted = isEncryptedChannel(channel);
   const syncLatestHistory = useEffectEvent(async () => {
-    if (!channelId) {
+    if (!channel) {
       return;
     }
 
-    const history = await relayClient.fetchChannelHistory(
-      channelId,
+    const history = await fetchHistoryForChannel(
+      channel,
       CHANNEL_HISTORY_LIMIT,
-      encrypted,
     );
 
     queryClient.setQueryData<RelayEvent[]>(
-      channelMessagesKey(channelId),
+      channelMessagesKey(channel.id),
       (current = []) => {
         const mergedHistory = normalizeTimelineMessages([
           ...current,
@@ -233,6 +256,47 @@ export function useChannelSubscription(channel: Channel | null) {
 
     let isDisposed = false;
     let cleanup: (() => Promise<void>) | undefined;
+
+    // Serverless (non-encrypted): subscribe across ALL relays via the Rust
+    // pool, listening for `serverless-event:<channelId>` Tauri events. This is
+    // standard Nostr realtime without the single-relay split-brain of the live
+    // WS. Encrypted channels keep the live-WS gift-wrap path.
+    if (isActiveWorkspaceServerless() && !encrypted) {
+      let unlisten: (() => void) | undefined;
+      let subId: string | undefined;
+      void (async () => {
+        unlisten = await listen<RelayEvent>(
+          `serverless-event:${channelId}`,
+          (event) => {
+            if (!isDisposed) {
+              appendMessage(event.payload);
+            }
+          },
+        );
+        if (isDisposed) {
+          unlisten();
+          return;
+        }
+        subId = await subscribeChannelMessages(channelId, [
+          ...CHANNEL_EVENT_KINDS,
+        ]);
+        // Initial backfill so existing messages show immediately.
+        void syncLatestHistory().catch(() => {});
+      })().catch((error) => {
+        console.error(
+          "Failed serverless channel subscription",
+          channelId,
+          error,
+        );
+      });
+
+      return () => {
+        isDisposed = true;
+        if (unlisten) unlisten();
+        if (subId) void unsubscribeChannelMessages(subId);
+      };
+    }
+
     const disposeReconnectListener = relayClient.subscribeToReconnects(() => {
       void syncLatestHistory().catch((error) => {
         if (!isDisposed) {
@@ -367,6 +431,36 @@ export function useSendMessageMutation(
                 ).map((pk) => ["p", pk])
               : []),
             ...(mediaTags ?? []),
+          ],
+          content: content.trim(),
+          sig: "",
+        };
+      }
+
+      // Serverless: route through the Rust command, which publishes over the
+      // multi-relay connection pool (publish-to-all, succeed-if-any-accepts).
+      // The live-WS path (relayClient.sendMessage) uses a single relay with no
+      // pool/fallback, so it trips public-relay rate limits with no recovery.
+      if (isActiveWorkspaceServerless()) {
+        const result = await sendChannelMessage(
+          channel.id,
+          content,
+          null,
+          undefined,
+          mentionPubkeys,
+        );
+        return {
+          id: result.eventId,
+          pubkey: identity.pubkey,
+          created_at: result.createdAt,
+          kind: KIND_STREAM_MESSAGE,
+          tags: [
+            ["h", channel.id],
+            ["p", identity.pubkey],
+            ...normalizeMentionPubkeys(
+              mentionPubkeys ?? [],
+              identity.pubkey,
+            ).map((pk) => ["p", pk]),
           ],
           content: content.trim(),
           sig: "",

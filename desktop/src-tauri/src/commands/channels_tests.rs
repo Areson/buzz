@@ -410,3 +410,88 @@ async fn serverless_burst_no_rate_limit() {
     }
     eprintln!("✅ 6 sequential publishes reused one pooled connection — no rate limit");
 }
+
+// ── Multi-relay live subscription (the split-brain fix) ──────────────────────
+//
+// Reproduces the exact bug: a message published to relay B must still reach a
+// subscriber, because the subscription is open on ALL relays at once (standard
+// Nostr — like damus/SimplePool), not just one. We:
+//   1. open a pool live subscription across [damus, nos.lol] for a channel,
+//   2. publish a kind-9 message to that channel (lands on whichever accepts),
+//   3. assert the subscription delivers it within a few seconds.
+//
+// Run with:
+//   cargo test --manifest-path desktop/src-tauri/Cargo.toml \
+//     serverless_live_subscription_multi_relay -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "network: hits live public relays"]
+async fn serverless_live_subscription_multi_relay() {
+    use crate::app_state::build_app_state;
+    use crate::relay::submit_event;
+    use std::sync::atomic::Ordering;
+
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    let keys = nostr::Keys::generate();
+    let relays: Vec<String> = std::env::var("RELAY_URL")
+        .unwrap_or_else(|_| "wss://relay.damus.io,wss://nos.lol".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    let state = build_app_state();
+    *state.keys.lock().unwrap() = keys.clone();
+    *state.relay_url_override.lock().unwrap() = Some(relays.join(","));
+    state.serverless.store(true, Ordering::Relaxed);
+
+    let channel = uuid::Uuid::new_v4();
+    let secret = format!("live-sub-{}", &channel.to_string()[..8]);
+
+    // 1. Open a live subscription across all relays.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<nostr::Event>();
+    let sub_id = state
+        .relay_pool
+        .subscribe(
+            &relays,
+            &keys,
+            serde_json::json!({
+                "kinds": [9],
+                "#h": [channel.to_string()],
+                "since": chrono::Utc::now().timestamp() - 5,
+            }),
+            tx,
+        )
+        .await;
+    eprintln!("opened live sub {sub_id} across {relays:?}");
+
+    // Let the REQs register on all relays.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // 2. Publish a message (multi-relay fanout — lands wherever accepts).
+    let builder =
+        crate::events::build_message(channel, &secret, None, &[], &[]).expect("build message");
+    let resp = submit_event(builder, &state).await.expect("publish");
+    eprintln!(
+        "published: accepted={} msg={:?}",
+        resp.accepted, resp.message
+    );
+
+    // 3. The live subscription must deliver it (from whichever relay stored it).
+    let got = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while let Some(ev) = rx.recv().await {
+            if ev.content == secret {
+                return Some(ev);
+            }
+        }
+        None
+    })
+    .await
+    .expect("timed out waiting for live event — split-brain not fixed");
+
+    let got = got.expect("subscription channel closed before event arrived");
+    assert_eq!(got.content, secret);
+    assert_eq!(got.pubkey, keys.public_key());
+    eprintln!("✅ live subscription delivered the message across relays — no split-brain");
+
+    state.relay_pool.unsubscribe(&sub_id).await;
+}

@@ -95,6 +95,8 @@ pub struct RelayPool {
     /// retried. Lets a burst of queries skip a dead relay instead of each
     /// paying the full connect timeout.
     failed: std::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// Live subscriptions → the relays they're open on (for CLOSE on teardown).
+    live_subs: std::sync::Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl RelayPool {
@@ -224,6 +226,66 @@ impl RelayPool {
         Ok(events)
     }
 
+    /// Open a PERSISTENT live subscription across all given relays. Every
+    /// matching EVENT from any relay is forwarded to `sink` (deduped by id).
+    /// The REQ stays open until [`RelayPool::unsubscribe`] is called with the
+    /// returned sub id. This is how serverless gets standard Nostr realtime:
+    /// subscribe to every relay at once and merge, so a message published to
+    /// relay B (because relay A rate-limited the write) still streams back.
+    pub async fn subscribe(
+        &self,
+        relay_urls: &[String],
+        keys: &Keys,
+        filter: serde_json::Value,
+        sink: mpsc::UnboundedSender<nostr::Event>,
+    ) -> String {
+        let sub_id = format!("live-{}", uuid::Uuid::new_v4());
+        let req_json = serde_json::Value::Array(vec![
+            serde_json::Value::String("REQ".into()),
+            serde_json::Value::String(sub_id.clone()),
+            filter,
+        ])
+        .to_string();
+
+        for url in relay_urls {
+            // Best-effort: a dead relay just doesn't contribute events.
+            let conn = match self.get(url, keys).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            {
+                let mut d = conn.dispatch.lock().await;
+                d.queries.insert(
+                    sub_id.clone(),
+                    PendingQuery {
+                        events_tx: sink.clone(),
+                        done_tx: None, // never completes — live stream
+                    },
+                );
+            }
+            let _ = conn.send(req_json.clone()).await;
+        }
+        // Track which relays this sub is on so we can CLOSE them later.
+        self.live_subs
+            .lock()
+            .unwrap()
+            .insert(sub_id.clone(), relay_urls.to_vec());
+        sub_id
+    }
+
+    /// Close a live subscription on all relays it was opened on.
+    pub async fn unsubscribe(&self, sub_id: &str) {
+        let urls = self.live_subs.lock().unwrap().remove(sub_id);
+        let Some(urls) = urls else { return };
+        let close_json = serde_json::json!(["CLOSE", sub_id]).to_string();
+        for url in urls {
+            if let Some(conn) = self.live(&url) {
+                conn.dispatch.lock().await.queries.remove(sub_id);
+                let _ = conn.send(close_json.clone()).await;
+            }
+        }
+    }
+
     /// Publish a signed event over the pooled connection and await OK.
     pub async fn publish(
         &self,
@@ -249,11 +311,18 @@ impl RelayPool {
         let event_json = serde_json::json!(["EVENT", event]).to_string();
         if let Err(e) = conn.send(event_json).await {
             conn.dispatch.lock().await.publishes.remove(&event_id);
+            eprintln!("sprout-desktop: [pool] {relay_url} send EVENT failed: {e}");
             return Err(e);
         }
 
         match tokio::time::timeout(PUBLISH_TIMEOUT, ok_rx).await {
-            Ok(Ok(resp)) => Ok(resp),
+            Ok(Ok(resp)) => {
+                eprintln!(
+                    "sprout-desktop: [pool] {relay_url} OK accepted={} msg={:?}",
+                    resp.accepted, resp.message
+                );
+                Ok(resp)
+            }
             // Channel dropped (reader died) — clean up and report.
             Ok(Err(_)) => {
                 conn.dispatch.lock().await.publishes.remove(&event_id);
@@ -278,15 +347,18 @@ impl RelayPool {
     pub fn clear(&self) {
         self.conns.lock().unwrap().clear();
         self.failed.lock().unwrap().clear();
+        self.live_subs.lock().unwrap().clear();
     }
 }
 
 /// Establish a connection and spawn its background reader task.
 async fn connect(relay_url: &str, keys: &Keys) -> Result<Arc<Conn>, String> {
+    eprintln!("sprout-desktop: [pool] connecting to {relay_url}");
     let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(relay_url))
         .await
         .map_err(|_| format!("relay {relay_url} connection timed out"))?
         .map_err(|e| format!("relay connection failed: {e}"))?;
+    eprintln!("sprout-desktop: [pool] connected to {relay_url}");
     let (write, read) = ws.split();
     let dispatch = Arc::new(Mutex::new(Dispatch::default()));
     let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));

@@ -142,17 +142,27 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
         Vec::new()
     };
 
-    // Step 3: fetch ALL open channel metadata so the channel browser can show
+    // Step 3: fetch open channel metadata so the channel browser can show
     // discoverable channels the user hasn't joined yet. The relay's access
     // control allows reading kind:39000 for open channels regardless of membership.
-    let open_meta_events = query_relay(
-        &state,
-        &[serde_json::json!({
-            "kinds": [39000],
-            "limit": 5000,
-        })],
-    )
-    .await?;
+    //
+    // SERVERLESS: skip this. A generic public relay has no Sprout-specific
+    // notion of "our" channels — an unfiltered kind:39000 query returns the
+    // ENTIRE network's channels (hundreds of unrelated test channels from
+    // damus/nos.lol), which is slow and floods the sidebar with junk. In
+    // serverless mode you only see channels you're a member of (Step 1/2).
+    let open_meta_events = if state.is_serverless() {
+        Vec::new()
+    } else {
+        query_relay(
+            &state,
+            &[serde_json::json!({
+                "kinds": [39000],
+                "limit": 5000,
+            })],
+        )
+        .await?
+    };
 
     // Merge: member channels (marked as member) + open channels (not yet joined).
     let member_d_tags: std::collections::HashSet<String> = meta_events
@@ -646,6 +656,101 @@ pub async fn leave_channel(channel_id: String, state: State<'_, AppState>) -> Re
     }
     let builder = events::build_leave(uuid)?;
     submit_event(builder, &state).await?;
+    Ok(())
+}
+
+/// Fetch channel message history over the multi-relay pool (serverless).
+///
+/// The live-WS read path (`relayClient`) connects to a single relay, which
+/// split-brains against the multi-relay *write* path (a message published to
+/// nos.lol is invisible to a read subscription on damus). This command queries
+/// the same relay set used for writes and merges/dedups results, so reads and
+/// writes converge. Returns events as JSON (the same shape the live WS yields).
+#[tauri::command]
+pub async fn query_channel_messages(
+    channel_id: String,
+    kinds: Vec<u16>,
+    limit: usize,
+    until: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut filter = serde_json::json!({
+        "kinds": kinds,
+        "#h": [channel_id],
+        "limit": limit,
+    });
+    if let Some(u) = until {
+        filter["until"] = serde_json::json!(u);
+    }
+    let events = query_relay(&state, &[filter]).await?;
+    Ok(events
+        .iter()
+        .map(|ev| serde_json::to_value(ev).unwrap_or(serde_json::Value::Null))
+        .filter(|v| !v.is_null())
+        .collect())
+}
+
+/// Open a persistent live subscription for a channel across ALL relays
+/// (serverless). Each new matching event is emitted to the frontend as a
+/// `serverless-event:<channel_id>` Tauri event. Returns the subscription id;
+/// pass it to `unsubscribe_channel_messages` to tear down.
+///
+/// This gives standard Nostr realtime in serverless mode: we subscribe to every
+/// relay at once and merge, so a message that landed on relay B (because relay A
+/// rate-limited the write) still streams back live — no polling, no split-brain.
+#[tauri::command]
+pub async fn subscribe_channel_messages(
+    channel_id: String,
+    kinds: Vec<u16>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    use tauri::Emitter;
+
+    let relay_urls = crate::relay::relay_ws_urls_with_override(&state);
+    let keys = {
+        let guard = state.keys.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
+    let filter = serde_json::json!({
+        "kinds": kinds,
+        "#h": [channel_id],
+        "since": chrono::Utc::now().timestamp(),
+        "limit": 0,
+    });
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<nostr::Event>();
+    let sub_id = state
+        .relay_pool
+        .subscribe(&relay_urls, &keys, filter, tx)
+        .await;
+
+    // Forward events to the frontend, deduping by id (the same event arrives
+    // from multiple relays). The task ends when the sender is dropped on
+    // unsubscribe / pool clear.
+    let event_name = format!("serverless-event:{channel_id}");
+    tokio::spawn(async move {
+        let mut seen = std::collections::HashSet::new();
+        while let Some(ev) = rx.recv().await {
+            if !seen.insert(ev.id.to_hex()) {
+                continue;
+            }
+            if let Ok(v) = serde_json::to_value(&ev) {
+                let _ = app.emit(&event_name, v);
+            }
+        }
+    });
+
+    Ok(sub_id)
+}
+
+/// Tear down a live subscription opened by `subscribe_channel_messages`.
+#[tauri::command]
+pub async fn unsubscribe_channel_messages(
+    sub_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.relay_pool.unsubscribe(&sub_id).await;
     Ok(())
 }
 
