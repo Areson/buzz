@@ -1,9 +1,10 @@
 # Sprout Serverless Mode
 
-> **Status:** Implemented (first cut) on branch `micn/serverless-mode`.
-> Channels, DMs, and messages work against any generic public Nostr relay with
-> **zero** Sprout server infrastructure. See "Implementation" below for what
-> shipped and "Agents" for the known follow-up.
+> **Status:** Implemented on branch `micn/serverless-mode`.
+> Channels, DMs, messages, **agents** (with npub-allowlist permissions), and
+> **end-to-end-encrypted private channels + DMs** (NIP-17) all work against any
+> generic public Nostr relay — single or multiple, for redundancy — with
+> **zero** Sprout server infrastructure. See "Implementation" below.
 
 ## TL;DR for testing
 
@@ -29,6 +30,12 @@ channels and DMs, and run with **zero Sprout server infrastructure** — no
 ---
 
 ## The two worlds today
+
+> **Note:** The sections from here down to "Implementation (what shipped)" are
+> the original design exploration, including the **rejected** NIP-28/Slackest
+> approach. What actually shipped is **Option A** (same app, same native Sprout
+> kinds, plain-WS transport) — jump to **"Implementation (what shipped on
+> `micn/serverless-mode`)"** for the authoritative description.
 
 ### Sprout (server mode — what exists now)
 
@@ -172,17 +179,25 @@ the event id, and the "add channel" modal accepts a pasted channel id.
 - Run Sprout against `wss://relay.damus.io`, `wss://nos.lol`, etc. with no
   backend at all.
 - Zero infra to stand up for demos, personal use, or interop testing.
-- Real Nostr interop — channels visible to any NIP-28 client.
+- **Multi-relay redundancy** — a serverless workspace holds a *list* of relays;
+  publishes fan out to all, reads merge + dedup, survive any single relay
+  outage.
+- **Agents work** — same respond-to / npub-allowlist permission model as the
+  server, enforced in the `sprout-acp` harness (see below).
+- **Private channels + DMs are end-to-end encrypted** (NIP-17), so privacy
+  doesn't depend on a trusted server.
 
 **Lose (vs. server mode)**
-- No membership/access control — public channels are public.
+- No server-side **access control on public channels** — an open channel is
+  open to anyone (which is the point). Privacy for closed groups is provided by
+  *encryption* instead (NIP-17), not relay enforcement.
 - No server-side search (client-side only, over what you've fetched).
 - No materialized thread counts, presence fan-out, or read-state sync across
   devices (could be reintroduced later via NIP-29-capable public relays or
   client-side computation).
-- No agents/workflows/huddle audio/git hosting — those are `sprout-relay`
-  features with no dumb-relay equivalent. Lite mode should **hide** these
-  surfaces rather than break on them.
+- No workflows / huddle audio / git hosting — those are `sprout-relay` features
+  with no dumb-relay equivalent. Serverless mode **hides** these surfaces
+  rather than breaking on them.
 
 ---
 
@@ -263,28 +278,77 @@ protocol. Nothing on the existing Sprout-server path changed.
 - **Add-workspace + welcome** UIs gained a **Serverless mode** toggle with a
   public-relay default (`wss://relay.damus.io`).
 
+### Multi-relay (redundancy)
+
+A serverless workspace's `relayUrl` may be a **comma-separated list** of relays
+(seeded in the UI with the public defaults below). The Rust transport fans out:
+`submit_event_ws` publishes to all relays (succeeds if any accepts);
+`query_relay_ws` queries all concurrently and **merges + dedups events by id**
+(succeeds if any responds). The live WebSocket connects to the first (primary)
+relay. A single dead relay therefore doesn't break reads, writes, or history.
+
+Default public relays (`desktop/src/features/workspaces/defaultRelays.ts`,
+sourced from `deez`): `relay.damus.io`, `nos.lol`, `relay.nostr.band`,
+`nostr.land`, `nostr.wine`.
+
+### Agents (same permission model as the server)
+
+Agents work in serverless mode with the **same npub-allowlist / respond-to
+gate** as the Sprout server. The gate lives in the `sprout-acp` **harness**, not
+the agent, and runs *before* any event reaches the agent subprocess — so an
+agent in a public channel only ever responds to blessed npubs, exactly as
+configured in the GUI (owner-only / allowlist / anyone / nobody). This is
+unchanged from server mode; serverless only swaps the transport:
+
+- `sprout-acp`'s `RestClient` / `HarnessRelay` got a serverless mode that
+  swaps the HTTP bridge (`/query`, `/events` + NIP-98) for plain-WS REQ/EVENT.
+  Plumbed via `SPROUT_SERVERLESS`, set by the desktop when launching the agent.
+- `sprout-cli` (what agents shell out to for writes) got the same WS transport
+  and a `--serverless` flag.
+- Attaching an agent publishes its pubkey into the channel's kind-39002 member
+  list (so in an **encrypted** channel the sender wraps a copy to the agent and
+  it can decrypt + respond).
+
+### Encrypted private channels + DMs (NIP-17)
+
+On a dumb relay, "private" can't mean server-enforced access — every stored
+event is world-readable. So in serverless mode, **DMs and `private`-visibility
+channels are made private by encryption** (NIP-17 / NIP-59 gift wrap) instead:
+
+```text
+message (kind 9 rumor, with the channel `h` tag)
+  → seal      (kind 13, nip44-encrypted to one recipient)
+    → gift wrap (kind 1059, ephemeral key, `#p` = recipient, random timestamp)
+```
+
+One gift wrap is published **per member** (including the sender, so it can read
+back its own messages). The relay only ever stores opaque `kind 1059` blobs
+addressed by `#p` — it never sees the channel id, content, or real author. On
+read, the client subscribes to `kind 1059 #p=me`, decrypts each in Rust
+(`crate::encrypted` + the `decrypt_gift_wrap` command), and routes the recovered
+kind-9 rumor (which carries the `h` tag) into the normal message pipeline. The
+agent harness does the symmetric thing: it subscribes to its own gift-wrap
+inbox, unwraps, and feeds the inner event through the respond-to gate unchanged.
+
+Open/public channels stay **plaintext kind 9** (that's the point of a public
+channel). Encryption applies only to DMs and private channels.
+
+This is the **small-group** model: O(N) gift wraps per message (which naturally
+caps practical group size), no shared group key, and no forward secrecy on
+member removal (a removed member keeps any messages they already received).
+Suitable for small trusted groups; a shared-key / MLS scheme would be required
+for large groups or forward-secrecy guarantees.
+
+Files: `desktop/src-tauri/src/encrypted.rs` (crypto + tests),
+`commands/encrypted.rs` (`decrypt_gift_wrap`), `commands/messages.rs`
+(`encrypted_recipients` + `send_encrypted_message` routing),
+`shared/api/relayClientSession.ts` (encrypted history/live read),
+`crates/sprout-acp/src/relay.rs` (agent gift-wrap inbox).
+
 ### What works serverless today
 
 Channels (create/list/join via 39000+39002), channel messages (kind 9, live +
-history), DMs (deterministic channel id, 39000+39002), profiles (kind 0),
-reactions/edits/deletes (standard kinds) — all over plain WS against any relay.
-
----
-
-## Agents in serverless mode (known follow-up)
-
-Agents **launch** fine (they're local subprocesses with their own keypair) and
-the desktop-side attach (kind 39002 membership) works over the serverless WS
-path. **But the agent harness `sprout-acp` does not yet work against a generic
-relay**: it routes all reads and some writes through the Sprout HTTP bridge
-(`POST /query`, `POST /events`) with NIP-98 + a NIP-OA `x-auth-tag`, and relies
-on server-side NIP-29 membership scoping. So an attached agent can't currently
-discover channels or build prompt context on a dumb relay.
-
-The fix is the *same pattern* applied here, one layer down: give `sprout-acp`'s
-`RestClient` a serverless mode that swaps `bridge_post("/query")` /
-`("/events")` for plain-WS REQ/EVENT (it already holds a WS connection for the
-live stream). The npub-permission / respond-to gate is in-process and needs no
-server, so once the transport is swapped, agent permissions work unchanged.
-Until then, serverless mode hides nothing about agents but they will be inert
-in a serverless channel.
+history), DMs and private channels (NIP-17 encrypted), profiles (kind 0),
+reactions/edits/deletes (standard kinds), agents (npub-allowlist gated),
+multi-relay redundancy — all over plain WS against any public relay, with no
+Sprout server.
