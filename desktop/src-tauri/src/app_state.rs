@@ -22,6 +22,11 @@ pub struct AppState {
     /// writes are performed over the plain WebSocket (REQ/EVENT) instead.
     /// Set by `apply_workspace`. See docs/SPROUT_LITE_MODE.md.
     pub serverless: std::sync::atomic::AtomicBool,
+    /// Set true once the frontend has called `apply_workspace` with the active
+    /// workspace's config (relay URL + serverless flag). Managed-agent restore
+    /// at startup waits for this so serverless agents launch with the CURRENT
+    /// workspace relays/mode instead of a stale value frozen in their record.
+    pub workspace_applied: std::sync::atomic::AtomicBool,
     /// Persistent WebSocket pool for serverless mode — one long-lived
     /// connection per relay, reused for all queries/publishes (avoids the
     /// connect-per-op storm that public relays rate-limit).
@@ -79,6 +84,7 @@ pub fn build_app_state() -> AppState {
             .unwrap_or_else(|_| reqwest::Client::new()),
         relay_url_override: Mutex::new(None),
         serverless: std::sync::atomic::AtomicBool::new(false),
+        workspace_applied: std::sync::atomic::AtomicBool::new(false),
         relay_pool: std::sync::Arc::new(crate::ws_pool::RelayPool::new()),
         managed_agents_store_lock: Mutex::new(()),
         channel_templates_store_lock: Mutex::new(()),

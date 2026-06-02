@@ -53,6 +53,12 @@ pub fn apply_workspace(
         serverless.unwrap_or(false),
         std::sync::atomic::Ordering::Relaxed,
     );
+    // Signal launch-time agent restore that the workspace config is now live,
+    // so serverless agents spawn with the current relay list/mode (not a stale
+    // value frozen in their record).
+    state
+        .workspace_applied
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Drop any pooled relay connections from the previous workspace so we don't
     // reuse a socket authed to a different relay/identity.
