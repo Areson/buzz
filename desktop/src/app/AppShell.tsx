@@ -169,6 +169,9 @@ export function AppShell() {
   const [settingsSection, setSettingsSection] = React.useState<SettingsSection>(
     DEFAULT_SETTINGS_SECTION,
   );
+  const [settingsMode, setSettingsMode] = React.useState<
+    "profile" | "preferences"
+  >("preferences");
 
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
@@ -402,8 +405,9 @@ export function AppShell() {
   );
 
   const handleOpenSettings = React.useCallback(
-    (section: SettingsSection = DEFAULT_SETTINGS_SECTION) => {
+    (section: SettingsSection = "appearance") => {
       setIsChannelManagementOpen(false);
+      setSettingsMode(section === "profile" ? "profile" : "preferences");
       setSettingsSection(section);
       setSettingsOpen(true);
     },
@@ -845,6 +849,7 @@ export function AppShell() {
                       notificationSettings={notificationSettings.settings}
                       onClose={handleCloseSettings}
                       onSectionChange={setSettingsSection}
+                      mode={settingsMode}
                       onSetDesktopNotificationsEnabled={
                         notificationSettings.setDesktopEnabled
                       }
