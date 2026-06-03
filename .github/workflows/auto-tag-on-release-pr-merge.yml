@@ -62,11 +62,13 @@ jobs:
             -f ref="v$VERSION"
 
       - name: Trigger internal release build
+        id: buildkite
+        continue-on-error: true
         env:
           BUILDKITE_API_TOKEN: ${{ secrets.BUILDKITE_API_TOKEN }}
           VERSION: ${{ env.version }}
         run: |
-          curl -sf -X POST \
+          RESPONSE=$(curl -sf -X POST \
             "https://api.buildkite.com/v2/organizations/runway/pipelines/sprout-releases/builds" \
             -H "Authorization: Bearer ${BUILDKITE_API_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -80,5 +82,13 @@ jobs:
                 \"relay_url\": \"wss://sprout-oss.stage.blox.sqprod.co\",
                 \"publish_latest\": \"true\"
               }
-            }"
+            }")
+          BUILD_URL=$(echo "$RESPONSE" | jq -r '.web_url // empty')
+          echo "build-url=$BUILD_URL" >> "$GITHUB_OUTPUT"
+          echo "::notice::Internal build started: $BUILD_URL"
+
+      - name: Warn on Buildkite trigger failure
+        if: steps.buildkite.outcome == 'failure'
+        run: |
+          echo "::warning::Failed to trigger internal Buildkite build. Trigger manually: https://buildkite.com/runway/sprout-releases"
 
