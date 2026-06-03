@@ -430,3 +430,140 @@ async fn agent_responds_in_channel_e2e() {
     }
     eprintln!("✅ both replies landed; cancel/redispatch path works");
 }
+
+/// End-to-end test for a PRIVATE (encrypted) channel: the human's message is a
+/// NIP-59 gift-wrap (kind 1059) addressed to the agent, wrapping a kind-9 rumor
+/// that carries the channel `h` tag — exactly what the desktop publishes for an
+/// encrypted channel. This proves the agent:
+///   1. subscribes to its gift-wrap inbox (kind 1059, #p=agent),
+///   2. decrypts the wrap to recover the inner rumor,
+///   3. extracts the channel from the rumor's `h` tag,
+///   4. passes the respond gate and replies.
+///
+/// If this fails while the public test passes, the encrypted-receive path is
+/// broken — which is exactly the "goose didn't reply in the private channel"
+/// symptom.
+#[tokio::test]
+#[ignore = "network: hits live public relays; spawns sprout-acp + sprout binaries"]
+async fn agent_responds_in_private_channel_e2e() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let relay_list = relays();
+    let acp_bin = env!("CARGO_BIN_EXE_sprout-acp");
+    let target_dir = std::path::Path::new(acp_bin)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let sprout_bin = target_dir.join("sprout");
+    assert!(
+        sprout_bin.exists(),
+        "sprout CLI not built at {sprout_bin:?}"
+    );
+    let stub = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/stub_agent.sh");
+
+    let human = Keys::generate();
+    let agent = Keys::generate();
+    let channel = uuid::Uuid::new_v4().to_string();
+    let agent_pk = agent.public_key().to_hex();
+    let human_pk = human.public_key().to_hex();
+    let reply_marker = format!("priv-reply-{}", &channel[..8]);
+
+    eprintln!("PRIVATE channel={channel}\nhuman={human_pk}\nagent={agent_pk}");
+
+    // 1. Channel metadata (39000) marked PRIVATE + members (39002).
+    let meta = EventBuilder::new(Kind::Custom(39000), "")
+        .tags(vec![
+            nostr::Tag::parse(["d", &channel]).unwrap(),
+            nostr::Tag::parse(["name", "e2e-private-test"]).unwrap(),
+            nostr::Tag::parse(["t", "stream"]).unwrap(),
+            nostr::Tag::parse(["private"]).unwrap(),
+        ])
+        .sign_with_keys(&human)
+        .unwrap();
+    let members = EventBuilder::new(Kind::Custom(39002), "")
+        .tags(vec![
+            nostr::Tag::parse(["d", &channel]).unwrap(),
+            nostr::Tag::parse(["p", &human_pk, "", "owner"]).unwrap(),
+            nostr::Tag::parse(["p", &agent_pk, "", "member"]).unwrap(),
+        ])
+        .sign_with_keys(&human)
+        .unwrap();
+    assert!(
+        publish_all(&relay_list, &meta).await && publish_all(&relay_list, &members).await,
+        "no relay accepted private channel metadata/membership"
+    );
+    eprintln!("published private channel metadata + membership");
+
+    // 2. Spawn the harness (same config as the public test).
+    let log_path = format!("/tmp/acp-e2e-priv-agent-{}.log", &channel[..8]);
+    let harness_log_path = format!("/tmp/acp-e2e-priv-harness-{}.log", &channel[..8]);
+    let _ = std::fs::remove_file(&log_path);
+    let _ = std::fs::remove_file(&harness_log_path);
+    let harness_log = std::fs::File::create(&harness_log_path).unwrap();
+    let harness_log_out = harness_log.try_clone().unwrap();
+    // NOTE: no SPROUT_AUTH_TAG — `respond_to=anyone` doesn't need an owner, and
+    // a bogus tag would make the stub's inherited `sprout messages send` fail
+    // auth. (The owner gate is exercised separately.)
+
+    let mut child = Command::new(acp_bin)
+        .env("SPROUT_RELAY_URL", &relay_list)
+        .env(
+            "SPROUT_PRIVATE_KEY",
+            agent.secret_key().to_bech32().unwrap(),
+        )
+        .env("SPROUT_SERVERLESS", "true")
+        .env("SPROUT_ACP_AGENT_COMMAND", "bash")
+        .env("SPROUT_ACP_AGENT_ARGS", stub)
+        .env("SPROUT_ACP_RESPOND_TO", "anyone")
+        .env("SPROUT_ACP_SUBSCRIBE", "all")
+        .env("SPROUT_ACP_NO_MENTION_FILTER", "true")
+        .env("SPROUT_ACP_AGENTS", "1")
+        .env("STUB_AGENT_CHANNEL", &channel)
+        .env("STUB_AGENT_REPLY", &reply_marker)
+        .env("STUB_AGENT_SPROUT_BIN", &sprout_bin)
+        .env("STUB_AGENT_LOG", &log_path)
+        .env("RUST_LOG", "sprout_acp=debug")
+        .stdout(Stdio::from(harness_log_out))
+        .stderr(Stdio::from(harness_log))
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sprout-acp");
+
+    // Let the harness connect + subscribe its gift-wrap inbox + discover.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // 3. Send an ENCRYPTED message: a kind-9 rumor (with the channel `h` tag),
+    // gift-wrapped to the agent. This is exactly what the desktop publishes for
+    // a private channel — no plaintext kind-9 ever hits the relay.
+    let rumor = EventBuilder::new(Kind::Custom(9), "@agent private hello, please reply")
+        .tags(vec![
+            nostr::Tag::parse(["h", &channel]).unwrap(),
+            nostr::Tag::parse(["p", &agent_pk]).unwrap(),
+        ])
+        .build(human.public_key());
+    let wrap = EventBuilder::gift_wrap(&human, &agent.public_key(), rumor, [])
+        .await
+        .expect("build gift wrap");
+    assert_eq!(wrap.kind, Kind::Custom(1059), "must be a gift wrap");
+    assert!(
+        publish_all(&relay_list, &wrap).await,
+        "no relay accepted the gift wrap"
+    );
+    eprintln!("published gift-wrapped @mention; waiting for reply…");
+
+    // 4. The reply lands as a plaintext kind-9 (the stub replies plainly; the
+    // point is proving the agent RECEIVED + DECRYPTED the private message).
+    let found = await_reply(&relay_list, &channel, agent.public_key(), &reply_marker, 20).await;
+
+    let _ = child.kill().await;
+    if !found {
+        if let Ok(h) = std::fs::read_to_string(&harness_log_path) {
+            eprintln!("--- harness log ---\n{h}\n-------------------");
+        }
+        if let Ok(l) = std::fs::read_to_string(&log_path) {
+            eprintln!("--- stub log ---\n{l}\n----------------");
+        }
+        panic!("agent never replied to the PRIVATE (gift-wrapped) message — encrypted-receive path is broken");
+    }
+    eprintln!("✅ agent received + decrypted the private message and replied");
+}
