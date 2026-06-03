@@ -81,5 +81,5 @@ nostr = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v5"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

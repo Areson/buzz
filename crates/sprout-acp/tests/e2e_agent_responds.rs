@@ -567,3 +567,151 @@ async fn agent_responds_in_private_channel_e2e() {
     }
     eprintln!("✅ agent received + decrypted the private message and replied");
 }
+
+/// DM namespace — MUST match `desktop/src-tauri/src/commands/dms.rs`.
+const DM_NAMESPACE_BYTES: [u8; 16] = [
+    0x6f, 0x1d, 0x2c, 0x3b, 0x4a, 0x59, 0x4e, 0x87, 0x9b, 0x0c, 0x1d, 0x2e, 0x3f, 0x4a, 0x5b, 0x6c,
+];
+
+/// Derive the DM channel id the same way the desktop does: UUIDv5 over the
+/// sorted, lowercased, de-duplicated participant set.
+fn derive_dm_channel_id(participants: &[String]) -> String {
+    let mut p: Vec<String> = participants
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    p.sort();
+    p.dedup();
+    let ns = uuid::Uuid::from_bytes(DM_NAMESPACE_BYTES);
+    uuid::Uuid::new_v5(&ns, p.join(",").as_bytes()).to_string()
+}
+
+/// End-to-end test for a DIRECT MESSAGE (1:1, encrypted). A DM in serverless is
+/// a private channel with a deterministic UUIDv5 id derived from the two
+/// participants and `t=dm`. The message is gift-wrapped (kind 1059) to the
+/// agent — exactly what the desktop publishes when you DM an agent. Proves the
+/// agent receives + decrypts a DM and replies.
+#[tokio::test]
+#[ignore = "network: hits live public relays; spawns sprout-acp + sprout binaries"]
+async fn agent_responds_in_dm_e2e() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let relay_list = relays();
+    let acp_bin = env!("CARGO_BIN_EXE_sprout-acp");
+    let target_dir = std::path::Path::new(acp_bin)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let sprout_bin = target_dir.join("sprout");
+    assert!(
+        sprout_bin.exists(),
+        "sprout CLI not built at {sprout_bin:?}"
+    );
+    let stub = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/stub_agent.sh");
+
+    let human = Keys::generate();
+    let agent = Keys::generate();
+    let agent_pk = agent.public_key().to_hex();
+    let human_pk = human.public_key().to_hex();
+
+    // DM channel id = UUIDv5 over {human, agent} — both sides converge on this.
+    let channel = derive_dm_channel_id(&[human_pk.clone(), agent_pk.clone()]);
+    let reply_marker = format!("dm-reply-{}", &channel[..8]);
+    let participants = {
+        let mut p = vec![human_pk.clone(), agent_pk.clone()];
+        p.sort();
+        p
+    };
+
+    eprintln!("DM channel={channel}\nhuman={human_pk}\nagent={agent_pk}");
+
+    // 1. DM channel metadata (39000, t=dm, private) + members (39002).
+    let meta = EventBuilder::new(Kind::Custom(39000), "")
+        .tags(vec![
+            nostr::Tag::parse(["d", &channel]).unwrap(),
+            nostr::Tag::parse(["name", "Direct message"]).unwrap(),
+            nostr::Tag::parse(["t", "dm"]).unwrap(),
+            nostr::Tag::parse(["private"]).unwrap(),
+        ])
+        .sign_with_keys(&human)
+        .unwrap();
+    let members = EventBuilder::new(Kind::Custom(39002), "")
+        .tags(vec![
+            nostr::Tag::parse(["d", &channel]).unwrap(),
+            nostr::Tag::parse(["p", &participants[0], "", "owner"]).unwrap(),
+            nostr::Tag::parse(["p", &participants[1], "", "member"]).unwrap(),
+        ])
+        .sign_with_keys(&human)
+        .unwrap();
+    assert!(
+        publish_all(&relay_list, &meta).await && publish_all(&relay_list, &members).await,
+        "no relay accepted DM metadata/membership"
+    );
+    eprintln!("published DM channel metadata + membership");
+
+    // 2. Spawn the harness.
+    let log_path = format!("/tmp/acp-e2e-dm-agent-{}.log", &channel[..8]);
+    let harness_log_path = format!("/tmp/acp-e2e-dm-harness-{}.log", &channel[..8]);
+    let _ = std::fs::remove_file(&log_path);
+    let _ = std::fs::remove_file(&harness_log_path);
+    let harness_log = std::fs::File::create(&harness_log_path).unwrap();
+    let harness_log_out = harness_log.try_clone().unwrap();
+
+    let mut child = Command::new(acp_bin)
+        .env("SPROUT_RELAY_URL", &relay_list)
+        .env(
+            "SPROUT_PRIVATE_KEY",
+            agent.secret_key().to_bech32().unwrap(),
+        )
+        .env("SPROUT_SERVERLESS", "true")
+        .env("SPROUT_ACP_AGENT_COMMAND", "bash")
+        .env("SPROUT_ACP_AGENT_ARGS", stub)
+        .env("SPROUT_ACP_RESPOND_TO", "anyone")
+        .env("SPROUT_ACP_SUBSCRIBE", "all")
+        .env("SPROUT_ACP_NO_MENTION_FILTER", "true")
+        .env("SPROUT_ACP_AGENTS", "1")
+        .env("STUB_AGENT_CHANNEL", &channel)
+        .env("STUB_AGENT_REPLY", &reply_marker)
+        .env("STUB_AGENT_SPROUT_BIN", &sprout_bin)
+        .env("STUB_AGENT_LOG", &log_path)
+        .env("RUST_LOG", "sprout_acp=debug")
+        .stdout(Stdio::from(harness_log_out))
+        .stderr(Stdio::from(harness_log))
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sprout-acp");
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    // 3. Send the DM: a kind-9 rumor (h = DM channel id), gift-wrapped to agent.
+    let rumor = EventBuilder::new(Kind::Custom(9), "@agent hey, this is a DM — reply please")
+        .tags(vec![
+            nostr::Tag::parse(["h", &channel]).unwrap(),
+            nostr::Tag::parse(["p", &agent_pk]).unwrap(),
+        ])
+        .build(human.public_key());
+    let wrap = EventBuilder::gift_wrap(&human, &agent.public_key(), rumor, [])
+        .await
+        .expect("build gift wrap");
+    assert_eq!(wrap.kind, Kind::Custom(1059), "DM must be gift-wrapped");
+    assert!(
+        publish_all(&relay_list, &wrap).await,
+        "no relay accepted the DM gift wrap"
+    );
+    eprintln!("published gift-wrapped DM; waiting for reply…");
+
+    // 4. Assert the agent replied in the DM channel.
+    let found = await_reply(&relay_list, &channel, agent.public_key(), &reply_marker, 20).await;
+
+    let _ = child.kill().await;
+    if !found {
+        if let Ok(h) = std::fs::read_to_string(&harness_log_path) {
+            eprintln!("--- harness log ---\n{h}\n-------------------");
+        }
+        if let Ok(l) = std::fs::read_to_string(&log_path) {
+            eprintln!("--- stub log ---\n{l}\n----------------");
+        }
+        panic!("agent never replied to the DM — DM receive path is broken");
+    }
+    eprintln!("✅ agent received + decrypted the DM and replied");
+}
