@@ -420,6 +420,9 @@ function createMockCustomEmojiSetEvents(): RelayEvent[] {
       [
         ["d", CUSTOM_EMOJI_SET_D_TAG],
         ["emoji", "sprout", "https://example.com/e2e/sprout.png"],
+        // A relay-hosted emoji whose URL matches rewriteRelayUrl()'s pattern,
+        // used by the reaction guard to assert the proxy rewrite fires.
+        ["emoji", REACTION_EMOJI_SHORTCODE, REACTION_EMOJI_URL],
       ],
       // The current mock identity owns this set, so the settings card's
       // "My emoji" section is non-empty and removable.
@@ -516,6 +519,32 @@ declare global {
 
 const DEFAULT_RELAY_HTTP_URL = "http://localhost:3000";
 const DEFAULT_RELAY_WS_URL = "ws://localhost:3000";
+
+// NIP event kinds the mock reaction handlers emit.
+const KIND_REACTION = 7; // NIP-25 reaction
+const KIND_DELETION = 5; // NIP-09 deletion
+
+// Fake media-proxy port the mock answers for `get_media_proxy_port`, so
+// `rewriteRelayUrl()` produces a real `http://localhost:<port>/media/...` src
+// in e2e (instead of the `sprout-media://` fallback). The reaction guard
+// asserts against this exact port.
+const MOCK_MEDIA_PROXY_PORT = 54321;
+
+// A relay-hosted custom emoji used by the reaction guard. Its URL matches
+// `rewriteRelayUrl()`'s `/media/{64-hex}.{ext}` pattern on the relay origin, so
+// reacting with it exercises the proxy rewrite (unlike the `:sprout:` fixture,
+// whose external example.com URL passes through unchanged).
+const REACTION_EMOJI_SHORTCODE = "react";
+const REACTION_EMOJI_SHA = "c".repeat(64);
+const REACTION_EMOJI_URL = `${DEFAULT_RELAY_HTTP_URL}/media/${REACTION_EMOJI_SHA}.png`;
+
+// A reaction-target message seeded into `general` with a real 64-hex event id.
+// The reaction guard reacts to THIS message: getReactionTargetId() only accepts
+// a 64-hex `e` tag, and the other mock seeds (and user-sent messages) use short
+// non-hex ids, so they can't be reaction targets. Content is distinctive so the
+// test locates its row without relying on seed ordering.
+const REACTION_TARGET_EVENT_ID = "d".repeat(64);
+const REACTION_TARGET_CONTENT = "React to me with a custom emoji";
 const E2E_IDENTITY_OVERRIDE_STORAGE_KEY = "sprout:e2e-identity-override.v1";
 const DEFAULT_MOCK_IDENTITY = {
   pubkey: "deadbeef".repeat(8),
@@ -1782,6 +1811,20 @@ function getMockMessageStore(channelId: string): RelayEvent[] {
             content: "Hey team — checking in.",
             sig: "mocksig".repeat(20).slice(0, 128),
           },
+          // Reaction-target seed for the custom-emoji reaction guard. Real
+          // 64-hex id so getReactionTargetId() accepts it as a reaction target
+          // (the short-id seeds above can't be reacted to). Backdated after the
+          // other seeds, so it stays at row index >= 2 and never displaces
+          // first()=welcome / nth(1)=alice that other specs rely on.
+          {
+            id: REACTION_TARGET_EVENT_ID,
+            pubkey: ALICE_PUBKEY,
+            created_at: Math.floor(Date.now() / 1000) - 45,
+            kind: 9,
+            tags: [["h", channelId]],
+            content: REACTION_TARGET_CONTENT,
+            sig: "mocksig".repeat(20).slice(0, 128),
+          },
         ]
       : channelId === "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11"
         ? [
@@ -2190,15 +2233,28 @@ function handleGetLikedNotes(): RawUserNotesResponse {
   return { notes: [], next_cursor: null };
 }
 
+// A random 64-hex event id, matching the shape of real Nostr event ids
+// (sha256 → 64 hex). Most mock events use the 32-hex `createMockEvent` default,
+// but kind:7 reactions need a real 64-hex id: the timeline's deletion path only
+// accepts 64-hex `e` tags (getDeletionTargets in formatTimelineMessages.ts), so
+// a kind:5 targeting a 32-hex reaction id would be silently ignored and the
+// reaction pill would never clear on toggle-off.
+function mockEventId(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function createMockEvent(
   kind: number,
   content: string,
   tags: string[][],
   pubkey = DEFAULT_MOCK_IDENTITY.pubkey,
   createdAt = Math.floor(Date.now() / 1000),
+  id = crypto.randomUUID().replace(/-/g, ""),
 ): RelayEvent {
   return {
-    id: crypto.randomUUID().replace(/-/g, ""),
+    id,
     pubkey,
     created_at: createdAt,
     kind,
@@ -4557,6 +4613,102 @@ async function handleSendChannelMessage(
   };
 }
 
+/** Locate the channel a stored mock event lives in (reactions carry no channel arg). */
+function findMockEventChannel(eventId: string): string | undefined {
+  for (const [channelId, events] of mockMessages) {
+    if (events.some((event) => event.id === eventId)) {
+      return channelId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Mock the `add_reaction` Tauri command. Mirrors the real Rust command: a
+ * kind:7 whose content is the emoji, plus — for a custom emoji — the NIP-30
+ * `["emoji", shortcode, url]` tag (shortcode normalized to match the relay).
+ * Recorded into the target's channel store and emitted live so the timeline's
+ * reaction aggregation renders the pill (the channel subscription includes
+ * kind:7). Unicode reactions carry no emoji tag, like the real command.
+ */
+async function handleAddReaction(
+  args: { eventId: string; emoji: string; emojiUrl?: string | null },
+  config: E2eConfig | undefined,
+): Promise<void> {
+  const channelId = findMockEventChannel(args.eventId);
+  if (!channelId) {
+    throw new Error(`mock add_reaction: unknown target event ${args.eventId}`);
+  }
+
+  const emoji = args.emoji.trim();
+  // `h` routes the live event to the channel store (getChannelIdFromTags);
+  // `e` names the reaction target. For a custom emoji, the NIP-30
+  // `["emoji", shortcode, url]` tag carries the image URL.
+  const tags: string[][] = [
+    ["h", channelId],
+    ["e", args.eventId],
+  ];
+  if (args.emojiUrl) {
+    const shortcode = emoji.replace(/^:+/, "").replace(/:+$/, "").toLowerCase();
+    tags.push(["emoji", shortcode, args.emojiUrl]);
+  }
+
+  const event = createMockEvent(
+    KIND_REACTION,
+    emoji,
+    tags,
+    getMockMemberPubkey(config),
+    Math.floor(Date.now() / 1000),
+    // 64-hex id so the kind:5 deletion emitted by remove_reaction is accepted
+    // by the timeline (getDeletionTargets requires a 64-hex `e` tag).
+    mockEventId(),
+  );
+  recordMockMessage(channelId, event);
+  emitMockLiveEvent(channelId, event);
+}
+
+/**
+ * Mock the `remove_reaction` Tauri command. Finds the active member's own
+ * kind:7 for this target+emoji, removes it from the store, and emits a kind:5
+ * deletion so the timeline drops the reaction (the real command deletes via a
+ * kind:5 too).
+ */
+async function handleRemoveReaction(
+  args: { eventId: string; emoji: string },
+  config: E2eConfig | undefined,
+): Promise<void> {
+  const channelId = findMockEventChannel(args.eventId);
+  if (!channelId) {
+    return;
+  }
+
+  const myPubkey = getMockMemberPubkey(config).toLowerCase();
+  const emoji = args.emoji.trim();
+  const store = getMockMessageStore(channelId);
+  const reaction = store.find(
+    (event) =>
+      event.kind === KIND_REACTION &&
+      event.pubkey.toLowerCase() === myPubkey &&
+      event.content.trim() === emoji &&
+      event.tags.some((t) => t[0] === "e" && t[1] === args.eventId),
+  );
+  if (!reaction) {
+    return;
+  }
+
+  const index = store.indexOf(reaction);
+  store.splice(index, 1);
+
+  const deletion = createMockEvent(
+    KIND_DELETION,
+    "",
+    [["e", reaction.id]],
+    getMockMemberPubkey(config),
+  );
+  recordMockMessage(channelId, deletion);
+  emitMockLiveEvent(channelId, deletion);
+}
+
 async function handleGetEvent(
   args: {
     eventId: string;
@@ -4827,6 +4979,16 @@ function sendToMockSocket(args: {
       return;
     }
 
+    // Mesh control events (24620 status report, 24621 connect request) are not
+    // channel messages — they carry a `p` tag, not an `h` tag. The real relay
+    // accepts them after membership/shape checks; the mock just ACKs so the
+    // desktop mesh flow (publishMeshConnectRequest) can proceed. We do not model
+    // the paired 24622 here; that belongs in a dedicated call-me-now test.
+    if (event.kind === 24620 || event.kind === 24621) {
+      sendWsText(socket.handler, ["OK", event.id, true, ""]);
+      return;
+    }
+
     const channelId = getChannelIdFromTags(event.tags);
     if (!channelId) {
       sendWsText(socket.handler, [
@@ -4951,7 +5113,10 @@ export function maybeInstallE2eTauriMocks() {
     consoleUrl: null,
     modelId: mockMeshState.models[0]?.id ?? null,
     modelName: mockMeshState.models[0]?.name ?? null,
-    inviteToken: null,
+    inviteToken: state === "running" ? "mock-endpoint-addr" : null,
+    endpointId: state === "running" ? "mock-endpoint-id" : null,
+    deviceId: state === "running" ? "mock-endpoint-id" : null,
+    deviceName: state === "running" ? "Mock desktop" : null,
   });
   const handleMockCommand = async (command: string, payload: unknown) => {
     const activeConfig = getConfig();
@@ -4966,7 +5131,17 @@ export function maybeInstallE2eTauriMocks() {
           available: mockMeshState.admitted,
           reason: mockMeshState.admitted ? null : mockMeshState.denyReason,
           models: mockMeshState.models,
-          serveTargets: [],
+          serveTargets: mockMeshState.models.map((model) => ({
+            modelId: model.id,
+            modelName: model.name,
+            endpointAddr: "mock-endpoint-addr",
+            nodeName: "Mock desktop",
+            capacity: { vramGb: null },
+            reporterPubkey: identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey,
+            endpointId: "mock-endpoint-id",
+            deviceId: "mock-endpoint-id",
+            deviceName: "Mock desktop",
+          })),
         };
       case "mesh_installed_models":
         return mockMeshState.models;
@@ -4991,7 +5166,22 @@ export function maybeInstallE2eTauriMocks() {
         if (!mockMeshState.admitted) {
           throw new Error(mockMeshState.denyReason);
         }
+        mockMeshState.nodeState = "running";
+        mockMeshState.nodeMode = "client";
         return meshNodeStatus("running", "client");
+      case "mesh_dial_endpoint_addr":
+        return meshNodeStatus("running", mockMeshState.nodeMode ?? "client");
+      case "mesh_status_report_payload":
+        return mockMeshState.nodeState === "running"
+          ? {
+              token: "mock-endpoint-addr",
+              node_id: "mock-endpoint-id",
+              endpointId: "mock-endpoint-id",
+              deviceId: "mock-endpoint-id",
+              deviceName: "Mock desktop",
+              hosted_models: mockMeshState.models.map((model) => model.id),
+            }
+          : null;
       case "mesh_agent_preset": {
         const req = (payload as { request?: { modelId?: string } } | null)
           ?.request;
@@ -5285,10 +5475,28 @@ export function maybeInstallE2eTauriMocks() {
           payload as Parameters<typeof handleSendChannelMessage>[0],
           activeConfig,
         );
+      case "add_reaction":
+        return handleAddReaction(
+          payload as Parameters<typeof handleAddReaction>[0],
+          activeConfig,
+        );
+      case "remove_reaction":
+        return handleRemoveReaction(
+          payload as Parameters<typeof handleRemoveReaction>[0],
+          activeConfig,
+        );
+      case "get_media_proxy_port":
+        return MOCK_MEDIA_PROXY_PORT;
       case "pick_and_upload_media":
         return resolveMockUploadDescriptors(activeConfig);
       case "upload_media_bytes":
         return resolveMockUploadDescriptors(activeConfig)[0];
+      case "download_image":
+      case "download_file":
+        // The save dialog can't run headlessly; report a successful save so the
+        // FileCard / image-menu click handlers resolve. Specs assert the
+        // command was invoked via `__SPROUT_E2E_COMMANDS__`, not the dialog.
+        return true;
       case "get_event":
         return handleGetEvent(
           payload as Parameters<typeof handleGetEvent>[0],
