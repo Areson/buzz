@@ -108,7 +108,7 @@ export function WorkspaceSwitcher({
 
   const triggerContent = (
     <>
-      {variant === "profile-menu" ? null : degraded ? (
+      {degraded ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <span

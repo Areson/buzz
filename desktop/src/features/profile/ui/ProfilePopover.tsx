@@ -160,7 +160,7 @@ export function ProfilePopover({
             {/* ── Status input (Slack-style) ──────────────────────── */}
             <div className="px-3 pt-0 pb-1">
               <button
-                className="flex w-full items-center gap-2 rounded-lg border border-input bg-background px-3 py-2 text-left text-sm outline-hidden transition-colors hover:bg-accent focus:outline-none focus-visible:bg-accent focus-visible:outline-none"
+                className="flex w-full items-center gap-2 rounded-lg border border-input bg-popover px-3 py-2 text-left text-sm outline-hidden transition-colors hover:bg-accent focus:outline-none focus-visible:bg-accent focus-visible:outline-none"
                 data-testid="profile-popover-set-status"
                 onClick={() => {
                   closePopover();
@@ -239,7 +239,7 @@ export function ProfilePopover({
               </PopoverContent>
             </Popover>
 
-            <hr className="mx-3 my-1 h-px border-0 bg-border" />
+            <hr className="my-1 h-px border-0 bg-border" />
 
             {/* ── Profile / preferences ──────────────────────────── */}
             <button
@@ -255,6 +255,7 @@ export function ProfilePopover({
               type="button"
             >
               <span className="flex-1">Profile</span>
+              <kbd className="text-xs text-muted-foreground">⌘U</kbd>
             </button>
             <button
               className={MENU_ITEM_CLASS}
@@ -269,11 +270,12 @@ export function ProfilePopover({
               type="button"
             >
               <span className="flex-1">Preferences</span>
+              <kbd className="text-xs text-muted-foreground">⌘,</kbd>
             </button>
 
             {workspaceSwitcherSlot ? (
               <>
-                <hr className="mx-3 my-1 h-px border-0 bg-border" />
+                <hr className="my-1 h-px border-0 bg-border" />
                 {/* ── Workspace / relay selector ─────────────────── */}
                 <div data-testid="profile-popover-workspace">
                   {workspaceSwitcherSlot}

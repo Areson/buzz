@@ -590,30 +590,32 @@ export function AppShell() {
 
   React.useLayoutEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      const hasSettingsShortcutModifiers =
+        hasPrimaryShortcutModifier(event) && !event.altKey && !event.shiftKey;
       const isSettingsShortcut =
-        (event.key === "," || event.code === "Comma") &&
-        hasPrimaryShortcutModifier(event) &&
-        !event.altKey &&
-        !event.shiftKey;
+        hasSettingsShortcutModifiers &&
+        (event.key === "," || event.code === "Comma");
+      const isProfileShortcut =
+        hasSettingsShortcutModifiers && event.key.toLowerCase() === "u";
 
-      if (!isSettingsShortcut) {
+      if (!isSettingsShortcut && !isProfileShortcut) {
         return;
       }
 
       event.preventDefault();
-      if (settingsOpen) {
+      if (settingsOpen && (!isProfileShortcut || settingsMode === "profile")) {
         handleCloseSettings();
         return;
       }
 
-      handleOpenSettings();
+      handleOpenSettings(isProfileShortcut ? "profile" : undefined);
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [handleCloseSettings, handleOpenSettings, settingsOpen]);
+  }, [handleCloseSettings, handleOpenSettings, settingsMode, settingsOpen]);
 
   useMarkAsReadShortcuts({
     activeChannelId: activeChannel?.id ?? null,

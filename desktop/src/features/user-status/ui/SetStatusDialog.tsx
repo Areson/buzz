@@ -177,7 +177,7 @@ export function SetStatusDialog({
               </Button>
               <Button
                 data-testid="set-status-save"
-                disabled={!text.trim() && !emoji}
+                disabled={!hasExistingStatus && !text.trim() && !emoji}
                 onClick={handleSave}
                 size="sm"
                 type="button"
