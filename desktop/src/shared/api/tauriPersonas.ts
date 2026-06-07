@@ -12,6 +12,7 @@ type RawParsedPersonaPreview = {
   avatar_data_url: string | null;
   runtime: string | null;
   model: string | null;
+  provider: string | null;
   name_pool?: string[];
   source_file: string;
 };
@@ -33,6 +34,7 @@ export type ParsedPersonaPreview = {
   avatarDataUrl: string | null;
   runtime: string | null;
   model: string | null;
+  provider: string | null;
   namePool: string[];
   sourceFile: string;
 };
@@ -155,6 +157,7 @@ export async function parsePersonaFiles(
       avatarDataUrl: p.avatar_data_url,
       runtime: p.runtime,
       model: p.model,
+      provider: p.provider,
       namePool: p.name_pool ?? [],
       sourceFile: p.source_file,
     })),

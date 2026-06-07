@@ -339,7 +339,7 @@ pub async fn export_persona_to_json(
     // forked, distributed), and bundling API keys / credentials in them
     // would be a significant footgun. Users who import a card and need
     // credentials must supply them post-import via the persona dialog.
-    let (display_name, system_prompt, avatar_url, runtime, model, name_pool) = {
+    let (display_name, system_prompt, avatar_url, runtime, model, provider, name_pool) = {
         let _store_guard = state
             .managed_agents_store_lock
             .lock()
@@ -355,6 +355,7 @@ pub async fn export_persona_to_json(
             persona.avatar_url.clone(),
             persona.runtime.clone(),
             persona.model.clone(),
+            persona.provider.clone(),
             persona.name_pool.clone(),
         )
     };
@@ -365,6 +366,7 @@ pub async fn export_persona_to_json(
         avatar_url.as_deref(),
         runtime.as_deref(),
         model.as_deref(),
+        provider.as_deref(),
         &name_pool,
     )?;
 
