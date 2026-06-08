@@ -282,10 +282,10 @@ staging *ARGS: _ensure-sidecar-stubs
     #!/usr/bin/env bash
     set -euo pipefail
     pnpm install
-    cargo build --release -p sprout-acp -p sprout-agent -p sprout-dev-mcp -p sprout-cli
+    cargo build -p sprout-acp -p sprout-agent -p sprout-dev-mcp -p sprout-cli
     # Replace the 0-byte sidecar stub with the real CLI binary so tauri dev picks it up.
     TARGET=$(rustc -vV | sed -n 's|host: ||p')
-    cp target/release/sprout "desktop/src-tauri/binaries/sprout-${TARGET}"
+    cp target/debug/sprout "desktop/src-tauri/binaries/sprout-${TARGET}"
     chmod +x "desktop/src-tauri/binaries/sprout-${TARGET}"
     cd {{desktop_dir}}
     source ../scripts/instance-env.sh
@@ -534,7 +534,7 @@ release *ARGS:
 goose relay="ws://localhost:3000" agents="1" heartbeat="0" prompt="" key="$SPROUT_PRIVATE_KEY":
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release -p sprout-acp -p sprout-cli
+    cargo build -p sprout-acp -p sprout-cli
     env_args=(
         SPROUT_RELAY_URL="{{relay}}"
         SPROUT_PRIVATE_KEY="{{key}}"
@@ -547,13 +547,13 @@ goose relay="ws://localhost:3000" agents="1" heartbeat="0" prompt="" key="$SPROU
     if [[ "{{heartbeat}}" != "0" ]]; then
         env_args+=(SPROUT_ACP_HEARTBEAT_INTERVAL={{heartbeat}})
     fi
-    exec env "${env_args[@]}" ./target/release/sprout-acp
+    exec env "${env_args[@]}" ./target/debug/sprout-acp
 
 # Run a goose agent in the background (screen session named 'goose-agent-N')
 goose-bg relay="ws://localhost:3000" agents="1" heartbeat="0" prompt="" key="$SPROUT_PRIVATE_KEY":
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --release -p sprout-acp -p sprout-cli
+    cargo build -p sprout-acp -p sprout-cli
     env_args=(
         SPROUT_RELAY_URL="{{relay}}"
         SPROUT_PRIVATE_KEY="{{key}}"
@@ -566,5 +566,5 @@ goose-bg relay="ws://localhost:3000" agents="1" heartbeat="0" prompt="" key="$SP
     if [[ "{{heartbeat}}" != "0" ]]; then
         env_args+=(SPROUT_ACP_HEARTBEAT_INTERVAL={{heartbeat}})
     fi
-    screen -dmS goose-agent-{{agents}} bash -c "$(printf '%q ' env "${env_args[@]}") ./target/release/sprout-acp"
+    screen -dmS goose-agent-{{agents}} bash -c "$(printf '%q ' env "${env_args[@]}") ./target/debug/sprout-acp"
     echo "Agent running in screen session 'goose-agent-{{agents}}'. Attach with: screen -r goose-agent-{{agents}}"
