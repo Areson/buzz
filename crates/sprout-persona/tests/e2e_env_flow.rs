@@ -296,7 +296,10 @@ You are a sprout bot.
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     assert_eq!(goose_env.get("GOOSE_PROVIDER"), Some(&"anthropic"));
-    assert_eq!(goose_env.get("GOOSE_MODEL"), Some(&"claude-sonnet-4-20250514"));
+    assert_eq!(
+        goose_env.get("GOOSE_MODEL"),
+        Some(&"claude-sonnet-4-20250514")
+    );
     assert!(
         !goose_env.contains_key("SPROUT_AGENT_MODEL"),
         "goose persona must not emit SPROUT_AGENT_MODEL"
