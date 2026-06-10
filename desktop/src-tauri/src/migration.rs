@@ -573,91 +573,83 @@ pub fn migrate_persona_provider_to_runtime(app: &tauri::AppHandle) {
 /// retention store.
 ///
 /// Must run AFTER `migrate_packs_to_teams` (depends on field renames being
-/// complete). Idempotent: checks a sentinel file before running.
+/// complete) and AFTER the persisted identity is resolved (it signs every
+/// retained event with the owner's keys).
+///
+/// Idempotent: skips when the retention store already holds events for the
+/// owner pubkey — the data is the sentinel, so no separate sentinel file is
+/// needed. This avoids re-running (and resetting `pending_sync`) on every
+/// launch when a sentinel write silently fails.
 ///
 /// Strategy: write to local SQLite retention first (durable copy), mark as
 /// `pending_sync = 1` for later relay publish. Migration succeeds on local
-/// write, not relay acknowledgment.
-pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
-    use crate::managed_agents::{
-        managed_agents_base_dir,
-        persona_events::{build_persona_event, persona_d_tag},
-        retention::{open_retention_db, retain_event, RetainedEvent},
-        PersonaRecord,
-    };
-    use nostr::JsonUtil;
-    use sprout_core::kind::KIND_PERSONA;
+/// write, not relay acknowledgment. Every retained row is a real signed
+/// event — there is no placeholder path.
+pub fn migrate_personas_to_events(app: &tauri::AppHandle, keys: &nostr::Keys) {
+    use crate::managed_agents::managed_agents_base_dir;
 
     let Ok(base_dir) = managed_agents_base_dir(app) else {
         return;
     };
 
-    // Check sentinel — skip if already migrated.
-    let sentinel_path = base_dir.join("migration_state.json");
-    if sentinel_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&sentinel_path) {
-            if content.contains(r#""persona_events_migrated":true"#)
-                || content.contains(r#""persona_events_migrated": true"#)
-            {
-                return;
-            }
+    match migrate_personas_in_dir(&base_dir, keys) {
+        Ok(0) => {}
+        Ok(migrated) => {
+            eprintln!(
+                "sprout-desktop: persona-event-migration: {migrated} personas migrated to retention"
+            );
+        }
+        Err(e) => {
+            eprintln!("sprout-desktop: persona-event-migration: {e}");
         }
     }
+}
 
-    // Read personas.json fresh at migration time.
+/// Core migration logic, decoupled from the Tauri `AppHandle` for testing.
+///
+/// Returns the number of personas written to the retention store. Returns
+/// `Ok(0)` when migration has already run (retention store has rows for the
+/// owner pubkey) or when there are no non-builtin personas to migrate.
+fn migrate_personas_in_dir(base_dir: &Path, keys: &nostr::Keys) -> Result<u32, String> {
+    use crate::managed_agents::{
+        persona_events::{build_persona_event, persona_d_tag},
+        retention::{has_retained_personas, open_retention_db, retain_event, RetainedEvent},
+        PersonaRecord,
+    };
+    use nostr::JsonUtil;
+    use sprout_core::kind::KIND_PERSONA;
+
+    let pubkey = keys.public_key().to_hex();
+
+    // Read personas.json fresh at migration time. Nothing to migrate if the
+    // file is absent.
     let personas_path = base_dir.join("personas.json");
     if !personas_path.exists() {
-        // No personas to migrate — write sentinel and return.
-        let _ = std::fs::write(&sentinel_path, r#"{"persona_events_migrated":true}"#);
-        return;
+        return Ok(0);
     }
 
-    let content = match std::fs::read_to_string(&personas_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("sprout-desktop: persona-event-migration: failed to read personas.json: {e}");
-            return;
-        }
-    };
+    let content = std::fs::read_to_string(&personas_path)
+        .map_err(|e| format!("failed to read personas.json: {e}"))?;
 
-    let records: Vec<PersonaRecord> = match serde_json::from_str(&content) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!(
-                "sprout-desktop: persona-event-migration: failed to parse personas.json: {e}"
-            );
-            return;
-        }
-    };
+    let records: Vec<PersonaRecord> = serde_json::from_str(&content)
+        .map_err(|e| format!("failed to parse personas.json: {e}"))?;
 
     if records.is_empty() {
-        let _ = std::fs::write(&sentinel_path, r#"{"persona_events_migrated":true}"#);
-        return;
+        return Ok(0);
     }
 
     // Open (or create) the retention database.
     let db_path = base_dir.join("retention.db");
-    let conn = match open_retention_db(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("sprout-desktop: persona-event-migration: failed to open retention db: {e}");
-            return;
-        }
-    };
+    let conn =
+        open_retention_db(&db_path).map_err(|e| format!("failed to open retention db: {e}"))?;
 
-    // Get the user's pubkey for the event. We need keys to sign events for
-    // the raw_event field, but during migration we may not have the app state
-    // initialized yet. Use a deterministic placeholder approach: store the
-    // persona content without a real signature. The raw_event will be a
-    // minimal JSON structure that persona_from_event can parse.
-    //
-    // We use the keys from the environment or identity file if available.
-    let keys = std::env::var("SPROUT_PRIVATE_KEY")
-        .ok()
-        .and_then(|k| k.parse::<nostr::Keys>().ok());
+    // Idempotency: the retention rows themselves are the sentinel. If the
+    // owner already has retained personas, migration ran on a prior launch.
+    if has_retained_personas(&conn, &pubkey)? {
+        return Ok(0);
+    }
 
     let mut migrated = 0u32;
-    let mut errors = 0u32;
 
     for record in &records {
         // Skip built-in personas — they're always available from code.
@@ -667,118 +659,31 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
 
         let d_tag = persona_d_tag(record);
 
-        match &keys {
-            Some(keys) => {
-                // Build and sign a real event.
-                let builder = match build_persona_event(record) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!(
-                            "sprout-desktop: persona-event-migration: failed to build event for '{}': {e}",
-                            record.display_name
-                        );
-                        errors += 1;
-                        continue;
-                    }
-                };
+        let builder = build_persona_event(record)
+            .map_err(|e| format!("failed to build event for '{}': {e}", record.display_name))?;
 
-                let event = match builder.sign_with_keys(keys) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        eprintln!(
-                            "sprout-desktop: persona-event-migration: failed to sign event for '{}': {e}",
-                            record.display_name
-                        );
-                        errors += 1;
-                        continue;
-                    }
-                };
+        let event = builder
+            .sign_with_keys(keys)
+            .map_err(|e| format!("failed to sign event for '{}': {e}", record.display_name))?;
 
-                let raw_event = event.as_json();
-                let retained = RetainedEvent {
-                    kind: KIND_PERSONA,
-                    pubkey: keys.public_key().to_hex(),
-                    d_tag,
-                    content: event.content.to_string(),
-                    created_at: event.created_at.as_secs() as i64,
-                    raw_event,
-                    pending_sync: true,
-                };
+        let retained = RetainedEvent {
+            kind: KIND_PERSONA,
+            pubkey: pubkey.clone(),
+            d_tag,
+            content: event.content.to_string(),
+            // Safety: nostr timestamps are seconds and stay below i64::MAX
+            // until year 2262.
+            created_at: event.created_at.as_secs() as i64,
+            raw_event: event.as_json(),
+            pending_sync: true,
+        };
 
-                if let Err(e) = retain_event(&conn, &retained) {
-                    eprintln!(
-                        "sprout-desktop: persona-event-migration: failed to retain '{}': {e}",
-                        record.display_name
-                    );
-                    errors += 1;
-                } else {
-                    migrated += 1;
-                }
-            }
-            None => {
-                // No keys available — store a synthetic event structure.
-                // This will be re-signed and published when keys become available.
-                let content_json = serde_json::json!({
-                    "display_name": record.display_name,
-                    "avatar_url": record.avatar_url,
-                    "system_prompt": record.system_prompt,
-                    "runtime": record.runtime,
-                    "model": record.model,
-                    "provider": record.provider,
-                    "name_pool": record.name_pool,
-                    "env_vars": record.env_vars,
-                });
-
-                let now = chrono::Utc::now().timestamp();
-                let raw_event = serde_json::json!({
-                    "id": format!("migration-placeholder-{}", d_tag),
-                    "pubkey": "0000000000000000000000000000000000000000000000000000000000000000",
-                    "kind": KIND_PERSONA,
-                    "created_at": now,
-                    "content": content_json.to_string(),
-                    "tags": [["d", d_tag]],
-                    "sig": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                });
-
-                let retained = RetainedEvent {
-                    kind: KIND_PERSONA,
-                    pubkey: "0000000000000000000000000000000000000000000000000000000000000000"
-                        .to_string(),
-                    d_tag,
-                    content: content_json.to_string(),
-                    created_at: now,
-                    raw_event: raw_event.to_string(),
-                    pending_sync: true,
-                };
-
-                if let Err(e) = retain_event(&conn, &retained) {
-                    eprintln!(
-                        "sprout-desktop: persona-event-migration: failed to retain '{}': {e}",
-                        record.display_name
-                    );
-                    errors += 1;
-                } else {
-                    migrated += 1;
-                }
-            }
-        }
+        retain_event(&conn, &retained)
+            .map_err(|e| format!("failed to retain '{}': {e}", record.display_name))?;
+        migrated += 1;
     }
 
-    // Write sentinel regardless of partial errors — individual failures are
-    // logged and the migration is best-effort. Re-running won't help if a
-    // specific persona can't be serialized.
-    let _ = std::fs::write(&sentinel_path, r#"{"persona_events_migrated":true}"#);
-
-    if migrated > 0 || errors > 0 {
-        eprintln!(
-            "sprout-desktop: persona-event-migration: {migrated} personas migrated to retention{}",
-            if errors > 0 {
-                format!(", {errors} errors")
-            } else {
-                String::new()
-            }
-        );
-    }
+    Ok(migrated)
 }
 
 #[cfg(test)]
