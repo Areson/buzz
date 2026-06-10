@@ -246,6 +246,16 @@ async fn publish_agent_event(
     if !response.status().is_success() {
         return Err(relay::relay_error_message(response).await);
     }
+
+    let result: relay::SubmitEventResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse publish response: {e}"))?;
+
+    if !result.accepted {
+        return Err(format!("relay rejected engram: {}", result.message));
+    }
+
     Ok(())
 }
 
