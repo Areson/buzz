@@ -573,11 +573,16 @@ pub fn migrate_persona_provider_to_runtime(app: &tauri::AppHandle) {
 /// retention store.
 ///
 /// Must run AFTER `migrate_packs_to_teams` (depends on field renames being
-/// complete). Idempotent: checks a sentinel file before running.
+/// complete). Idempotent: skips if retention.db already has rows.
 ///
 /// Strategy: write to local SQLite retention first (durable copy), mark as
 /// `pending_sync = 1` for later relay publish. Migration succeeds on local
 /// write, not relay acknowledgment.
+
+/// Placeholder pubkey used when migration runs without signing keys.
+/// `load_from_retention` queries for this value in addition to the real pubkey.
+const UNKEYED_MIGRATION_PUBKEY: &str = "unkeyed";
+
 pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
     use crate::managed_agents::{
         managed_agents_base_dir,
@@ -592,13 +597,20 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
         return;
     };
 
-    // Check sentinel — skip if already migrated.
-    let sentinel_path = base_dir.join("migration_state.json");
-    if sentinel_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&sentinel_path) {
-            if content.contains(r#""persona_events_migrated":true"#)
-                || content.contains(r#""persona_events_migrated": true"#)
-            {
+    // Idempotency: if retention.db already has any persona rows, migration
+    // already ran. This replaces the old sentinel file approach which caused
+    // write amplification on every launch.
+    let db_path = base_dir.join("retention.db");
+    if db_path.exists() {
+        if let Ok(conn) = open_retention_db(&db_path) {
+            let has_rows: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM persona_events LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if has_rows {
                 return;
             }
         }
@@ -607,8 +619,6 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
     // Read personas.json fresh at migration time.
     let personas_path = base_dir.join("personas.json");
     if !personas_path.exists() {
-        // No personas to migrate — write sentinel and return.
-        let _ = std::fs::write(&sentinel_path, r#"{"persona_events_migrated":true}"#);
         return;
     }
 
@@ -631,7 +641,6 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
     };
 
     if records.is_empty() {
-        let _ = std::fs::write(&sentinel_path, r#"{"persona_events_migrated":true}"#);
         return;
     }
 
@@ -645,16 +654,19 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
         }
     };
 
-    // Get the user's pubkey for the event. We need keys to sign events for
-    // the raw_event field, but during migration we may not have the app state
-    // initialized yet. Use a deterministic placeholder approach: store the
-    // persona content without a real signature. The raw_event will be a
-    // minimal JSON structure that persona_from_event can parse.
-    //
-    // We use the keys from the environment or identity file if available.
+    // Resolve signing keys: env var first, then persisted identity.key file.
+    // Migration runs before resolve_persisted_identity(), but the file exists
+    // from prior launches. Only truly first-ever launches lack both sources —
+    // and those have no personas.json to migrate either.
     let keys = std::env::var("SPROUT_PRIVATE_KEY")
         .ok()
-        .and_then(|k| k.parse::<nostr::Keys>().ok());
+        .and_then(|k| k.parse::<nostr::Keys>().ok())
+        .or_else(|| {
+            let data_dir = app.path().app_data_dir().ok()?;
+            let key_path = data_dir.join("identity.key");
+            let content = std::fs::read_to_string(&key_path).ok()?;
+            content.trim().parse::<nostr::Keys>().ok()
+        });
 
     let mut migrated = 0u32;
     let mut errors = 0u32;
@@ -716,8 +728,10 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
                 }
             }
             None => {
-                // No keys available — store a synthetic event structure.
-                // This will be re-signed and published when keys become available.
+                // No keys available — store content directly without a signed
+                // event. load_from_retention handles these rows by parsing the
+                // content column as PersonaEventContent. Uses a placeholder
+                // pubkey so rows can be found and re-keyed later.
                 let content_json = serde_json::json!({
                     "display_name": record.display_name,
                     "avatar_url": record.avatar_url,
@@ -730,24 +744,14 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
                 });
 
                 let now = chrono::Utc::now().timestamp();
-                let raw_event = serde_json::json!({
-                    "id": format!("migration-placeholder-{}", d_tag),
-                    "pubkey": "0000000000000000000000000000000000000000000000000000000000000000",
-                    "kind": KIND_PERSONA,
-                    "created_at": now,
-                    "content": content_json.to_string(),
-                    "tags": [["d", d_tag]],
-                    "sig": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                });
 
                 let retained = RetainedEvent {
                     kind: KIND_PERSONA,
-                    pubkey: "0000000000000000000000000000000000000000000000000000000000000000"
-                        .to_string(),
+                    pubkey: UNKEYED_MIGRATION_PUBKEY.to_string(),
                     d_tag,
                     content: content_json.to_string(),
                     created_at: now,
-                    raw_event: raw_event.to_string(),
+                    raw_event: String::new(),
                     pending_sync: true,
                 };
 
@@ -764,10 +768,9 @@ pub fn migrate_personas_to_events(app: &tauri::AppHandle) {
         }
     }
 
-    // Write sentinel regardless of partial errors — individual failures are
-    // logged and the migration is best-effort. Re-running won't help if a
-    // specific persona can't be serialized.
-    let _ = std::fs::write(&sentinel_path, r#"{"persona_events_migrated":true}"#);
+    // Migration is best-effort. Individual failures are logged above.
+    // Idempotency is handled by the DB row check at function entry —
+    // no sentinel file needed.
 
     if migrated > 0 || errors > 0 {
         eprintln!(

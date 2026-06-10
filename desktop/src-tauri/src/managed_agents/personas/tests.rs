@@ -460,3 +460,120 @@ fn migrate_is_idempotent() {
     // 4. Run again on result of (3) — should be no-op.
     assert!(!migrate_retired_personas(&mut stored_pre_demotion, now));
 }
+
+// --- persona_from_retained_row round-trip tests ---
+
+#[test]
+fn retained_row_with_valid_signed_event_round_trips() {
+    use crate::managed_agents::persona_events::build_persona_event;
+    use crate::managed_agents::retention::RetainedEvent;
+    use nostr::JsonUtil;
+    use sprout_core::kind::KIND_PERSONA;
+
+    let record = custom_persona("my-persona", "My Persona");
+    let keys = nostr::Keys::generate();
+    let builder = build_persona_event(&record).unwrap();
+    let event = builder.sign_with_keys(&keys).unwrap();
+
+    let retained = RetainedEvent {
+        kind: KIND_PERSONA,
+        pubkey: keys.public_key().to_hex(),
+        d_tag: "my-persona".to_string(),
+        content: event.content.to_string(),
+        created_at: event.created_at.as_secs() as i64,
+        raw_event: event.as_json(),
+        pending_sync: false,
+    };
+
+    let restored = super::persona_from_retained_row(&retained).unwrap();
+    assert_eq!(restored.display_name, "My Persona");
+    assert_eq!(restored.system_prompt, "Custom prompt");
+    assert_eq!(
+        restored.avatar_url,
+        Some("https://example.com/avatar.png".to_string())
+    );
+}
+
+#[test]
+fn retained_row_with_empty_raw_event_falls_back_to_content() {
+    use crate::managed_agents::retention::RetainedEvent;
+    use sprout_core::kind::KIND_PERSONA;
+
+    let content_json = serde_json::json!({
+        "display_name": "Unkeyed Persona",
+        "system_prompt": "You are helpful.",
+        "avatar_url": "https://example.com/pic.png",
+        "runtime": "goose",
+        "model": "claude-opus-4",
+        "provider": "anthropic",
+        "name_pool": ["Alpha"],
+        "env_vars": {"KEY": "val"},
+    });
+
+    let retained = RetainedEvent {
+        kind: KIND_PERSONA,
+        pubkey: "unkeyed".to_string(),
+        d_tag: "test-slug".to_string(),
+        content: content_json.to_string(),
+        created_at: 1000,
+        raw_event: String::new(),
+        pending_sync: true,
+    };
+
+    let restored = super::persona_from_retained_row(&retained).unwrap();
+    assert_eq!(restored.id, "test-slug");
+    assert_eq!(restored.display_name, "Unkeyed Persona");
+    assert_eq!(restored.system_prompt, "You are helpful.");
+    assert_eq!(
+        restored.avatar_url,
+        Some("https://example.com/pic.png".to_string())
+    );
+    assert_eq!(restored.runtime, Some("goose".to_string()));
+    assert_eq!(restored.model, Some("claude-opus-4".to_string()));
+    assert_eq!(restored.provider, Some("anthropic".to_string()));
+    assert_eq!(restored.name_pool, vec!["Alpha"]);
+    assert_eq!(restored.env_vars.get("KEY"), Some(&"val".to_string()));
+    assert_eq!(
+        restored.source_team_persona_slug,
+        Some("test-slug".to_string())
+    );
+    assert!(!restored.is_builtin);
+    assert!(restored.is_active);
+}
+
+#[test]
+fn retained_row_with_invalid_raw_event_falls_back_to_content() {
+    use crate::managed_agents::retention::RetainedEvent;
+    use sprout_core::kind::KIND_PERSONA;
+
+    // Simulate the old broken synthetic event that can't parse as nostr::Event
+    let content_json = serde_json::json!({
+        "display_name": "Broken Synthetic",
+        "system_prompt": "Hello",
+    });
+
+    let bad_raw = serde_json::json!({
+        "id": "migration-placeholder-test",
+        "pubkey": "0000000000000000000000000000000000000000000000000000000000000000",
+        "kind": KIND_PERSONA,
+        "created_at": 1000,
+        "content": content_json.to_string(),
+        "tags": [["d", "test"]],
+        "sig": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    });
+
+    let retained = RetainedEvent {
+        kind: KIND_PERSONA,
+        pubkey: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        d_tag: "test".to_string(),
+        content: content_json.to_string(),
+        created_at: 1000,
+        raw_event: bad_raw.to_string(),
+        pending_sync: true,
+    };
+
+    let restored = super::persona_from_retained_row(&retained).unwrap();
+    assert_eq!(restored.display_name, "Broken Synthetic");
+    assert_eq!(restored.system_prompt, "Hello");
+    assert_eq!(restored.id, "test");
+}

@@ -5,7 +5,7 @@ use tauri::AppHandle;
 use crate::{
     managed_agents::{
         managed_agents_base_dir,
-        persona_events::persona_from_event,
+        persona_events::{persona_from_event, PersonaEventContent},
         retention::{get_retained_personas, has_retained_personas, open_retention_db},
         PersonaRecord,
     },
@@ -733,10 +733,22 @@ fn retention_db_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(managed_agents_base_dir(app)?.join("retention.db"))
 }
 
+/// Placeholder pubkey used by migration when signing keys are unavailable.
+const UNKEYED_MIGRATION_PUBKEY: &str = "unkeyed";
+
 /// Load personas from the retention store, returning them as PersonaRecords.
 ///
 /// Returns `Ok(None)` if the retention DB doesn't exist or has no personas
 /// for the current user pubkey.
+///
+/// Handles two row types:
+/// - Rows with a valid signed `raw_event`: parsed via `persona_from_event`.
+/// - Rows with an empty or placeholder `raw_event` (written when signing keys
+///   were unavailable during migration): reconstructed from the `content`
+///   column directly.
+///
+/// Also picks up "unkeyed" migration rows that were written before the
+/// identity key was resolved.
 #[allow(dead_code)]
 fn load_from_retention(
     app: &AppHandle,
@@ -748,16 +760,29 @@ fn load_from_retention(
     }
 
     let conn = open_retention_db(&db_path)?;
-    if !has_retained_personas(&conn, pubkey)? {
+
+    // Query rows for the real pubkey and any unkeyed migration rows.
+    let has_keyed = has_retained_personas(&conn, pubkey)?;
+    let has_unkeyed = has_retained_personas(&conn, UNKEYED_MIGRATION_PUBKEY)?;
+    if !has_keyed && !has_unkeyed {
         return Ok(None);
     }
 
-    let retained = get_retained_personas(&conn, pubkey)?;
+    let mut retained = get_retained_personas(&conn, pubkey)?;
+    if has_unkeyed {
+        let unkeyed = get_retained_personas(&conn, UNKEYED_MIGRATION_PUBKEY)?;
+        // Only include unkeyed rows whose d_tag isn't already covered by a
+        // properly-keyed row (keyed rows take precedence).
+        for row in unkeyed {
+            if !retained.iter().any(|r| r.d_tag == row.d_tag) {
+                retained.push(row);
+            }
+        }
+    }
+
     let mut records = Vec::with_capacity(retained.len());
     for row in &retained {
-        let event: nostr::Event = serde_json::from_str(&row.raw_event)
-            .map_err(|e| format!("failed to parse retained event: {e}"))?;
-        match persona_from_event(&event) {
+        match persona_from_retained_row(row) {
             Ok(record) => records.push(record),
             Err(e) => {
                 eprintln!(
@@ -773,6 +798,44 @@ fn load_from_retention(
     } else {
         Ok(Some(records))
     }
+}
+
+/// Reconstruct a `PersonaRecord` from a retention row.
+///
+/// Tries the signed `raw_event` path first; falls back to parsing `content`
+/// directly when the raw event is empty or invalid (migration without keys).
+fn persona_from_retained_row(
+    row: &crate::managed_agents::retention::RetainedEvent,
+) -> Result<PersonaRecord, String> {
+    // Try parsing raw_event as a valid nostr::Event first.
+    if !row.raw_event.is_empty() {
+        if let Ok(event) = serde_json::from_str::<nostr::Event>(&row.raw_event) {
+            return persona_from_event(&event);
+        }
+    }
+
+    // Fallback: parse content column directly as PersonaEventContent.
+    let content: PersonaEventContent = serde_json::from_str(&row.content)
+        .map_err(|e| format!("failed to parse persona content: {e}"))?;
+
+    let now = crate::util::now_iso();
+    Ok(PersonaRecord {
+        id: row.d_tag.clone(),
+        display_name: content.display_name,
+        avatar_url: content.avatar_url,
+        system_prompt: content.system_prompt,
+        runtime: content.runtime,
+        model: content.model,
+        provider: content.provider,
+        name_pool: content.name_pool,
+        is_builtin: false,
+        is_active: true,
+        source_team: None,
+        source_team_persona_slug: Some(row.d_tag.clone()),
+        env_vars: content.env_vars,
+        created_at: now.clone(),
+        updated_at: now,
+    })
 }
 
 pub fn load_personas(app: &AppHandle) -> Result<Vec<PersonaRecord>, String> {
