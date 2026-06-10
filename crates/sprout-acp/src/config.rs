@@ -20,9 +20,11 @@ use crate::filter::SubscriptionRule;
 ///
 /// Sized for slow turns where the agent may go silent on its outer ACP channel
 /// while running long sub-tools (e.g. a sprout-agent running another agent, or
-/// codex/claude doing multi-minute single tool calls). 600s working budget +
-/// 20s buffer. Override via `--idle-timeout` / `SPROUT_ACP_IDLE_TIMEOUT`.
-pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 620;
+/// codex/claude doing multi-minute single tool calls). 900s gives 300s of
+/// breathing room above the 600s max shell timeout, so legitimate long-running
+/// tool calls don't race the idle deadline.
+/// Override via `--idle-timeout` / `SPROUT_ACP_IDLE_TIMEOUT`.
+pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 900;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 

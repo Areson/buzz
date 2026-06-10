@@ -739,7 +739,7 @@ impl AcpClient {
             if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
                 match method {
                     "session/update" => {
-                        self.handle_session_update(&msg);
+                        let _ = self.handle_session_update(&msg);
                     }
                     "session/request_permission" => {
                         self.handle_permission_request(&msg).await?;
@@ -852,7 +852,14 @@ impl AcpClient {
                     // Dispatch notifications and agent-initiated requests.
                     if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
                         match method {
-                            "session/update" => self.handle_session_update(&msg),
+                            "session/update" => {
+                                if self.handle_session_update(&msg) {
+                                    // Tool call started — explicitly reset idle clock.
+                                    // The agent will be silent while the tool executes.
+                                    tracing::debug!("idle clock reset: tool call started");
+                                    idle_deadline = Instant::now() + idle_timeout;
+                                }
+                            }
                             "session/request_permission" => {
                                 self.handle_permission_request(&msg).await?;
                             }
@@ -893,7 +900,10 @@ impl AcpClient {
     /// Log a `session/update` notification via tracing.
     ///
     /// The discriminator field is `sessionUpdate` (not `type`) per the ACP schema.
-    fn handle_session_update(&self, msg: &serde_json::Value) {
+    /// Returns `true` if the update indicates a tool call started, signaling that
+    /// the idle clock should be explicitly reset (the agent will be silent while
+    /// the tool executes).
+    fn handle_session_update(&self, msg: &serde_json::Value) -> bool {
         let update = &msg["params"]["update"];
         let update_type = update
             .get("sessionUpdate")
@@ -905,6 +915,7 @@ impl AcpClient {
                 if let Some(text) = update["content"]["text"].as_str() {
                     tracing::info!(target: "acp::stream", "{text}");
                 }
+                false
             }
             "tool_call" => {
                 let title = update
@@ -916,6 +927,7 @@ impl AcpClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 tracing::info!(target: "acp::tool", "tool_call: {title} ({kind})");
+                true
             }
             "tool_call_update" => {
                 let tool_id = update
@@ -924,14 +936,17 @@ impl AcpClient {
                     .unwrap_or("?");
                 let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                 tracing::info!(target: "acp::tool", "tool_call_update: {tool_id} → {status}");
+                false
             }
             "plan" => {
                 tracing::info!(target: "acp::plan", "plan update received");
+                false
             }
             "agent_thought_chunk" => {
                 if let Some(text) = update["content"]["text"].as_str() {
                     tracing::debug!(target: "acp::thought", "{text}");
                 }
+                false
             }
             "available_commands_update" => {
                 // Advertised slash commands (ACP slash-commands extension).
@@ -946,9 +961,11 @@ impl AcpClient {
                     names.len(),
                     names.join(", ")
                 );
+                false
             }
             other => {
                 tracing::debug!(target: "acp::update", "session/update: {other}");
+                false
             }
         }
     }

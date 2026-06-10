@@ -748,6 +748,19 @@ impl HarnessRelay {
         Ok(event)
     }
 
+    /// Build a channel message (kind:9) for death notices — posted when the
+    /// agent session ends due to timeout or unexpected exit.
+    pub fn build_death_notice(&self, channel_id: Uuid, message: &str) -> Result<Event, RelayError> {
+        use sprout_core::kind::KIND_STREAM_MESSAGE;
+
+        let h_tag = Tag::parse(["h", &channel_id.to_string()])
+            .map_err(|e| RelayError::AuthFailed(e.to_string()))?;
+        let event = EventBuilder::new(Kind::Custom(KIND_STREAM_MESSAGE as u16), message)
+            .tags([h_tag])
+            .sign_with_keys(&self.keys)?;
+        Ok(event)
+    }
+
     /// Set the startup watermark timestamp (Finding #22).
     ///
     /// Call this once after `connect()` with the Unix timestamp captured just

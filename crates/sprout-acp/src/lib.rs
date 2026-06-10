@@ -1717,6 +1717,7 @@ async fn tokio_main() -> Result<()> {
                     &respawn_tx,
                     &mut respawn_tasks,
                     observer.clone(),
+                    &relay,
                 ) == LoopAction::Exit
                 {
                     break;
@@ -1987,6 +1988,7 @@ fn handle_prompt_result(
     respawn_tx: &mpsc::Sender<RespawnResult>,
     respawn_tasks: &mut tokio::task::JoinSet<()>,
     observer: Option<observer::ObserverHandle>,
+    relay: &HarnessRelay,
 ) -> LoopAction {
     let before = pool.task_map().len();
     let agent_index = result.agent.index;
@@ -2076,10 +2078,26 @@ fn handle_prompt_result(
                 outcome = outcome_label,
                 "agent_returned — respawning"
             );
-            emit_turn_error(match outcome_label {
+            let death_message = match outcome_label {
                 "exited" => "Agent process exited unexpectedly",
-                _ => "Agent timed out",
-            });
+                _ => "Agent session timed out due to inactivity",
+            };
+            emit_turn_error(death_message);
+
+            // Post a visible death notice to the channel so humans know why
+            // the agent went silent.
+            if let Some(ch) = channel_id {
+                match relay.build_death_notice(ch, death_message) {
+                    Ok(event) => {
+                        if let Err(e) = relay.try_publish_event(event) {
+                            tracing::warn!("failed to publish death notice: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to build death notice: {e}");
+                    }
+                }
+            }
             let index = result.agent.index;
             let slot_history = &mut crash_history[index];
             if !spawn_respawn_task(
