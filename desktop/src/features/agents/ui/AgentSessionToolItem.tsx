@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ArrowUpRight, ChevronDown, Wrench } from "lucide-react";
+import { ArrowUpRight, ChevronDown, CircleDot, Wrench } from "lucide-react";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
@@ -7,6 +7,7 @@ import { resolveUserLabel } from "@/features/profile/lib/identity";
 import type { Channel, UserProfileSummary } from "@/shared/api/types";
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
 import { cn } from "@/shared/lib/cn";
+import { Badge } from "@/shared/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import type { TranscriptItem } from "./agentSessionTypes";
@@ -27,8 +28,12 @@ import {
 } from "./agentSessionUtils";
 
 export function ToolItem({
+  compact = false,
+  isActive = false,
   item,
 }: {
+  compact?: boolean;
+  isActive?: boolean;
   item: Extract<TranscriptItem, { type: "tool" }>;
 }) {
   const [isExpanded, setIsExpanded] = React.useState(false);
@@ -48,7 +53,15 @@ export function ToolItem({
   );
 
   return (
-    <div className="not-prose w-full px-1">
+    <div
+      className={cn(
+        "not-prose w-full",
+        compact ? "px-0" : "px-1",
+        isActive &&
+          "rounded-lg border border-primary/15 bg-primary/[0.03] px-2 py-1",
+      )}
+      data-testid="transcript-tool-item"
+    >
       <details
         className="group w-full"
         onToggle={handleToggle}
@@ -59,13 +72,22 @@ export function ToolItem({
             <ToolIcon
               className={cn(
                 "h-4 w-4 shrink-0",
-                buzzTool ? "text-primary" : "text-muted-foreground",
+                buzzTool || isActive ? "text-primary" : "text-muted-foreground",
               )}
             />
           ) : null}
           <span className="min-w-0 truncate text-sm font-medium">
             {toolTitle}
           </span>
+          {isActive ? (
+            <Badge
+              className="h-4 gap-0.5 px-1 text-[9px] font-normal"
+              variant="default"
+            >
+              <CircleDot className="h-2 w-2" />
+              Live
+            </Badge>
+          ) : null}
           {buzzTool ? (
             <BuzzToolInlineAction args={item.args} result={item.result} />
           ) : null}
