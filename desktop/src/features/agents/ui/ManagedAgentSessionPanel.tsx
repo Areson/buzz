@@ -28,8 +28,11 @@ type ManagedAgentSessionPanelProps = {
   agent: Pick<ManagedAgent, "pubkey" | "name" | "status">;
   channelId?: string | null;
   className?: string;
+  compact?: boolean;
   emptyDescription?: string;
+  isWorking?: boolean;
   showHeader?: boolean;
+  showInterventionHint?: boolean;
   showRaw?: boolean;
   profiles?: UserProfileLookup;
 };
@@ -38,8 +41,11 @@ export function ManagedAgentSessionPanel({
   agent,
   channelId = null,
   className,
+  compact = false,
   emptyDescription = "Mention this agent in a channel to watch the next turn.",
+  isWorking = false,
   showHeader = true,
+  showInterventionHint = false,
   showRaw = true,
   profiles,
 }: ManagedAgentSessionPanelProps) {
@@ -94,12 +100,15 @@ export function ManagedAgentSessionPanel({
 
       <SessionBody
         agentName={agent.name}
+        compact={compact}
         connectionState={connectionState}
         emptyDescription={emptyDescription}
         errorMessage={errorMessage}
         events={scopedEvents}
         hasObserver={hasObserver}
+        isWorking={isWorking}
         profiles={profiles}
+        showInterventionHint={showInterventionHint}
         showRaw={showRaw}
         transcript={scopedTranscript}
       />
@@ -144,22 +153,28 @@ function SessionHeader({
 
 function SessionBody({
   agentName,
+  compact,
   connectionState,
   emptyDescription,
   errorMessage,
   events,
   hasObserver,
+  isWorking,
   profiles,
+  showInterventionHint,
   showRaw,
   transcript,
 }: {
   agentName: string;
+  compact: boolean;
   connectionState: ConnectionState;
   emptyDescription: string;
   errorMessage: string | null;
   events: ObserverEvent[];
   hasObserver: boolean;
+  isWorking: boolean;
   profiles?: UserProfileLookup;
+  showInterventionHint: boolean;
   showRaw: boolean;
   transcript: TranscriptItem[];
 }) {
@@ -179,9 +194,12 @@ function SessionBody({
         >
           <AgentSessionTranscriptList
             agentName={agentName}
+            compact={compact}
             emptyDescription={emptyDescription}
+            isWorking={isWorking}
             items={transcript}
             profiles={profiles}
+            showInterventionHint={showInterventionHint}
           />
           {showRaw ? <RawEventRail events={events} /> : null}
         </div>

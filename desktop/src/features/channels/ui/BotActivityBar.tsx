@@ -2,8 +2,7 @@ import * as React from "react";
 import { Loader2 } from "lucide-react";
 
 import { useAgentTranscript } from "@/features/agents/ui/useObserverEvents";
-import type { TranscriptItem } from "@/features/agents/ui/agentSessionTypes";
-import { formatToolTitle } from "@/features/agents/ui/agentSessionToolCatalog";
+import { getActivityHeadline } from "@/features/agents/ui/agentSessionTranscriptPresentation";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ManagedAgent } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -26,18 +25,6 @@ type BotActivityBarProps = {
 const HOVER_OPEN_DELAY_MS = 150;
 const HOVER_CLOSE_DELAY_MS = 180;
 const HEADLINE_ROTATION_MS = 2200;
-
-function getActivityHeadline(item: TranscriptItem): string | null {
-  if (item.type === "tool") {
-    return formatToolTitle(item.buzzToolName ?? item.toolName, item.title);
-  }
-
-  if (item.type === "message") {
-    return item.role === "assistant" ? "Responding" : item.title;
-  }
-
-  return item.title;
-}
 
 export function BotActivityComposerAction({
   agents,

@@ -160,9 +160,12 @@ export function AgentSessionThreadPanel({
         agent={agent}
         channelId={channel.id}
         className="border-0 bg-transparent p-0 shadow-none"
+        compact
         emptyDescription={`Mention ${agent.name} in the channel to see its work here.`}
+        isWorking={isWorking}
         profiles={profiles}
         showHeader={false}
+        showInterventionHint={canInterruptTurn}
         showRaw={false}
       />
     </div>
