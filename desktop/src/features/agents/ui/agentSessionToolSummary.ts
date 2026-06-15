@@ -131,7 +131,7 @@ function compactToolLabel(
   }
 
   const labels: Record<
-    CompactToolKind,
+    Exclude<CompactToolKind, "buzz">,
     { completed: string; running: string; failed: string }
   > = {
     generic: {
@@ -142,12 +142,7 @@ function compactToolLabel(
     ...developerToolLabels(),
   };
 
-  const labelsMap = labels as Record<
-    CompactToolKind,
-    { completed: string; running: string; failed: string }
-  >;
-
-  const set = labelsMap[kind];
+  const set = labels[kind];
   if (failed) return set.failed;
   if (running) return set.running;
   return set.completed;
