@@ -224,6 +224,7 @@ type MarkdownProps = {
   agentMentionPubkeysByName?: Record<string, string>;
   mentionNames?: string[];
   mentionPubkeysByName?: Record<string, string>;
+  mediaInset?: boolean;
   searchQuery?: string;
   tight?: boolean;
   videoReviewContext?: VideoReviewContext;
@@ -748,6 +749,7 @@ function createMarkdownComponents(
   variant: MarkdownVariant,
   runtimeRef: React.RefObject<MarkdownRuntime>,
   interactive = true,
+  mediaInset = false,
 ): Components {
   const paragraphClassName =
     variant === "tight"
@@ -898,7 +900,12 @@ function createMarkdownComponents(
       if (resolvedSrc?.endsWith(".mp4")) {
         const entry = src ? imetaByUrl?.get(src) : undefined;
         return (
-          <span data-block-media="">
+          <span
+            className={cn(
+              mediaInset && "mx-1.5 block max-w-[calc(100%-0.75rem)]",
+            )}
+            data-block-media=""
+          >
             <MarkdownVideoPlayer
               key={src ?? resolvedSrc}
               alt={alt}
@@ -910,7 +917,13 @@ function createMarkdownComponents(
         );
       }
       return (
-        <span data-block-media="" className="block">
+        <span
+          data-block-media=""
+          className={cn(
+            "block",
+            mediaInset && "mx-1.5 max-w-[calc(100%-0.75rem)]",
+          )}
+        >
           <ImageBlock alt={alt} resolvedSrc={resolvedSrc} src={src} />
         </span>
       );
@@ -1115,6 +1128,7 @@ function MarkdownInner({
   imetaByUrl,
   interactive = true,
   agentMentionPubkeysByName,
+  mediaInset = false,
   mentionNames,
   mentionPubkeysByName,
   searchQuery,
@@ -1161,8 +1175,9 @@ function MarkdownInner({
   });
 
   const components = React.useMemo(
-    () => createMarkdownComponents(variant, runtimeRef, interactive),
-    [variant, runtimeRef, interactive],
+    () =>
+      createMarkdownComponents(variant, runtimeRef, interactive, mediaInset),
+    [variant, runtimeRef, interactive, mediaInset],
   );
 
   // biome-ignore lint/suspicious/noExplicitAny: PluggableList type not directly importable
@@ -1276,6 +1291,7 @@ export const Markdown = React.memo(
     prev.compact === next.compact &&
     prev.customEmoji === next.customEmoji &&
     prev.interactive === next.interactive &&
+    prev.mediaInset === next.mediaInset &&
     prev.tight === next.tight &&
     prev.agentMentionPubkeysByName === next.agentMentionPubkeysByName &&
     prev.mentionPubkeysByName === next.mentionPubkeysByName &&

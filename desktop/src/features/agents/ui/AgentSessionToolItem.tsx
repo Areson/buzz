@@ -1,6 +1,6 @@
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Send } from "lucide-react";
 
 import { cn } from "@/shared/lib/cn";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
@@ -40,16 +40,27 @@ export function ToolItem({
       >
         <summary
           className={cn(
-            "inline-flex max-w-full cursor-pointer list-none items-center gap-1.5 py-px",
+            "max-w-full cursor-pointer list-none py-px",
+            compactSummary.presentation === "inline" &&
+              "inline-flex items-center gap-1.5",
             compactSummaryTone(),
           )}
         >
-          <CompactToolSummaryRow
-            duration={duration}
-            preview={compactSummary.preview}
-            thumbnailSrc={compactSummary.thumbnailSrc}
-            label={compactSummary.label}
-          />
+          {compactSummary.presentation === "message" ? (
+            <CompactMessageSummary
+              duration={duration}
+              isError={item.isError || item.status === "failed"}
+              label={compactSummary.label}
+              preview={compactSummary.preview}
+            />
+          ) : (
+            <CompactToolSummaryRow
+              duration={duration}
+              preview={compactSummary.preview}
+              thumbnailSrc={compactSummary.thumbnailSrc}
+              label={compactSummary.label}
+            />
+          )}
         </summary>
 
         <ToolDetailBlocks
@@ -131,6 +142,52 @@ function CompactToolSummaryRow({
   );
 }
 
+function CompactMessageSummary({
+  duration,
+  isError,
+  label,
+  preview,
+}: {
+  duration: string | null;
+  isError: boolean;
+  label: string;
+  preview: string | null;
+}) {
+  const mutedTone = compactSummaryTone();
+  return (
+    <div className="flex max-w-[85%] flex-col items-start gap-1.5">
+      <div
+        className={cn(
+          "min-w-0 rounded-2xl border px-3 py-2 text-sm leading-relaxed shadow-sm",
+          isError
+            ? "border-destructive/25 bg-destructive/10 text-destructive"
+            : "border-primary/15 bg-primary/6 text-foreground",
+        )}
+        data-testid="transcript-tool-message-preview"
+      >
+        <p className="whitespace-pre-wrap wrap-break-word">
+          {preview || "Message content unavailable."}
+        </p>
+      </div>
+      <div className="inline-flex max-w-full items-center gap-1.5 px-1">
+        <Send className={cn("h-3.5 w-3.5 shrink-0", mutedTone)} />
+        <span className={cn("truncate text-xs font-medium", mutedTone)}>
+          {label}
+        </span>
+        {duration ? (
+          <span className={cn("shrink-0 text-xs", mutedTone)}>{duration}</span>
+        ) : null}
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180",
+            mutedTone,
+          )}
+        />
+      </div>
+    </div>
+  );
+}
+
 function resolveImageSrc(source: string): string {
   if (source.startsWith("data:image/")) {
     return source;
@@ -159,7 +216,7 @@ function ViewImageToolPreview({
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: opens lightbox on click */}
       <img
         alt={alt}
-        className="block max-h-64 max-w-sm cursor-pointer rounded-md object-contain"
+        className="ml-1.5 block max-h-64 max-w-[min(24rem,calc(100%-0.375rem))] cursor-pointer rounded-lg object-contain"
         decoding="async"
         loading="lazy"
         onClick={() => setLightboxOpen(true)}

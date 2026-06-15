@@ -29,6 +29,7 @@ export type CompactToolSummary = {
   preview: string | null;
   /** When set, the compact row renders a tiny image instead of text preview. */
   thumbnailSrc: string | null;
+  presentation: "inline" | "message";
 };
 
 const DEVELOPER_TOOL_BASES = new Set([
@@ -46,12 +47,24 @@ type ToolItem = Extract<TranscriptItem, { type: "tool" }>;
 /** Build the muted compact summary label and preview for any tool row. */
 export function buildCompactToolSummary(item: ToolItem): CompactToolSummary {
   const kind = resolveCompactToolKind(item);
+  const messageSendPreview = extractMessageSendPreview(item, kind);
+  if (messageSendPreview !== undefined) {
+    return {
+      kind,
+      label: compactMessageSendLabel(item.status, item.isError),
+      preview: messageSendPreview,
+      thumbnailSrc: null,
+      presentation: "message",
+    };
+  }
+
   const { preview, thumbnailSrc } = extractCompactToolPreview(item, kind);
   return {
     kind,
     label: compactToolLabel(kind, item, item.status, item.isError),
     preview,
     thumbnailSrc,
+    presentation: "inline",
   };
 }
 
@@ -196,6 +209,13 @@ function developerToolLabels(): Record<
   };
 }
 
+function compactMessageSendLabel(status: ToolStatus, isError: boolean) {
+  if (isError || status === "failed") {
+    return "Send Message failed";
+  }
+  return "Send Message";
+}
+
 type CompactToolPreview = {
   preview: string | null;
   thumbnailSrc: string | null;
@@ -269,6 +289,210 @@ function extractBuzzToolPreview(args: Record<string, unknown>): string | null {
   }
 
   return getToolString(args, ["event_id", "eventId", "name"]);
+}
+
+function extractMessageSendPreview(
+  item: ToolItem,
+  kind: CompactToolKind,
+): string | null | undefined {
+  if (isBuzzSendMessageTool(item)) {
+    return extractBuzzToolMessageContent(item.args);
+  }
+
+  if (kind !== "shell") {
+    return undefined;
+  }
+
+  const command = getToolString(item.args, ["command"]);
+  return command ? extractBuzzCliSendMessageContent(command) : undefined;
+}
+
+function isBuzzSendMessageTool(item: ToolItem) {
+  return [item.buzzToolName, item.toolName, item.title].some((value) => {
+    if (!value) return false;
+    return normalizeToolNameText(value) === "send_message";
+  });
+}
+
+function extractBuzzToolMessageContent(
+  args: Record<string, unknown>,
+): string | null {
+  return getToolString(args, ["content", "message", "text", "body"]);
+}
+
+function extractBuzzCliSendMessageContent(
+  command: string,
+): string | null | undefined {
+  const tokens = tokenizeShellCommand(command);
+  const commandRange = findBuzzMessagesSendCommand(tokens);
+  if (!commandRange) {
+    return undefined;
+  }
+
+  const content = getFlagValue(tokens, commandRange.sendIndex + 1, "--content");
+  if (!content) {
+    return null;
+  }
+  if (content !== "-") {
+    return content;
+  }
+
+  const pipedContent = extractSimpleEchoPipeContent(
+    tokens,
+    commandRange.buzzIndex,
+  );
+  return pipedContent ?? null;
+}
+
+function tokenizeShellCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+
+  const pushCurrent = () => {
+    if (current.length > 0) {
+      tokens.push(current);
+      current = "";
+    }
+  };
+
+  for (const char of command) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+
+    if (char === "\\" && quote !== "'") {
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      pushCurrent();
+      continue;
+    }
+
+    if (char === "|" || char === ";" || char === "&") {
+      pushCurrent();
+      tokens.push(char);
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaping) {
+    current += "\\";
+  }
+  pushCurrent();
+  return tokens;
+}
+
+function findBuzzMessagesSendCommand(
+  tokens: string[],
+): { buzzIndex: number; sendIndex: number } | null {
+  for (let i = 0; i < tokens.length; i++) {
+    if (!isBuzzExecutable(tokens[i])) {
+      continue;
+    }
+
+    const messagesIndex = tokens.indexOf("messages", i + 1);
+    if (messagesIndex === -1) {
+      continue;
+    }
+    if (
+      messagesIndex > i &&
+      hasCommandSeparator(tokens, i + 1, messagesIndex)
+    ) {
+      continue;
+    }
+    if (tokens[messagesIndex + 1] === "send") {
+      return { buzzIndex: i, sendIndex: messagesIndex + 1 };
+    }
+  }
+
+  return null;
+}
+
+function isBuzzExecutable(token: string) {
+  return token === "buzz" || token.split(/[\\/]/).pop() === "buzz";
+}
+
+function hasCommandSeparator(tokens: string[], start: number, end: number) {
+  for (let i = start; i < end; i++) {
+    if (isCommandSeparator(tokens[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isCommandSeparator(token: string) {
+  return token === "|" || token === ";" || token === "&";
+}
+
+function getFlagValue(tokens: string[], start: number, flag: string) {
+  for (let i = start; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (isCommandSeparator(token)) {
+      return null;
+    }
+    if (token === flag) {
+      return tokens[i + 1] && !isCommandSeparator(tokens[i + 1])
+        ? tokens[i + 1]
+        : null;
+    }
+    if (token.startsWith(`${flag}=`)) {
+      return token.slice(flag.length + 1);
+    }
+  }
+  return null;
+}
+
+function extractSimpleEchoPipeContent(
+  tokens: string[],
+  buzzIndex: number,
+): string | null {
+  const pipeIndex = tokens.lastIndexOf("|", buzzIndex);
+  if (pipeIndex <= 0) {
+    return null;
+  }
+
+  const echoStart = findSegmentStart(tokens, pipeIndex - 1);
+  const leftSegment = tokens.slice(echoStart, pipeIndex);
+  if (leftSegment[0] !== "echo") {
+    return null;
+  }
+
+  const contentTokens = leftSegment
+    .slice(1)
+    .filter((token) => !token.startsWith("-"));
+  return contentTokens.length > 0 ? contentTokens.join(" ") : null;
+}
+
+function findSegmentStart(tokens: string[], beforeIndex: number) {
+  for (let i = beforeIndex; i >= 0; i--) {
+    if (isCommandSeparator(tokens[i])) {
+      return i + 1;
+    }
+  }
+  return 0;
 }
 
 function textPreview(preview: string | null): CompactToolPreview {

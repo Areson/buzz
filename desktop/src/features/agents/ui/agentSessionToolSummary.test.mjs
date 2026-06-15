@@ -36,6 +36,40 @@ test("buildCompactToolSummary formats Buzz send_message preview", () => {
   assert.equal(summary.kind, "buzz");
   assert.equal(summary.label, "Send Message");
   assert.equal(summary.preview, "Hello team");
+  assert.equal(summary.presentation, "message");
+});
+
+test("buildCompactToolSummary treats buzz messages send commands as messages", () => {
+  const summary = buildCompactToolSummary(
+    makeTool({
+      toolName: "buzz-dev-mcp__shell",
+      args: {
+        command:
+          'buzz --format compact messages send --channel channel-1 --content "@Ned are you working"',
+      },
+    }),
+  );
+
+  assert.equal(summary.kind, "shell");
+  assert.equal(summary.label, "Send Message");
+  assert.equal(summary.preview, "@Ned are you working");
+  assert.equal(summary.presentation, "message");
+});
+
+test("buildCompactToolSummary extracts simple piped buzz message content", () => {
+  const summary = buildCompactToolSummary(
+    makeTool({
+      toolName: "shell",
+      args: {
+        command:
+          'echo "hello from stdin" | ./target/release/buzz messages send --channel channel-1 --content -',
+      },
+    }),
+  );
+
+  assert.equal(summary.label, "Send Message");
+  assert.equal(summary.preview, "hello from stdin");
+  assert.equal(summary.presentation, "message");
 });
 
 test("buildCompactToolSummary formats shell command preview", () => {
@@ -48,6 +82,7 @@ test("buildCompactToolSummary formats shell command preview", () => {
 
   assert.equal(summary.label, "Ran command");
   assert.equal(summary.preview, "git status");
+  assert.equal(summary.presentation, "inline");
 });
 
 test("buildCompactToolSummary formats view_image thumbnail source", () => {
