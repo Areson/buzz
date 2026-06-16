@@ -75,6 +75,7 @@ test("renders a day divider row with its formatted label", () => {
     <VirtualizedTimelineList
       entries={[]}
       renderEntry={renderEntryStub}
+      scrollMargin={0}
       rows={rows}
       virtualizer={fakeVirtualizer(rows)}
     />,
@@ -95,6 +96,7 @@ test("dispatches message rows to their mapped entry, interleaved with dividers",
     <VirtualizedTimelineList
       entries={entries}
       renderEntry={renderEntryStub}
+      scrollMargin={0}
       rows={rows}
       virtualizer={fakeVirtualizer(rows)}
     />,
@@ -112,6 +114,7 @@ test("renders nothing for an empty row list", () => {
     <VirtualizedTimelineList
       entries={[]}
       renderEntry={renderEntryStub}
+      scrollMargin={0}
       rows={[]}
       virtualizer={fakeVirtualizer([])}
     />,
@@ -129,10 +132,40 @@ test("renders a message row's wrapper even if its entry is missing (no throw)", 
     <VirtualizedTimelineList
       entries={[]}
       renderEntry={renderEntryStub}
+      scrollMargin={0}
       rows={rows}
       virtualizer={fakeVirtualizer(rows)}
     />,
   );
   assert.equal(container.querySelectorAll("[data-index]").length, 1);
   assert.equal(screen.queryByTestId("entry"), null);
+});
+
+test("positions rows at start minus scrollMargin (content-above offset)", () => {
+  // With a scrollMargin of 128px, the first row (virtualItem.start = 0 from the
+  // fake virtualizer, since start includes the margin in real usage) must paint
+  // at translateY(start - 128). This is the fix for the header/list sandwich:
+  // the spacer sits at offsetTop = scrollMargin, so rows subtract it back out.
+  const rows: VirtualTimelineRow[] = [divider(DAY_1)];
+  const fake = {
+    getTotalSize: () => 64,
+    getVirtualItems: () => [
+      { index: 0, key: rows[0].key, start: 200, size: 64, end: 264, lane: 0 },
+    ],
+    measureElement: () => {},
+  } as unknown as Virtualizer<HTMLDivElement, Element>;
+
+  const { container } = render(
+    <VirtualizedTimelineList
+      entries={[]}
+      renderEntry={renderEntryStub}
+      scrollMargin={128}
+      rows={rows}
+      virtualizer={fake}
+    />,
+  );
+  const wrapper = container.querySelector<HTMLElement>('[data-index="0"]');
+  assert.ok(wrapper);
+  // 200 - 128 = 72
+  assert.match(wrapper.style.transform, /translateY\(72px\)/);
 });

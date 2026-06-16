@@ -23,6 +23,7 @@ import {
 } from "./timelineEntryRender";
 import { useLoadOlderOnScroll } from "./useLoadOlderOnScroll";
 import { useVideoReviewContextById } from "./useVideoReviewContextById";
+import { useVirtualScrollMargin } from "./useVirtualScrollMargin";
 import { useVirtualTimelineScroll } from "./useVirtualTimelineScroll";
 import { VirtualizedTimelineList } from "./VirtualizedTimelineList";
 
@@ -167,6 +168,9 @@ export const MessageTimeline = React.memo(function MessageTimeline({
   const internalScrollRef = React.useRef<HTMLDivElement>(null);
   const scrollContainerRef = externalScrollRef ?? internalScrollRef;
   const topSentinelRef = React.useRef<HTMLDivElement>(null);
+  // Wraps the virtualized list; its offset within the scroll container is the
+  // virtualizer's `scrollMargin` (content above it: sentinel, spinner, intro).
+  const listOuterRef = React.useRef<HTMLDivElement>(null);
 
   // Gate the heavy timeline render (each row runs a synchronous
   // react-markdown parse) behind React concurrency. `useDeferredValue` lets the
@@ -211,6 +215,23 @@ export const MessageTimeline = React.memo(function MessageTimeline({
       ? rows.length
       : VIRTUAL_OVERSCAN;
 
+  // Offset of the virtualized list within the scroll container — content above
+  // it (sentinel, "load older" spinner, intro banner) lives in the SAME
+  // scrollable element, so the virtualizer must know that offset or rows paint
+  // at the wrong scrollTop (header/list sandwich + anchor drift on fill).
+  const scrollMargin = useVirtualScrollMargin(
+    scrollContainerRef,
+    listOuterRef,
+    [
+      isLoading,
+      isFetchingOlder,
+      deferredMessages.length,
+      channelIntro,
+      directMessageIntro,
+      rows.length,
+    ],
+  );
+
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollContainerRef.current,
@@ -224,6 +245,9 @@ export const MessageTimeline = React.memo(function MessageTimeline({
     // before/after scrollHeight delta math, no double-rAF correction.
     getItemKey: (index) => rows[index]?.key ?? index,
     overscan,
+    // Account for the sentinel/spinner/intro above the list inside the same
+    // scroll container, so item offsets line up with where they actually paint.
+    scrollMargin,
   });
 
   const {
@@ -494,11 +518,13 @@ export const MessageTimeline = React.memo(function MessageTimeline({
                     isRenderPending && "opacity-60 transition-opacity",
                   )}
                   data-render-pending={isRenderPending ? "true" : undefined}
+                  ref={listOuterRef}
                 >
                   <VirtualizedTimelineList
                     entries={entries}
                     renderEntry={renderEntry}
                     rows={rows}
+                    scrollMargin={scrollMargin}
                     virtualizer={virtualizer}
                   />
                 </div>

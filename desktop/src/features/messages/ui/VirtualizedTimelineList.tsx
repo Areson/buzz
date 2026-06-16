@@ -12,6 +12,13 @@ type VirtualizedTimelineListProps = {
   /** Filtered main-timeline entries, indexed by `VirtualMessageRow.messageIndex`. */
   entries: MainTimelineEntry[];
   /**
+   * The virtualizer's `scrollMargin` — the list's offset within the scroll
+   * container (content above it: sentinel, spinner, intro). `virtualItem.start`
+   * is in scroll-element coords (includes this margin), so rows are positioned
+   * at `start - scrollMargin` within the spacer, which sits at that offset.
+   */
+  scrollMargin: number;
+  /**
    * Renders one message entry's content. Injected (rather than imported) so the
    * heavy `MessageRow` subtree stays out of this component's concern and the
    * list is testable in isolation. `MessageTimeline` passes the real
@@ -34,6 +41,7 @@ export const VirtualizedTimelineList = React.memo(
     virtualizer,
     rows,
     entries,
+    scrollMargin,
     renderEntry,
   }: VirtualizedTimelineListProps) {
     const virtualItems = virtualizer.getVirtualItems();
@@ -63,7 +71,7 @@ export const VirtualizedTimelineList = React.memo(
                 top: 0,
                 left: 0,
                 width: "100%",
-                transform: `translateY(${virtualItem.start}px)`,
+                transform: `translateY(${virtualItem.start - scrollMargin}px)`,
               }}
             >
               {row.kind === "day-divider" ? (
