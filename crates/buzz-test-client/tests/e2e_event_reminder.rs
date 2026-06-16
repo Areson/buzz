@@ -5,6 +5,8 @@
 //!   expiration ordering
 //! - Read-path filtering: author-only enforcement on REQ, COUNT, and the
 //!   HTTP bridge (/query, /count)
+//! - Scheduler delivery: the due-reminder poll pushes a reminder to the
+//!   author's live subscription when `not_before` passes
 //!
 //! # Running
 //!
@@ -1035,4 +1037,100 @@ async fn test_reminder_rejected_not_before_too_far_in_future() {
         msg.contains("not_before too far in future"),
         "unexpected message: {msg}"
     );
+}
+
+// ── Scheduler delivery test ──────────────────────────────────────────────────
+
+/// True if the event carries a `d` tag equal to `d_tag`.
+fn has_d_tag(event: &nostr::Event, d_tag: &str) -> bool {
+    event.tags.iter().any(|t| {
+        let parts = t.as_slice();
+        parts.len() >= 2 && parts[0] == "d" && parts[1] == d_tag
+    })
+}
+
+/// Wait for a live `EVENT` on `sub_id` whose `d` tag is `d_tag`, draining the
+/// initial EOSE and any historical matches first. The post-EOSE delivery is the
+/// scheduler's push — with the scheduler disabled, no such frame ever arrives
+/// and this returns `Timeout`.
+async fn await_scheduler_push(
+    ws: &mut BuzzTestClient,
+    sub_id: &str,
+    d_tag: &str,
+    timeout_dur: Duration,
+) -> Result<(), String> {
+    // Drain the stored-events phase up to EOSE; the reminder may appear here as
+    // history, which proves storage but not the scheduler.
+    ws.collect_until_eose(sub_id, Duration::from_secs(5))
+        .await
+        .map_err(|e| format!("EOSE phase failed: {e:?}"))?;
+
+    let deadline = tokio::time::Instant::now() + timeout_dur;
+    loop {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .unwrap_or(Duration::ZERO);
+        if remaining.is_zero() {
+            return Err("no live scheduler push received before timeout".to_string());
+        }
+        match ws.recv_event(remaining).await {
+            Ok(RelayMessage::Event {
+                subscription_id,
+                event,
+            }) if subscription_id == sub_id && has_d_tag(&event, d_tag) => return Ok(()),
+            Ok(_) => {}
+            Err(e) => return Err(format!("recv failed: {e:?}")),
+        }
+    }
+}
+
+/// The scheduler tick delivers a due reminder to the author's live subscription.
+///
+/// Submits a reminder whose `not_before` is a few seconds out *before* any
+/// WebSocket is connected, so the ingest-time fan-out has no subscriber to
+/// deliver to. The author then subscribes and drains the historical EOSE while
+/// the reminder is still not due — so the scheduler cannot have fired yet. Once
+/// `not_before` passes, the only path that reaches the live subscription is the
+/// scheduler polling `query_due_reminders` and publishing the event for
+/// fan-out.
+///
+/// Requires a low scheduler interval; run the relay with
+/// `SPROUT_REMINDER_SCHEDULER_INTERVAL_SECS=1`.
+#[tokio::test]
+#[ignore]
+async fn test_scheduler_delivers_due_reminder_to_author_subscription() {
+    let url = relay_url();
+    let keys = Keys::generate();
+    let d_tag = uuid::Uuid::new_v4().to_string();
+
+    // Submit a reminder due a few seconds out, with no WebSocket connected — the
+    // ingest fan-out therefore has zero live recipients, and the reminder is not
+    // yet due so the scheduler will not have claimed it before we subscribe.
+    let due_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3;
+    let client = http_client();
+    let event = build_reminder(
+        &keys,
+        &d_tag,
+        vec![Tag::parse(["not_before", &due_at.to_string()]).unwrap()],
+    );
+    let (accepted, msg) = submit_event_http(&client, &keys, &event).await;
+    assert!(accepted, "setup failed: {msg}");
+
+    // Now subscribe as the author and wait for the scheduler to push the due
+    // reminder live (after the historical EOSE).
+    let mut ws = BuzzTestClient::connect(&url, &keys).await.expect("connect");
+    let sid = sub_id("scheduler-delivery");
+    let filter = Filter::new()
+        .kind(Kind::Custom(KIND_EVENT_REMINDER))
+        .author(keys.public_key());
+    ws.subscribe(&sid, vec![filter]).await.expect("subscribe");
+
+    let result = await_scheduler_push(&mut ws, &sid, &d_tag, Duration::from_secs(15)).await;
+
+    ws.disconnect().await.expect("disconnect");
+    result.expect("scheduler should deliver the due reminder to the author");
 }
