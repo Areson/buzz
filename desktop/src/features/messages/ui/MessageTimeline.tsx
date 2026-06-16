@@ -326,6 +326,13 @@ export const MessageTimeline = React.memo(function MessageTimeline({
   const showChannelIntro =
     !isLoading && channelIntro !== null && directMessageIntro === null;
   const showIntro = showDirectMessageIntro || showChannelIntro;
+  // The channel intro is an in-list HEADER: it must sit FLUSH at the top of the
+  // virtualized list (the `#` avatar / title / "beginning of…" / action cards),
+  // not float bottom-pinned in the viewport like the DM intro / empty state. So
+  // for the channel-intro case we drop the `min-h-full` fill + the intro's
+  // `mt-auto`, letting natural top-down flow place it at the top. Everything
+  // else (DM intro, generic empty) keeps the existing bottom-pin behavior.
+  const topAlignIntro = showChannelIntro;
   const showGenericEmpty =
     !isLoading &&
     deferredMessages.length === 0 &&
@@ -355,7 +362,7 @@ export const MessageTimeline = React.memo(function MessageTimeline({
             className={cn(
               "flex w-full flex-col gap-2",
               channelChrome.contentPadding,
-              (showIntro || showGenericEmpty) && "min-h-full",
+              (showIntro || showGenericEmpty) && !topAlignIntro && "min-h-full",
             )}
           >
             <div ref={topSentinelRef} aria-hidden className="h-px" />
@@ -369,12 +376,16 @@ export const MessageTimeline = React.memo(function MessageTimeline({
             <SkeletonReveal
               className={cn(
                 "min-h-[18rem]",
-                (showIntro || showGenericEmpty) && "min-h-full",
+                (showIntro || showGenericEmpty) &&
+                  !topAlignIntro &&
+                  "min-h-full",
                 showMessageList && !showIntro && "mt-auto",
               )}
               contentClassName={cn(
                 "flex flex-col gap-2",
-                (showIntro || showGenericEmpty) && "min-h-full",
+                (showIntro || showGenericEmpty) &&
+                  !topAlignIntro &&
+                  "min-h-full",
               )}
               loading={isLoading}
               skeleton={<TimelineSkeleton rows={timelineSkeletonRows} />}
@@ -402,7 +413,12 @@ export const MessageTimeline = React.memo(function MessageTimeline({
 
               {showChannelIntro ? (
                 <div
-                  className="mb-0.5 mt-auto flex w-full max-w-2xl flex-col items-start px-3 py-2 text-left"
+                  className={cn(
+                    "mb-0.5 flex w-full max-w-2xl flex-col items-start px-3 py-2 text-left",
+                    // Channel intro is the in-list header → flush to the top, no
+                    // bottom-pin. (mt-auto would push it to the viewport bottom.)
+                    !topAlignIntro && "mt-auto",
+                  )}
                   data-testid="message-channel-intro"
                 >
                   <div
