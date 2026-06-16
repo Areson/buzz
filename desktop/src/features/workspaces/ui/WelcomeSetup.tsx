@@ -202,7 +202,10 @@ export function WelcomeSetup({
       setError(null);
       if (checked && customRelayUrl.trim() === "") {
         setCustomRelayUrl(DEFAULT_SERVERLESS_RELAY);
-      } else if (!checked && customRelayUrl.trim() === DEFAULT_SERVERLESS_RELAY) {
+      } else if (
+        !checked &&
+        customRelayUrl.trim() === DEFAULT_SERVERLESS_RELAY
+      ) {
         setCustomRelayUrl("");
       }
     },

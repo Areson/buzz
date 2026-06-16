@@ -461,36 +461,36 @@ export function AppSidebar({
             ) : null}
           </SidebarMenuItem>
           {!serverless && (
-          <FeatureGate feature="pulse">
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                data-testid="open-pulse-view"
-                isActive={selectedView === "pulse"}
-                onClick={onSelectPulse}
-                tooltip="Pulse"
-                type="button"
-              >
-                <Activity className="h-4 w-4" />
-                <span>Pulse</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </FeatureGate>
+            <FeatureGate feature="pulse">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  data-testid="open-pulse-view"
+                  isActive={selectedView === "pulse"}
+                  onClick={onSelectPulse}
+                  tooltip="Pulse"
+                  type="button"
+                >
+                  <Activity className="h-4 w-4" />
+                  <span>Pulse</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </FeatureGate>
           )}
           {!serverless && (
-          <FeatureGate feature="projects">
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                data-testid="open-projects-view"
-                isActive={selectedView === "projects"}
-                onClick={onSelectProjects}
-                tooltip="Projects"
-                type="button"
-              >
-                <FolderGit2 className="h-4 w-4" />
-                <span>Projects</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </FeatureGate>
+            <FeatureGate feature="projects">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  data-testid="open-projects-view"
+                  isActive={selectedView === "projects"}
+                  onClick={onSelectProjects}
+                  tooltip="Projects"
+                  type="button"
+                >
+                  <FolderGit2 className="h-4 w-4" />
+                  <span>Projects</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </FeatureGate>
           )}
           <SidebarMenuItem>
             <SidebarMenuButton
@@ -513,20 +513,20 @@ export function AppSidebar({
             ) : null}
           </SidebarMenuItem>
           {!serverless && (
-          <FeatureGate feature="workflows">
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                data-testid="open-workflows-view"
-                isActive={selectedView === "workflows"}
-                onClick={onSelectWorkflows}
-                tooltip="Workflows"
-                type="button"
-              >
-                <Zap className="h-4 w-4" />
-                <span>Workflows</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </FeatureGate>
+            <FeatureGate feature="workflows">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  data-testid="open-workflows-view"
+                  isActive={selectedView === "workflows"}
+                  onClick={onSelectWorkflows}
+                  tooltip="Workflows"
+                  type="button"
+                >
+                  <Zap className="h-4 w-4" />
+                  <span>Workflows</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </FeatureGate>
           )}
         </SidebarMenu>
       </SidebarHeader>
