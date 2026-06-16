@@ -7,7 +7,11 @@ import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import type { TranscriptItem } from "./agentSessionTypes";
 import { getBuzzToolInfo } from "./agentSessionToolCatalog";
 import { buildCompactToolSummary } from "./agentSessionToolSummary";
-import { asRecord, formatCodeValue, formatDuration } from "./agentSessionUtils";
+import {
+  formatCodeValue,
+  getToolDurationDisplay,
+  isInlineImageData,
+} from "./agentSessionUtils";
 
 export function ToolItem({
   item,
@@ -20,7 +24,7 @@ export function ToolItem({
   const canonicalToolName = item.buzzToolName ?? item.toolName;
   const buzzTool = getBuzzToolInfo(canonicalToolName);
   const compactSummary = buildCompactToolSummary(item);
-  const duration = getToolDuration(item);
+  const duration = getToolDurationDisplay(item);
   const handleToggle = React.useCallback(
     (event: React.SyntheticEvent<HTMLDetailsElement>) => {
       setIsExpanded(event.currentTarget.open);
@@ -86,6 +90,10 @@ export function ToolItem({
 
 function compactSummaryTone() {
   return "text-muted-foreground/60 group-open:text-muted-foreground";
+}
+
+function resolveImageSrc(source: string): string {
+  return isInlineImageData(source) ? source : rewriteRelayUrl(source);
 }
 
 function CompactToolSummaryRow({
@@ -188,13 +196,6 @@ function CompactMessageSummary({
   );
 }
 
-function resolveImageSrc(source: string): string {
-  if (source.startsWith("data:image/")) {
-    return source;
-  }
-  return rewriteRelayUrl(source);
-}
-
 function ViewImageToolPreview({
   src,
   title,
@@ -294,48 +295,6 @@ function ImageLightbox({
   );
 }
 
-function getToolDuration(item: Extract<TranscriptItem, { type: "tool" }>) {
-  if (item.startedAt && item.completedAt) {
-    return formatDuration(item.startedAt, item.completedAt);
-  }
-
-  const resultRecord = asRecord(parseToolResultValue(item.result));
-  const durationMs =
-    getToolNumber(resultRecord, ["duration_ms", "durationMs"]) ??
-    getToolNumber(resultRecord, ["elapsed_ms", "elapsedMs"]);
-  return durationMs == null ? null : formatDurationMs(durationMs);
-}
-
-function getToolNumber(
-  record: Record<string, unknown>,
-  keys: string[],
-): number | null {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
-  }
-  return null;
-}
-
-function formatDurationMs(ms: number) {
-  if (ms < 0) return null;
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) {
-    return totalSeconds < 10
-      ? `${totalSeconds.toFixed(1)}s`
-      : `${Math.round(totalSeconds)}s`;
-  }
-  let minutes = Math.floor(totalSeconds / 60);
-  let seconds = Math.round(totalSeconds % 60);
-  if (seconds === 60) {
-    minutes += 1;
-    seconds = 0;
-  }
-  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
-
 function ToolDetailBlocks({
   args,
   description,
@@ -415,21 +374,4 @@ function ToolCodeBlock({
       </pre>
     </div>
   );
-}
-
-function parseToolResultValue(result: string): unknown {
-  const trimmed = result.trim();
-  if (!trimmed) return null;
-
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (typeof parsed !== "string") return parsed;
-    try {
-      return JSON.parse(parsed);
-    } catch {
-      return parsed;
-    }
-  } catch {
-    return null;
-  }
 }

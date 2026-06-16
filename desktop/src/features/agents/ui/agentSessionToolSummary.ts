@@ -110,7 +110,7 @@ function classifyDeveloperToolName(
   if (base === "postcompact") return "post_compact_hook";
 
   if (DEVELOPER_TOOL_BASES.has(base)) {
-    return base === "shell" ? "shell" : "dev_mcp";
+    return "dev_mcp";
   }
 
   if (normalized.includes("buzz_dev_mcp")) {

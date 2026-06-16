@@ -84,9 +84,6 @@ function classifyTurnItems(items: TranscriptItem[]): TranscriptTurnSegment[] {
       segments.push({ kind: "item", item });
       continue;
     }
-    if (isSetupLifecycle(item)) {
-      continue;
-    }
     segments.push({ kind: "item", item });
   }
 

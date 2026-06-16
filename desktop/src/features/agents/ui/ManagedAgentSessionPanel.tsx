@@ -21,6 +21,11 @@ import type {
   ObserverEvent,
   TranscriptItem,
 } from "./agentSessionTypes";
+import {
+  deriveLatestSessionId,
+  resolveRawRailLayout,
+  scopeByChannel,
+} from "./agentSessionPanelLayout";
 import { shorten } from "./agentSessionUtils";
 import { useObserverEvents, useAgentTranscript } from "./useObserverEvents";
 
@@ -58,29 +63,21 @@ export function ManagedAgentSessionPanel({
 
   // Filter transcript items by channelId (lightweight — items now carry channelId)
   const scopedTranscript = React.useMemo(
-    () =>
-      channelId
-        ? transcript.filter((item) => item.channelId === channelId)
-        : transcript,
+    () => scopeByChannel(transcript, channelId),
     [channelId, transcript],
   );
 
   // Filter raw events by channelId for the RawEventRail
   const scopedEvents = React.useMemo(
-    () =>
-      channelId
-        ? events.filter((event) => event.channelId === channelId)
-        : events,
+    () => scopeByChannel(events, channelId),
     [channelId, events],
   );
 
   // Derive latestSessionId from channel-scoped events
-  const latestSessionId = React.useMemo(() => {
-    for (let i = scopedEvents.length - 1; i >= 0; i--) {
-      if (scopedEvents[i].sessionId) return scopedEvents[i].sessionId;
-    }
-    return null;
-  }, [scopedEvents]);
+  const latestSessionId = React.useMemo(
+    () => deriveLatestSessionId(scopedEvents),
+    [scopedEvents],
+  );
 
   return (
     <section
@@ -181,7 +178,9 @@ function SessionBody({
   showRaw: boolean;
   transcript: TranscriptItem[];
 }) {
-  if (showRaw && rawLayout === "exclusive") {
+  const rawRail = resolveRawRailLayout(showRaw, rawLayout);
+
+  if (rawRail.mode === "exclusive") {
     return (
       <>
         <RawEventRail events={events} />
@@ -205,7 +204,7 @@ function SessionBody({
       ) : (
         <div
           className={cn(
-            showRaw && rawLayout === "responsive"
+            rawRail.mode === "side"
               ? "mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]"
               : "mt-0",
           )}
@@ -219,9 +218,7 @@ function SessionBody({
             items={transcript}
             profiles={profiles}
           />
-          {showRaw && rawLayout === "responsive" ? (
-            <RawEventRail events={events} />
-          ) : null}
+          {rawRail.mode === "side" ? <RawEventRail events={events} /> : null}
         </div>
       )}
 
