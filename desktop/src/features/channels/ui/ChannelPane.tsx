@@ -598,7 +598,10 @@ export const ChannelPane = React.memo(function ChannelPane({
     [agentSessionAgents, openAgentSessionPubkey],
   );
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
+      {!isSinglePanelView ? (
+        <div aria-hidden="true" className={channelChrome.backdrop} />
+      ) : null}
       {!isSinglePanelView ? (
         <section
           aria-label="Channel messages and composer"

@@ -565,6 +565,8 @@ export function ChannelScreen({
     resetKey: activeChannelId,
     enabled: !isSinglePanelView,
   });
+  const useSharedChannelHeaderBackdrop =
+    activeChannel?.channelType !== "forum" && !isSinglePanelView;
   React.useEffect(() => {
     setTopbarSearchHidden(isSinglePanelView);
     return () => {
@@ -590,6 +592,7 @@ export function ChannelScreen({
       onManageChannel={openChannelManagement}
       onToggleMembers={() => setIsMembersSidebarOpen((prev) => !prev)}
       showHeaderContent={!isSinglePanelView}
+      transparentChrome={useSharedChannelHeaderBackdrop}
     />
   );
 

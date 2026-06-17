@@ -42,7 +42,7 @@ export const insetHeaderOverlay = {
    * dividers across the header area.
    */
   backdrop:
-    "pointer-events-none absolute inset-x-0 top-0 z-30 h-(--buzz-inset-header-height,5rem) bg-background/80 backdrop-blur-md supports-backdrop-filter:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-backdrop-filter:bg-background/55",
+    "pointer-events-none absolute inset-x-0 top-0 z-30 h-(--buzz-inset-header-height,5rem) bg-background/90 backdrop-blur-md supports-backdrop-filter:bg-background/85 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-backdrop-filter:bg-background/55",
 } as const;
 
 /** Tailwind class fragments for layout under the global top chrome. */
@@ -74,6 +74,12 @@ export const topChromeBackdrop = {
 export const channelChrome = {
   /** Padding-top that clears the measured channel header chrome. */
   contentPadding: "pt-(--buzz-channel-content-top-padding,5.75rem)",
+  /**
+   * Single full-width backdrop strip behind channel and auxiliary headers so
+   * backdrop blur samples continuously across column boundaries.
+   */
+  backdrop:
+    "pointer-events-none absolute inset-x-0 top-0 z-30 h-(--buzz-channel-content-top-padding,5.75rem) bg-background/90 backdrop-blur-md supports-backdrop-filter:bg-background/85 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-backdrop-filter:bg-background/55",
   /** Absolute/fixed top offset below the measured channel header chrome. */
   top: "top-(--buzz-channel-content-top-padding,5.75rem)",
   /** Height matching the measured channel header chrome. */
