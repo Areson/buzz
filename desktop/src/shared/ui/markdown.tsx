@@ -959,10 +959,10 @@ function createMarkdownComponents(
 ): Components {
   const paragraphClassName =
     variant === "tight"
-      ? "leading-5"
+      ? "[overflow-wrap:anywhere] leading-5"
       : variant === "compact"
-        ? "leading-6"
-        : "leading-7";
+        ? "[overflow-wrap:anywhere] leading-6"
+        : "[overflow-wrap:anywhere] leading-7";
   const listItemClassName =
     variant === "tight" ? "my-0.5 [&_p]:inline" : "my-1 [&_p]:inline";
   const listClassName =
