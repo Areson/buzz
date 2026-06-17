@@ -319,7 +319,6 @@ export function ChannelManagementSheet({
               : "bg-background",
           )}
           data-testid="channel-management-sheet"
-          onEscapeKeyDown={(event) => event.preventDefault()}
           onInteractOutside={(event) => event.preventDefault()}
           onPointerDownOutside={(event) => event.preventDefault()}
         >
