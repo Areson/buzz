@@ -730,7 +730,7 @@ export function MessageThreadPanel({
                   return (
                     <div
                       className={cn(
-                        "flex flex-col gap-0",
+                        "content-visibility-auto flex flex-col gap-0",
                         entry.summary &&
                           "group/message rounded-2xl px-0 py-0.5 transition-colors hover:bg-muted/50 focus-within:bg-muted/50",
                       )}
