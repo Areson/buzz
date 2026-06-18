@@ -466,6 +466,9 @@ type MockFilter = {
   "#h"?: string[];
   authors?: string[];
   kinds?: number[];
+  limit?: number;
+  until?: number;
+  since?: number;
 };
 
 type MockSocket = {
@@ -1256,6 +1259,31 @@ const mockChannels: MockChannel[] = [
     nip29_group_id: null,
     created_minutes_ago: 1400,
     updated_minutes_ago: 1400,
+    members: [
+      createMockMember(ALICE_PUBKEY, "owner", 1400),
+      createMockMember(MOCK_IDENTITY_PUBKEY, "member", 1300),
+    ],
+  }),
+  createMockChannel({
+    id: "fa11bac0-0000-4000-8000-000000000013",
+    name: "load-older",
+    channel_type: "stream",
+    visibility: "open",
+    description: "Channel with more messages than the initial history limit",
+    topic: null,
+    purpose: null,
+    last_message_at: isoMinutesAgo(1),
+    archived_at: null,
+    created_by: ALICE_PUBKEY,
+    topic_set_by: null,
+    topic_set_at: null,
+    purpose_set_by: null,
+    purpose_set_at: null,
+    topic_required: false,
+    max_members: null,
+    nip29_group_id: null,
+    created_minutes_ago: 1400,
+    updated_minutes_ago: 1,
     members: [
       createMockMember(ALICE_PUBKEY, "owner", 1400),
       createMockMember(MOCK_IDENTITY_PUBKEY, "member", 1300),
@@ -2240,31 +2268,75 @@ function getMockMessageStore(channelId: string): RelayEvent[] {
               sig: "mocksig".repeat(20).slice(0, 128),
             })),
           ]
-        : channelId === "94a444a4-c0a3-5966-ab05-530c6ddc2301"
-          ? [
-              // Charlie is a `bot` member of #agents (see channel seed), so this
-              // message renders with role="bot" — the surface whose avatar opens
-              // a managed-agent profile panel / hover popover with active-turn
-              // badges. #agents has no message-row index assertions, so seeding
-              // here is safe for existing specs.
-              {
-                id: "mock-agents-charlie",
-                pubkey: CHARLIE_PUBKEY,
-                created_at: Math.floor(Date.now() / 1000) - 90,
-                kind: 9,
-                tags: [["h", channelId]],
-                content: "Indexing the channel catalog now.",
-                sig: "mocksig".repeat(20).slice(0, 128),
-              },
-            ]
-          : [];
+        : channelId === "fa11bac0-0000-4000-8000-000000000013"
+          ? // 260 backdated messages — more than the 200 initial-history limit,
+            // so the first load caps at 200 and the rest page in via load-older,
+            // producing a genuine prepend. Spaced 60s apart, oldest first, so
+            // `until`-windowed paging walks strictly backward without overlap
+            // beyond the inclusive boundary message.
+            Array.from({ length: 260 }, (_, index) => ({
+              id: `mock-load-older-${index}`,
+              pubkey: index % 2 === 0 ? ALICE_PUBKEY : MOCK_IDENTITY_PUBKEY,
+              created_at: Math.floor(Date.now() / 1000) - (260 - index) * 60,
+              kind: 9,
+              tags: [["h", channelId]],
+              content: `Backfilled message #${index}`,
+              sig: "mocksig".repeat(20).slice(0, 128),
+            }))
+          : channelId === "94a444a4-c0a3-5966-ab05-530c6ddc2301"
+            ? [
+                // Charlie is a `bot` member of #agents (see channel seed), so this
+                // message renders with role="bot" — the surface whose avatar opens
+                // a managed-agent profile panel / hover popover with active-turn
+                // badges. #agents has no message-row index assertions, so seeding
+                // here is safe for existing specs.
+                {
+                  id: "mock-agents-charlie",
+                  pubkey: CHARLIE_PUBKEY,
+                  created_at: Math.floor(Date.now() / 1000) - 90,
+                  kind: 9,
+                  tags: [["h", channelId]],
+                  content: "Indexing the channel catalog now.",
+                  sig: "mocksig".repeat(20).slice(0, 128),
+                },
+              ]
+            : [];
 
   mockMessages.set(channelId, seeded);
   return seeded;
 }
 
-function emitMockHistory(socket: MockSocket, subId: string, channelId: string) {
-  const events = getMockMessageStore(channelId);
+function emitMockHistory(
+  socket: MockSocket,
+  subId: string,
+  channelId: string,
+  filter?: MockFilter,
+) {
+  let events = getMockMessageStore(channelId);
+
+  // Mirror the real relay's window semantics so load-older pagination returns a
+  // real, non-overlapping older page (a genuine prepend) instead of the whole
+  // store. `until` is inclusive; the relay returns the newest `limit` events at
+  // or before it, so we select from the tail after sorting newest-first.
+  if (filter?.until !== undefined) {
+    const until = filter.until;
+    events = events.filter((event) => event.created_at <= until);
+  }
+  // `since` is inclusive and bounds the window from below. The live channel
+  // subscription sends `since: now` (relayClientSession `subscribeToChannelLive`)
+  // precisely so the relay returns zero historical backlog — without honoring it
+  // the mock would dump the whole store on channel open, making load-older a
+  // re-emit of already-present rows instead of a true older-page gap-fill.
+  if (filter?.since !== undefined) {
+    const since = filter.since;
+    events = events.filter((event) => event.created_at >= since);
+  }
+  if (filter?.limit !== undefined) {
+    events = [...events]
+      .sort((a, b) => b.created_at - a.created_at)
+      .slice(0, filter.limit);
+  }
+
   for (const event of events) {
     sendWsText(socket.handler, ["EVENT", subId, event]);
   }
@@ -5847,7 +5919,7 @@ function sendToMockSocket(args: {
       return;
     }
 
-    emitMockHistory(socket, subId, channelId);
+    emitMockHistory(socket, subId, channelId, filter);
     return;
   }
 

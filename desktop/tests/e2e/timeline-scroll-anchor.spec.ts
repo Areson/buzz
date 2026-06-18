@@ -65,3 +65,80 @@ test("short channel bottom-aligns its messages against the viewport floor", asyn
   // Padded from the top: the first row is pushed down, not floating at the top.
   expect(geometry.firstTop - geometry.timelineTop).toBeGreaterThan(96);
 });
+
+// The channel-jump bug: loading older messages prepended rows above the
+// viewport while an end-follow re-pin loop fought the user's scroll, freezing
+// the rendered window on the newest messages — the user could not scroll back
+// through history at all, and any anchored row was yanked off-screen. #load-older
+// seeds 260 messages, more than the 200 initial-history limit, so scrolling up
+// pages in a real older batch (a genuine prepend below index 60). The contract
+// is geometric: a row the user is reading must hold its on-screen position as
+// the window scrolls and the older page lands. We assert its
+// getBoundingClientRect().top, not scrollTop — the bug moved the row even when
+// scrollTop looked plausible.
+test("loading older messages holds the anchored row's screen position", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-load-older").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("load-older");
+
+  const timeline = page.getByTestId("message-timeline");
+  const rows = page.getByTestId("message-row");
+  await expect(rows.first()).toBeVisible();
+
+  // Anchor on index 100: it is inside the newest-200 initial load (oldest is
+  // index 60), so it is loaded from channel-open, and it is far enough from the
+  // bottom that reaching it requires real scrollback through the window. Under
+  // the freeze the rendered window never left the newest ~11 rows, so index 100
+  // never mounted — the anchor is absent and the test fails at the first probe.
+  const ANCHOR = "mock-load-older-100";
+
+  // Screen position (top relative to the scroll container) of the anchor row,
+  // or null when it is not mounted. getBoundingClientRect is the user-visible
+  // geometry the bug disturbed; scrollTop is not.
+  const anchorTop = () =>
+    timeline.evaluate((element, id) => {
+      const row = element.querySelector(`[data-message-id="${id}"]`);
+      if (!row) {
+        return null;
+      }
+      return (
+        row.getBoundingClientRect().top - element.getBoundingClientRect().top
+      );
+    }, ANCHOR);
+
+  // A real wheel (not a synthetic scrollTop assignment) is required: it drives
+  // both the virtualizer and the top-sentinel IntersectionObserver that arms
+  // load-older. Scroll up in bounded steps until the anchor row settles into a
+  // stable on-screen position near the viewport top. Each step also pages in
+  // the older batch as the sentinel enters its 200px margin, so by the time the
+  // anchor is parked the prepend has already landed beneath it.
+  await timeline.hover();
+  let before: number | null = null;
+  for (let i = 0; i < 120; i++) {
+    const top = await anchorTop();
+    // Park once the anchor is mounted and sitting in the upper region of the
+    // viewport — the position a reader would hold while paging older history.
+    if (top !== null && top >= 0 && top <= 200) {
+      before = top;
+      break;
+    }
+    await page.mouse.wheel(0, -120);
+    await page.waitForTimeout(40);
+  }
+  // Under the freeze the window stays pinned to the newest rows, so index 100
+  // never mounts and `before` stays null. Reaching a real on-screen position is
+  // itself proof the window tracked the scrollback.
+  expect(before).not.toBeNull();
+
+  // Let any pending prepend settle, then confirm the anchor held its place. The
+  // freeze regression snapped the viewport, moving the row hundreds of pixels;
+  // a correct end-anchor reconcile keeps it within a hair of where it was.
+  await page.waitForTimeout(200);
+  const after = await anchorTop();
+  expect(after).not.toBeNull();
+  expect(Math.abs((after as number) - (before as number))).toBeLessThanOrEqual(
+    8,
+  );
+});

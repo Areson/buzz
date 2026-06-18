@@ -246,12 +246,13 @@ export const MessageTimeline = React.memo(function MessageTimeline({
   // `position:absolute`, so a per-row `position:sticky` cannot work; instead we
   // derive the day group that owns the topmost rendered row and paint ONE
   // header in a sibling layer pinned below the channel chrome, mirroring the
-  // legacy `sticky` DayDivider. Reading `getVirtualItems()[0]` each render keeps
-  // it live — the virtualizer re-renders this component on every scroll/measure.
-  const activeDay = selectActiveDayHeading(
-    items,
-    virtualizer.getVirtualItems()[0]?.index,
-  );
+  // legacy `sticky` DayDivider. Reading `getVirtualItems()` each render keeps
+  // it live — the virtualizer re-renders this component on every scroll/measure
+  // — and the same array is handed to the row renderer so it re-renders in
+  // lockstep (its memo cannot see range changes through the stable virtualizer
+  // ref otherwise).
+  const virtualItems = virtualizer.getVirtualItems();
+  const activeDay = selectActiveDayHeading(items, virtualItems[0]?.index);
 
   // Deep-link to `targetMessageId` once it resolves against the rendered
   // snapshot. `resolveDeepLinkTarget` reads the same `deferredMessages` the
@@ -623,6 +624,7 @@ export const MessageTimeline = React.memo(function MessageTimeline({
                   spacerRef={spacerRef}
                   unfollowThreadById={unfollowThreadById}
                   virtualizer={virtualizer}
+                  virtualItems={virtualItems}
                 />
               </div>
             ) : null}

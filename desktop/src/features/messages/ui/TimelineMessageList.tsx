@@ -77,6 +77,15 @@ type TimelineMessageListProps = {
    * also owns measurement; this component is a pure renderer of its rows.
    */
   virtualizer: ChatVirtualizer;
+  /**
+   * The virtual rows to render, read from `virtualizer.getVirtualItems()` by
+   * the hook owner (the timeline). Passed as a prop — not read off the
+   * virtualizer here — so this memoized renderer re-renders when the rendered
+   * range changes on scroll: the virtualizer is a stable mutable ref that a
+   * shallow memo compare cannot see through, so reading the range internally
+   * would freeze the rows on a scroll that changes no other prop.
+   */
+  virtualItems: ReturnType<ChatVirtualizer["getVirtualItems"]>;
   /** The flat virtual-item list the virtualizer's `count` mirrors. */
   items: TimelineVirtualItem[];
   /**
@@ -116,6 +125,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   threadUnreadCounts,
   unfollowThreadById,
   virtualizer,
+  virtualItems,
   items,
   topPad,
   spacerRef,
@@ -318,7 +328,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       ref={spacerRef as React.Ref<HTMLDivElement>}
       style={{ height: `${virtualizer.getTotalSize() + topPad}px` }}
     >
-      {virtualizer.getVirtualItems().map((virtualRow) => (
+      {virtualItems.map((virtualRow) => (
         <div
           data-index={virtualRow.index}
           key={virtualRow.key}
