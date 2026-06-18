@@ -939,3 +939,112 @@ test("composer expansion does not push bottom row out of viewport", async ({
   if (!after.found) return;
   expect(after.gapAboveComposer).toBeGreaterThanOrEqual(-4);
 });
+
+// Criterion 8: in-viewport content resize while scrolled up preserves the
+// anchor row's position.
+//
+// The hook owns scroll position via `useAnchoredScroll`. When the user is
+// scrolled up reading older history and a row *above* their reading row
+// reflows (image decode without reserved dim metadata, link-card load,
+// async embed expand, late font load, markdown that expands), the rows
+// below shift on them. Before this test landed, the ResizeObserver only
+// re-pinned when stuck-to-bottom; the scrolled-up case had no correction.
+//
+// The fix: the ResizeObserver calls the same anchor-restore primitive as
+// the post-commit layout effect when anchored to a message. This test
+// reproduces the scenario without touching React state — it directly
+// grows a DOM row's height via a style override, which is exactly the
+// kind of layout shift that previously had no correction (the messages
+// array is unchanged, so the React layout effect never runs).
+//
+// Black-box assertions: the anchor row's top within the timeline must be
+// unchanged (within 2px) before and after the synthetic above-anchor
+// height growth.
+test("in-viewport reflow above the anchor row does not push it down", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/");
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
+  );
+
+  // Seed enough rows that the timeline becomes scrollable with several
+  // rows above whatever we anchor to.
+  await page.evaluate(() => {
+    for (let index = 0; index < 60; index += 1) {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: `resize-anchor row ${index}\nsecond line ${index}\nthird line ${index}`,
+      });
+    }
+  });
+
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  const timeline = page.getByTestId("message-timeline");
+  await expect(timeline).toContainText("resize-anchor row 59");
+
+  // Wait until the timeline is genuinely scrollable.
+  await page.waitForFunction(() => {
+    const element = document.querySelector(
+      '[data-testid="message-timeline"]',
+    ) as HTMLDivElement | null;
+    return element && element.scrollHeight > element.clientHeight + 800;
+  });
+
+  // Scroll to a middle position so we have rows on both sides of the anchor.
+  await timeline.evaluate((element) => {
+    const t = element as HTMLDivElement;
+    t.scrollTop = Math.floor(t.scrollHeight / 2);
+    t.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await page.waitForTimeout(50);
+
+  // Capture the anchor row (top-crossing) and its baseline top within
+  // the timeline. This is the row the user is reading.
+  const baseline = await getFirstVisibleMessage(page);
+  expect(baseline).not.toBeNull();
+  if (!baseline) return;
+
+  // Find a rendered row *above* the anchor and grow its height. This
+  // mimics an in-viewport reflow (image decode, embed expansion) that
+  // does NOT change the messages array, so the React layout effect
+  // would not fire. The ResizeObserver is the only path that can
+  // correct the resulting shift.
+  const growthApplied = await timeline.evaluate((element, anchorId) => {
+    const t = element as HTMLDivElement;
+    const rows = Array.from(
+      t.querySelectorAll<HTMLElement>("[data-message-id]"),
+    );
+    const anchorIndex = rows.findIndex(
+      (row) => row.dataset.messageId === anchorId,
+    );
+    if (anchorIndex <= 0) return false;
+    // Pick a row a few above the anchor so the growth is clearly above
+    // the reader's eye, not at it.
+    const target = rows[Math.max(0, anchorIndex - 3)];
+    if (!target) return false;
+    // 80px is well above the 0.5px noise floor in restoreAnchorToMessage
+    // and large enough to be a visible jump if uncorrected.
+    const currentHeight = target.getBoundingClientRect().height;
+    target.style.minHeight = `${currentHeight + 80}px`;
+    return true;
+  }, baseline.id);
+  expect(growthApplied).toBe(true);
+
+  // ResizeObserver callbacks run asynchronously after layout. Poll the
+  // anchor row's position; it must converge back to (or stay at) its
+  // baseline top within ~2px.
+  await expect
+    .poll(
+      async () => {
+        const current = await getMessagePosition(page, baseline.id);
+        return current
+          ? Math.abs(current.top - baseline.top)
+          : Number.POSITIVE_INFINITY;
+      },
+      { timeout: 3_000 },
+    )
+    .toBeLessThanOrEqual(2);
+});

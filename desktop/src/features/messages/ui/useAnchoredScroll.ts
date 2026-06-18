@@ -140,6 +140,71 @@ function findNearestNewerMessageId(
   return null;
 }
 
+/**
+ * Restore a message-kind anchor's on-screen offset after a layout shift.
+ *
+ * Finds the anchor row (or the nearest newer rendered row if the anchor
+ * itself was removed), measures its current top-relative offset, and
+ * `scrollBy(0, delta)` if the offset has drifted. Returns the new anchor
+ * state the caller should write back:
+ * - `{ kind: "message", ... }` — anchor (or its fallback) is in the DOM
+ *   and now sits at its previous offset.
+ * - `{ kind: "at-bottom" }` — anchor and all newer rendered rows are gone;
+ *   caller should pin to the bottom and update at-bottom state.
+ *
+ * `scrollBy` is intentional over `scrollTop = ...`: relative adjustment
+ * composes with the browser's own scroll anchoring and doesn't fight a
+ * smooth-scroll in flight. Same rationale as the layout-effect restore.
+ *
+ * Used by both the post-commit layout effect (prepend / append / spinner
+ * toggle / etc.) and the ResizeObserver (in-viewport reflow from image
+ * decode, embed expansion, font load). Keeping them on one primitive
+ * preserves the single-owner invariant of the hook.
+ */
+function restoreAnchorToMessage(
+  container: HTMLDivElement,
+  messages: TimelineMessage[],
+  anchor: Extract<AnchorState, { kind: "message" }>,
+): AnchorState {
+  let anchorEl = container.querySelector<HTMLElement>(
+    `[data-message-id="${anchor.messageId}"]`,
+  );
+  let usedAnchor: AnchorState = anchor;
+  if (!anchorEl) {
+    const fallbackId = findNearestNewerMessageId(
+      container,
+      messages,
+      anchor.messageId,
+    );
+    if (fallbackId) {
+      anchorEl = container.querySelector<HTMLElement>(
+        `[data-message-id="${fallbackId}"]`,
+      );
+      if (anchorEl) {
+        usedAnchor = {
+          kind: "message",
+          messageId: fallbackId,
+          topOffset: anchor.topOffset,
+        };
+      }
+    }
+  }
+
+  if (!anchorEl) {
+    // Anchor message and all subsequent rendered messages are gone.
+    container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
+    return { kind: "at-bottom" };
+  }
+
+  const containerTop = container.getBoundingClientRect().top;
+  const currentTop = anchorEl.getBoundingClientRect().top - containerTop;
+  const delta = currentTop - usedAnchor.topOffset;
+  if (Math.abs(delta) > 0.5) {
+    container.scrollBy(0, delta);
+  }
+  return usedAnchor;
+}
+
 export function useAnchoredScroll({
   scrollContainerRef,
   contentRef,
@@ -157,6 +222,11 @@ export function useAnchoredScroll({
   // both on scroll (commit-time read) and in the layout effect (post-render
   // restoration). useState would force re-renders we don't want.
   const anchorRef = React.useRef<AnchorState>({ kind: "at-bottom" });
+  // Latest `messages` mirrored to a ref so the ResizeObserver effect can read
+  // the current list without re-subscribing the observer on every commit
+  // (which would also drop any in-flight resize callbacks). Kept fresh by a
+  // layout effect below so the read is consistent with what's in the DOM.
+  const messagesRef = React.useRef<TimelineMessage[]>(messages);
   const [isAtBottom, setIsAtBottom] = React.useState(true);
   const [newMessageCount, setNewMessageCount] = React.useState(0);
   const [highlightedMessageId, setHighlightedMessageId] = React.useState<
@@ -285,6 +355,12 @@ export function useAnchoredScroll({
     const container = scrollContainerRef.current;
     if (!container) return;
 
+    // Mirror the current messages list into the ref read by the
+    // ResizeObserver's restore path. Must happen before any early return so
+    // a non-React layout shift sees the same array the next restoration
+    // would use.
+    messagesRef.current = messages;
+
     // First render after a reset (channel switch or initial mount): jump
     // to the requested target message, or to the bottom by default.
     if (!hasInitializedRef.current) {
@@ -342,49 +418,13 @@ export function useAnchoredScroll({
       container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
       if (newLatestArrived) setNewMessageCount(0);
     } else {
-      // Anchored to a specific message. Find it; if it's gone, fall back to
-      // the nearest newer rendered message; if that's also gone, give up
-      // and pin to bottom.
-      let anchorEl = container.querySelector<HTMLElement>(
-        `[data-message-id="${anchor.messageId}"]`,
-      );
-      let usedAnchor: AnchorState = anchor;
-      if (!anchorEl) {
-        const fallbackId = findNearestNewerMessageId(
-          container,
-          messages,
-          anchor.messageId,
-        );
-        if (fallbackId) {
-          anchorEl = container.querySelector<HTMLElement>(
-            `[data-message-id="${fallbackId}"]`,
-          );
-          if (anchorEl) {
-            usedAnchor = {
-              kind: "message",
-              messageId: fallbackId,
-              topOffset: anchor.topOffset,
-            };
-          }
-        }
-      }
-
-      if (anchorEl) {
-        const containerTop = container.getBoundingClientRect().top;
-        const currentTop = anchorEl.getBoundingClientRect().top - containerTop;
-        const delta = currentTop - usedAnchor.topOffset;
-        if (Math.abs(delta) > 0.5) {
-          // `scrollBy` is intentional over `scrollTop = ...`: relative
-          // adjustment composes with whatever the browser's own scroll
-          // anchoring did, and it doesn't fight a smooth-scroll in flight.
-          container.scrollBy(0, delta);
-        }
-        anchorRef.current = usedAnchor;
-      } else {
-        // Anchor message and all subsequent rendered messages are gone.
-        // Last-resort fallback so the user doesn't end up stranded.
-        container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
-        anchorRef.current = { kind: "at-bottom" };
+      // Anchored to a specific message. The shared helper finds it (with a
+      // nearest-newer fallback if the row was removed) and corrects the
+      // offset via `scrollBy`. If both the anchor and all newer rendered
+      // rows are gone, it pins to the bottom and returns `at-bottom`.
+      const restored = restoreAnchorToMessage(container, messages, anchor);
+      anchorRef.current = restored;
+      if (restored.kind === "at-bottom") {
         setIsAtBottom(true);
       }
 
@@ -473,11 +513,16 @@ export function useAnchoredScroll({
   ]);
 
   // ---------------------------------------------------------------------------
-  // Content resize: when fonts load late, an image decodes, or an embed
-  // expands, the row positions shift. A ResizeObserver fires a synthetic
-  // scroll so the anchor is recomputed; the layout effect on the next
-  // render will then restore. We deliberately do NOT call scrollTo here —
-  // that would fight the anchor restoration.
+  // Content resize: when fonts load late, an image decodes, an embed expands,
+  // or any in-viewport reflow happens that React isn't driving (so the
+  // layout-effect doesn't fire), the anchor row's on-screen offset drifts.
+  //
+  // When stuck-to-bottom we re-pin to bottom. When anchored to a message we
+  // call the same restore primitive the layout effect uses, so an in-viewport
+  // reflow above the reader's eye shifts back into place. Without this,
+  // anything that resizes without changing `messages` (link-card decode,
+  // async embed expand, late font load, markdown that expands) silently
+  // pushes the reading row around.
   // ---------------------------------------------------------------------------
   React.useEffect(() => {
     const content = contentRef.current;
@@ -485,10 +530,21 @@ export function useAnchoredScroll({
     const observer = new ResizeObserver(() => {
       const container = scrollContainerRef.current;
       if (!container) return;
-      // If we're stuck-to-bottom, just stay there. Otherwise let the next
-      // layout effect handle restoration via the existing anchor.
-      if (anchorRef.current.kind === "at-bottom") {
+      const anchor = anchorRef.current;
+      if (anchor.kind === "at-bottom") {
         container.scrollTo({ top: container.scrollHeight, behavior: "auto" });
+        return;
+      }
+      // Use the same restore primitive as the layout effect so the
+      // single-owner model holds across non-React-driven layout shifts.
+      const restored = restoreAnchorToMessage(
+        container,
+        messagesRef.current,
+        anchor,
+      );
+      anchorRef.current = restored;
+      if (restored.kind === "at-bottom") {
+        setIsAtBottom(true);
       }
     });
     observer.observe(content);
