@@ -5710,7 +5710,7 @@ async function handleGetEvent(
           "bb22a5299220cad76ffd46190ccbeede8ab5dc260faa28b6e5a2cb31b9aff260",
         created_at: Math.floor(Date.now() / 1000) - 42 * 60,
         kind: 9,
-        tags: [["e", "1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9"]],
+        tags: [["h", "1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9"]],
         content: "Engineering shipped the desktop build.",
         sig: "mocksig".repeat(20).slice(0, 128),
       },
