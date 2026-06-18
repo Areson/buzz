@@ -31,9 +31,11 @@ const HIGHLIGHT_DURATION_MS = 2_000;
  *
  *   - **Short-channel bottom-align pad.** A 2-3 message channel must sit at the
  *     bottom of the viewport. The virtualizer lays rows from the top, so we add
- *     a top pad of `max(0, viewportHeight - totalSize)`. It is recomputed off
- *     the LIVE `getTotalSize()` on every measurement pass (via `onChange`) so
- *     it collapses to 0 the instant content exceeds the viewport — see the
+ *     a top pad of `max(0, viewportHeight - totalSize - chrome)`, where `chrome`
+ *     is the non-row scroll content around the spacer (header/overlay padding
+ *     above, composer padding below). It is recomputed off the LIVE
+ *     `getTotalSize()` on every measurement pass (via `onChange`) so it
+ *     collapses to 0 the instant content exceeds the viewport — see the
  *     ordering note below.
  *   - **The "at bottom" / new-message-count UI state** the scroll-to-latest
  *     pill reads. The library knows the geometry (`isAtEnd`); this hook lifts
@@ -68,6 +70,12 @@ export type ChatScrollVirtualizerOptions = {
 
 export type ChatScrollVirtualizer = {
   virtualizer: ChatVirtualizer;
+  /**
+   * Ref the surface attaches to the row spacer (the element whose `paddingTop`
+   * carries `topPad`). The pad math measures the chrome around the spacer off
+   * it — see `topPad`.
+   */
+  spacerRef: React.RefObject<HTMLElement | null>;
   /**
    * Top padding (px) that bottom-aligns a channel whose content is shorter
    * than the viewport. Apply it to the row spacer's `paddingTop`. Always `0`
@@ -115,6 +123,16 @@ export function useChatScrollVirtualizer({
     string | null
   >(null);
 
+  // The spacer carries `topPad` as its `paddingTop`, so non-row chrome that
+  // also lives in the scroll content — the channel-header padding above the
+  // spacer (`contentPadding`, reserving room for the pinned day overlay) and
+  // the composer padding below it — must be subtracted from the pad, or a
+  // short channel over-pads by exactly that chrome and becomes scrollable.
+  // `scrollHeight - spacer.offsetHeight` is that chrome and is pad-invariant:
+  // both grow by the same delta when the pad changes, so it converges in one
+  // pass.
+  const spacerRef = React.useRef<HTMLElement | null>(null);
+
   // The bottom-state and pad recompute both read live geometry off the
   // virtualizer on each `onChange`. virtual-core fires `onChange` directly from
   // `resizeItem` on any size delta (not only on a visible-range change), which
@@ -130,7 +148,14 @@ export function useChatScrollVirtualizer({
       if (!scrollEl) {
         return;
       }
-      const pad = Math.max(0, scrollEl.clientHeight - instance.getTotalSize());
+      const spacerEl = spacerRef.current;
+      const chrome = spacerEl
+        ? Math.max(0, scrollEl.scrollHeight - spacerEl.offsetHeight)
+        : 0;
+      const pad = Math.max(
+        0,
+        scrollEl.clientHeight - instance.getTotalSize() - chrome,
+      );
       setTopPad((prev) => (prev === pad ? prev : pad));
 
       // The app's "at bottom" rule is looser than the library's 1px default;
@@ -228,6 +253,7 @@ export function useChatScrollVirtualizer({
 
   return {
     virtualizer,
+    spacerRef,
     topPad,
     isAtBottom,
     newMessageCount,

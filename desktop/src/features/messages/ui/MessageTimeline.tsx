@@ -226,6 +226,7 @@ export const MessageTimeline = React.memo(function MessageTimeline({
 
   const {
     virtualizer,
+    spacerRef,
     topPad,
     isAtBottom,
     newMessageCount,
@@ -619,6 +620,7 @@ export const MessageTimeline = React.memo(function MessageTimeline({
                   searchQuery={searchQuery}
                   threadUnreadCounts={threadUnreadCounts}
                   topPad={topPad}
+                  spacerRef={spacerRef}
                   unfollowThreadById={unfollowThreadById}
                   virtualizer={virtualizer}
                 />

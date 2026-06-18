@@ -49,6 +49,7 @@ export default defineConfig({
         "**/animated-avatar-screenshots.spec.ts",
         "**/reminders-screenshots.spec.ts",
         "**/virtualization-screenshots.spec.ts",
+        "**/timeline-scroll-anchor.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

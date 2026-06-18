@@ -85,6 +85,8 @@ type TimelineMessageListProps = {
    * pushes the absolute rows down without entering the measured total.
    */
   topPad: number;
+  /** Ref the hook reads to measure chrome around the spacer for `topPad`. */
+  spacerRef: React.RefObject<HTMLElement | null>;
 };
 
 export const TimelineMessageList = React.memo(function TimelineMessageList({
@@ -116,6 +118,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   virtualizer,
   items,
   topPad,
+  spacerRef,
 }: TimelineMessageListProps) {
   const reviewCommentsByRootId = React.useMemo(
     () => buildVideoReviewCommentsByRootId(messages),
@@ -302,18 +305,18 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
     }
   };
 
-  // The spacer is `box-sizing: border-box` (Tailwind global), so `topPad` is
-  // folded into `height` AND set as `paddingTop`: the height keeps the full
-  // scroll range while the padding pushes the absolute rows (positioned against
-  // the padding box, `top:0` = inner edge) down to bottom-align a short channel.
-  // `translateY` then uses the virtualizer's raw `start` — no double offset.
+  // Bottom-align a short channel by shifting the absolute rows down by
+  // `topPad`. The pad CANNOT be a `paddingTop` on the spacer: an
+  // absolutely-positioned child resolves `top:0` against the padding box's
+  // inner edge, so padding inflates the box without moving the rows — they
+  // would pin to the top with dead space below. Folding `topPad` into each
+  // row's `translateY` (and into the spacer height for the matching scroll
+  // range) is what actually pushes the rows to the floor.
   return (
     <div
       className="relative w-full"
-      style={{
-        height: `${virtualizer.getTotalSize() + topPad}px`,
-        paddingTop: topPad > 0 ? `${topPad}px` : undefined,
-      }}
+      ref={spacerRef as React.Ref<HTMLDivElement>}
+      style={{ height: `${virtualizer.getTotalSize() + topPad}px` }}
     >
       {virtualizer.getVirtualItems().map((virtualRow) => (
         <div
@@ -325,7 +328,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
             top: 0,
             left: 0,
             width: "100%",
-            transform: `translateY(${virtualRow.start}px)`,
+            transform: `translateY(${virtualRow.start + topPad}px)`,
           }}
         >
           {renderItem(items[virtualRow.index])}
