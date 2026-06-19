@@ -335,6 +335,53 @@ export function UserProfilePanel({
       relayAgents: relayAgentsQuery.data,
     });
 
+  const createManagedAgentForPersona = React.useCallback(
+    async (personaToStart: AgentPersona) => {
+      const runtimes = availableRuntimesQuery.data ?? [];
+      const defaultRuntime = runtimes[0] ?? null;
+      const { runtime, warnings } = resolvePersonaRuntime(
+        personaToStart.runtime,
+        runtimes,
+        defaultRuntime,
+      );
+
+      for (const warning of warnings) {
+        toast.warning(warning);
+      }
+
+      if (!runtime) {
+        throw new Error("No available runtime found for this agent.");
+      }
+
+      const input: CreateManagedAgentInput = {
+        name: personaToStart.displayName,
+        acpCommand: "buzz-acp",
+        agentCommand: runtime.command,
+        agentArgs: runtime.defaultArgs,
+        mcpCommand: runtime.mcpCommand ?? "",
+        personaId: personaToStart.id,
+        systemPrompt: personaToStart.systemPrompt,
+        avatarUrl: personaToStart.avatarUrl ?? undefined,
+        model: personaToStart.model ?? undefined,
+        envVars: personaToStart.envVars,
+        spawnAfterCreate: true,
+        startOnAppLaunch: true,
+        backend: { type: "local" },
+      };
+
+      const created = await createAgentMutation.mutateAsync(input);
+      void managedAgentsQuery.refetch();
+      void relayAgentsQuery.refetch();
+      return created;
+    },
+    [
+      availableRuntimesQuery.data,
+      createAgentMutation.mutateAsync,
+      managedAgentsQuery.refetch,
+      relayAgentsQuery.refetch,
+    ],
+  );
+
   const handleAgentPrimaryAction = React.useCallback(async () => {
     if (!managedAgent) return;
 
@@ -375,41 +422,8 @@ export function UserProfilePanel({
   const handleInstantiateAgent = React.useCallback(async () => {
     if (!resolvedPersona) return;
 
-    const runtimes = availableRuntimesQuery.data ?? [];
-    const defaultRuntime = runtimes[0] ?? null;
-    const { runtime, warnings } = resolvePersonaRuntime(
-      resolvedPersona.runtime,
-      runtimes,
-      defaultRuntime,
-    );
-
-    for (const warning of warnings) {
-      toast.warning(warning);
-    }
-
-    if (!runtime) {
-      toast.error("No available runtime found for this agent.");
-      return;
-    }
-
-    const input: CreateManagedAgentInput = {
-      name: resolvedPersona.displayName,
-      acpCommand: "buzz-acp",
-      agentCommand: runtime.command,
-      agentArgs: runtime.defaultArgs,
-      mcpCommand: runtime.mcpCommand ?? "",
-      personaId: resolvedPersona.id,
-      systemPrompt: resolvedPersona.systemPrompt,
-      avatarUrl: resolvedPersona.avatarUrl ?? undefined,
-      model: resolvedPersona.model ?? undefined,
-      envVars: resolvedPersona.envVars,
-      spawnAfterCreate: true,
-      startOnAppLaunch: true,
-      backend: { type: "local" },
-    };
-
     try {
-      const created = await createAgentMutation.mutateAsync(input);
+      const created = await createManagedAgentForPersona(resolvedPersona);
       if (created.spawnError) {
         toast.error(created.spawnError);
       } else {
@@ -418,20 +432,12 @@ export function UserProfilePanel({
       if (created.profileSyncError) {
         toast.warning(created.profileSyncError);
       }
-      void managedAgentsQuery.refetch();
-      void relayAgentsQuery.refetch();
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to start agent.",
       );
     }
-  }, [
-    availableRuntimesQuery.data,
-    createAgentMutation.mutateAsync,
-    managedAgentsQuery.refetch,
-    relayAgentsQuery.refetch,
-    resolvedPersona,
-  ]);
+  }, [createManagedAgentForPersona, resolvedPersona]);
 
   const handleToggleAgentAutoStart = React.useCallback(async () => {
     if (managedAgent?.backend.type !== "local") return;
@@ -478,8 +484,28 @@ export function UserProfilePanel({
           await updatePersonaMutation.mutateAsync(input);
           toast.success(`Updated ${input.displayName}.`);
         } else {
-          await createPersonaMutation.mutateAsync(input);
-          toast.success(`Created ${input.displayName}.`);
+          const persona = await createPersonaMutation.mutateAsync(input);
+          try {
+            const created = await createManagedAgentForPersona(persona);
+            if (created.spawnError) {
+              toast.error(
+                `${persona.displayName} was created, but it did not start: ${created.spawnError}`,
+              );
+            } else {
+              toast.success(`Created and started ${created.agent.name}.`);
+            }
+            if (created.profileSyncError) {
+              toast.warning(
+                `${created.agent.name} was created, but profile sync failed: ${created.profileSyncError}`,
+              );
+            }
+          } catch (error) {
+            toast.error(
+              error instanceof Error
+                ? `${persona.displayName} was created, but the agent instance could not be created: ${error.message}`
+                : `${persona.displayName} was created, but the agent instance could not be created.`,
+            );
+          }
         }
         setPersonaDialogState(null);
         void personasQuery.refetch();
@@ -491,6 +517,7 @@ export function UserProfilePanel({
     },
     [
       createPersonaMutation.mutateAsync,
+      createManagedAgentForPersona,
       personasQuery.refetch,
       updatePersonaMutation.mutateAsync,
     ],
@@ -529,7 +556,7 @@ export function UserProfilePanel({
       try {
         const deletedInstances =
           await deleteManagedAgentsForPersona(resolvedPersona);
-        if (!deletedInstances) return;
+        if (deletedInstances.cancelled) return;
 
         await setPersonaActiveMutation.mutateAsync({
           id: resolvedPersona.id,
@@ -563,7 +590,7 @@ export function UserProfilePanel({
       try {
         const deletedInstances =
           await deleteManagedAgentsForPersona(personaToConfirm);
-        if (!deletedInstances) return;
+        if (deletedInstances.cancelled) return;
 
         await deletePersonaMutation.mutateAsync(personaToConfirm.id);
         toast.success(`Deleted ${personaToConfirm.displayName}.`);
@@ -855,7 +882,9 @@ export function UserProfilePanel({
           : null
       }
       isPending={
-        createPersonaMutation.isPending || updatePersonaMutation.isPending
+        createPersonaMutation.isPending ||
+        updatePersonaMutation.isPending ||
+        createAgentMutation.isPending
       }
       personaDialogState={personaDialogState}
       personaToDelete={personaToDelete}

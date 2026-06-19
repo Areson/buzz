@@ -312,9 +312,9 @@ export function PersonaDialog({
     const preservedProvider =
       trimmedRuntime === initialRuntime ? initialValues.provider : undefined;
     const preservedNamePool =
-      "id" in initialValues && "namePool" in initialValues
-        ? initialValues.namePool
-        : undefined;
+      "namePool" in initialValues ? initialValues.namePool : undefined;
+    const preservedEnvVars =
+      "envVars" in initialValues ? initialValues.envVars : undefined;
     const baseInput = {
       displayName: displayName.trim(),
       avatarUrl: avatarUrl.trim() || undefined,
@@ -323,6 +323,7 @@ export function PersonaDialog({
       model: trimmedRuntime ? model.trim() || undefined : undefined,
       provider: preservedProvider ?? undefined,
       namePool: preservedNamePool,
+      envVars: preservedEnvVars,
     };
 
     if ("id" in initialValues) {
