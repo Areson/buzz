@@ -320,7 +320,7 @@ export function PersonaDialog({
       avatarUrl: avatarUrl.trim() || undefined,
       systemPrompt: systemPrompt.trim(),
       runtime: trimmedRuntime || undefined,
-      model: trimmedRuntime ? model.trim() || undefined : undefined,
+      model: model.trim() || undefined,
       provider: preservedProvider ?? undefined,
       namePool: preservedNamePool,
       envVars: preservedEnvVars,
