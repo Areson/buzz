@@ -52,6 +52,7 @@ export default defineConfig({
         "**/reminders-screenshots.spec.ts",
         "**/virtualization-screenshots.spec.ts",
         "**/scroll-history.spec.ts",
+        "**/stick-to-bottom-scroll-jump.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

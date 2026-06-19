@@ -644,6 +644,25 @@ declare global {
     __BUZZ_E2E_QUERY_CLIENT__?: {
       invalidateQueries: (filters: { queryKey: readonly unknown[] }) => unknown;
     };
+    // Lazy-installed by the stick-to-bottom-scroll-jump spec via
+    // __BUZZ_E2E_INSTALL_STICK_FIXTURE__; declared here so the rest of
+    // the bridge typechecks.
+    __BUZZ_E2E_INSTALL_STICK_FIXTURE__?: () => Promise<void>;
+    __BUZZ_E2E_MOUNT_STICK_FIXTURE__?: (options?: { seedItems?: number }) => {
+      push: (text?: string) => number;
+      scrollToBottom: () => void;
+      scrollToTop: () => void;
+      simulateScroll: (scrollTop: number) => void;
+      state: () => {
+        scrollTop: number;
+        scrollHeight: number;
+        clientHeight: number;
+        isNearBottom: boolean;
+        distanceFromBottom: number;
+        itemCount: number;
+      };
+      unmount: () => void;
+    };
   }
 }
 
@@ -6898,6 +6917,15 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_INVOKE_MOCK_COMMAND__ = (command, payload) =>
     handleMockCommand(command, payload ?? null);
   mockIPC(handleMockCommand);
+
+  // Lazy-installer for the stick-to-bottom test fixture. The fixture
+  // pulls in `react-dom/client` and the production hook, so we only
+  // import it on demand from the spec that needs it — avoids bloating
+  // the main e2e bundle for every other test.
+  window.__BUZZ_E2E_INSTALL_STICK_FIXTURE__ = async () => {
+    const mod = await import("./stickToBottomFixture");
+    mod.installStickFixtureBridge();
+  };
 
   installed = true;
 }

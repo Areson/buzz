@@ -11,16 +11,40 @@ import { useCallback, useEffect, useRef } from "react";
  *
  * Scroll calls are batched via `requestAnimationFrame` so rapid streaming
  * updates (e.g. token-by-token SSE) don't cause layout thrashing.
+ *
+ * `onScroll` is direction-aware: it only unsticks when the user moves
+ * the viewport *upward*. Intermediate scroll events emitted by the
+ * browser during the smooth scroll-to-bottom animation see scrollTop
+ * climbing toward the new bottom, so they leave the sticky bit alone.
+ * Without that guard, a smooth-scroll mid-animation would flip
+ * `isNearBottom` to false (the visible scrollTop is still well above
+ * scrollHeight - clientHeight - 100), and the next content update
+ * would refuse to follow — the user-visible symptom is the feed
+ * appearing to "jump back a couple lines" as new content pushes the
+ * old bottom out of view.
  */
 export function useStickToBottom<T extends HTMLElement = HTMLDivElement>() {
   const ref = useRef<T>(null);
   const isNearBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
 
   const onScroll = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     const { scrollTop, scrollHeight, clientHeight } = el;
-    isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < 100;
+    const distance = scrollHeight - scrollTop - clientHeight;
+    if (distance < 100) {
+      // At (or very near) the bottom — always sticky, regardless of
+      // direction. Resticks the container once a smooth-scroll
+      // animation settles, and handles the initial state.
+      isNearBottomRef.current = true;
+    } else if (scrollTop < lastScrollTopRef.current) {
+      // User pulled the viewport upward. Detach.
+      isNearBottomRef.current = false;
+    }
+    // Otherwise: scrollTop is climbing toward the bottom (smooth-scroll
+    // in flight) or unchanged. Leave the sticky bit as-is.
+    lastScrollTopRef.current = scrollTop;
   }, []);
 
   useEffect(() => {
@@ -29,6 +53,7 @@ export function useStickToBottom<T extends HTMLElement = HTMLDivElement>() {
 
     // Start at the bottom; the observer below only reacts to later changes.
     el.scrollTop = el.scrollHeight;
+    lastScrollTopRef.current = el.scrollTop;
 
     let rafId: number | null = null;
 
