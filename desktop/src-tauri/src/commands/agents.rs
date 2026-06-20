@@ -532,6 +532,7 @@ pub async fn create_managed_agent(
             auth_tag: auth_tag.clone(),
             relay_url: resolved_relay_url.clone(),
             avatar_url: resolved_avatar_url.clone(),
+            avatar_url_cleared: false,
             acp_command: input
                 .acp_command
                 .as_deref()
@@ -743,10 +744,11 @@ pub(crate) struct ProfileReconcileData {
     pub(crate) private_key_nsec: String,
     pub(crate) name: String,
     pub(crate) relay_url: String,
-    /// Expected avatar URL for the published profile. `None` for legacy records
-    /// that predate the `avatar_url` field — these will be backfilled from the
-    /// relay's existing kind:0 profile on first reconciliation.
+    /// Expected avatar URL for the published profile. `None` can mean either a
+    /// legacy missing value or an explicit clear; `avatar_url_cleared`
+    /// disambiguates those cases.
     pub(crate) avatar_url: Option<String>,
+    pub(crate) avatar_url_cleared: bool,
     pub(crate) auth_tag: Option<String>,
     /// The agent's pubkey (hex). Needed to update the persisted record during
     /// avatar backfill migration.
@@ -802,6 +804,7 @@ pub async fn start_managed_agent(
             name: record.name.clone(),
             relay_url: record.relay_url.clone(),
             avatar_url: record.avatar_url.clone(),
+            avatar_url_cleared: record.avatar_url_cleared,
             auth_tag: record.auth_tag.clone(),
             pubkey: record.pubkey.clone(),
             agent_command: record.agent_command.clone(),
@@ -933,72 +936,77 @@ pub(crate) async fn reconcile_agent_profile(
     // Query the relay for the agent's existing kind:0 profile.
     let existing = query_agent_profile(state, &data.relay_url, agent_pubkey).await?;
 
-    // Resolve the expected avatar — backfilling for legacy records that have no
-    // stored avatar_url yet. `None` is meaningful here: it means publish a
-    // profile with no picture, which clears retired built-in Fizz data URLs from
-    // the relay.
+    // Resolve the expected avatar. A user-initiated clear is intentionally
+    // `None` and must not be backfilled from persona/relay/runtime defaults.
+    // For legacy records that have no stored avatar_url yet, `None` still means
+    // backfill from the best available historical source.
     let stored_avatar =
         filter_retired_fizz_avatar(data.persona_id.as_deref(), data.avatar_url.clone());
     let stored_avatar_was_retired_fizz = data
         .avatar_url
         .as_deref()
         .is_some_and(|url| is_retired_fizz_data_url(data.persona_id.as_deref(), url));
-    let expected_avatar = match stored_avatar {
-        Some(url) => Some(url.to_string()),
-        None => {
-            // Legacy record: the relay profile may have been corrupted by the
-            // old reconciliation code (it overwrote the persona avatar with the
-            // command default), so the persona record is the authoritative source.
-            let persona_avatar = filter_retired_fizz_avatar(
-                data.persona_id.as_deref(),
-                data.persona_id.as_ref().and_then(|pid| {
-                    load_personas(app)
-                        .ok()?
-                        .into_iter()
-                        .find(|p| p.id == *pid)?
-                        .avatar_url
-                }),
-            );
-            let relay_picture = filter_retired_fizz_avatar(
-                data.persona_id.as_deref(),
-                existing.as_ref().and_then(|info| info.picture.clone()),
-            );
+    let expected_avatar = if data.avatar_url_cleared && stored_avatar.is_none() {
+        None
+    } else {
+        match stored_avatar {
+            Some(url) => Some(url.to_string()),
+            None => {
+                // Legacy record: the relay profile may have been corrupted by the
+                // old reconciliation code (it overwrote the persona avatar with the
+                // command default), so the persona record is the authoritative source.
+                let persona_avatar = filter_retired_fizz_avatar(
+                    data.persona_id.as_deref(),
+                    data.persona_id.as_ref().and_then(|pid| {
+                        load_personas(app)
+                            .ok()?
+                            .into_iter()
+                            .find(|p| p.id == *pid)?
+                            .avatar_url
+                    }),
+                );
+                let relay_picture = filter_retired_fizz_avatar(
+                    data.persona_id.as_deref(),
+                    existing.as_ref().and_then(|info| info.picture.clone()),
+                );
 
-            let skip_command_fallback = stored_avatar_was_retired_fizz
-                && persona_avatar.is_none()
-                && relay_picture.is_none();
-            let backfilled = if skip_command_fallback {
-                String::new()
-            } else {
-                resolve_legacy_avatar(persona_avatar, relay_picture, &data.agent_command)
-            };
+                let skip_command_fallback = stored_avatar_was_retired_fizz
+                    && persona_avatar.is_none()
+                    && relay_picture.is_none();
+                let backfilled = if skip_command_fallback {
+                    String::new()
+                } else {
+                    resolve_legacy_avatar(persona_avatar, relay_picture, &data.agent_command)
+                };
 
-            // Persist the backfilled avatar so this migration only runs once,
-            // or clear the retired built-in Fizz data URL if there is no
-            // current profile image to backfill.
-            let should_persist_avatar = stored_avatar_was_retired_fizz
-                || (!backfilled.is_empty()
-                    && data.avatar_url.as_deref() != Some(backfilled.as_str()));
-            if should_persist_avatar {
-                let _store_guard = state
-                    .managed_agents_store_lock
-                    .lock()
-                    .map_err(|e| e.to_string())?;
-                let mut records = load_managed_agents(app)?;
-                if let Some(record) = records.iter_mut().find(|r| r.pubkey == data.pubkey) {
-                    record.avatar_url = if backfilled.is_empty() {
-                        None
-                    } else {
-                        Some(backfilled.clone())
-                    };
-                    save_managed_agents(app, &records)?;
+                // Persist the backfilled avatar so this migration only runs once,
+                // or clear the retired built-in Fizz data URL if there is no
+                // current profile image to backfill.
+                let should_persist_avatar = stored_avatar_was_retired_fizz
+                    || (!backfilled.is_empty()
+                        && data.avatar_url.as_deref() != Some(backfilled.as_str()));
+                if should_persist_avatar {
+                    let _store_guard = state
+                        .managed_agents_store_lock
+                        .lock()
+                        .map_err(|e| e.to_string())?;
+                    let mut records = load_managed_agents(app)?;
+                    if let Some(record) = records.iter_mut().find(|r| r.pubkey == data.pubkey) {
+                        record.avatar_url = if backfilled.is_empty() {
+                            None
+                        } else {
+                            Some(backfilled.clone())
+                        };
+                        record.avatar_url_cleared = backfilled.is_empty();
+                        save_managed_agents(app, &records)?;
+                    }
                 }
-            }
 
-            if backfilled.is_empty() {
-                None
-            } else {
-                Some(backfilled)
+                if backfilled.is_empty() {
+                    None
+                } else {
+                    Some(backfilled)
+                }
             }
         }
     };

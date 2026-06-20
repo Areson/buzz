@@ -179,8 +179,10 @@ pub async fn update_managed_agent(
         }
         if let Some(avatar_update) = input.avatar_url {
             let normalized = trim_optional(avatar_update);
-            if normalized != record.avatar_url {
+            let avatar_url_cleared = normalized.is_none();
+            if normalized != record.avatar_url || avatar_url_cleared != record.avatar_url_cleared {
                 record.avatar_url = normalized;
+                record.avatar_url_cleared = avatar_url_cleared;
                 avatar_changed = true;
             }
         }
@@ -265,7 +267,7 @@ pub async fn update_managed_agent(
                 .map_err(|e| format!("failed to parse agent keys: {e}"))?;
             let relay_url = record.relay_url.clone();
             let display_name = record.name.clone();
-            let avatar_url = if avatar_changed {
+            let avatar_url = if avatar_changed || record.avatar_url_cleared {
                 record.avatar_url.clone()
             } else {
                 record

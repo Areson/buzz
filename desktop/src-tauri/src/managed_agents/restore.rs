@@ -210,6 +210,7 @@ pub async fn restore_managed_agents_on_launch(
                         name: record.name.clone(),
                         relay_url: record.relay_url.clone(),
                         avatar_url: record.avatar_url.clone(),
+                        avatar_url_cleared: record.avatar_url_cleared,
                         auth_tag: record.auth_tag.clone(),
                         pubkey: record.pubkey.clone(),
                         agent_command: record.agent_command.clone(),
