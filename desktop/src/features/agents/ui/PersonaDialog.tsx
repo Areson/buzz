@@ -310,7 +310,9 @@ export function PersonaDialog({
     const trimmedRuntime = runtime.trim();
     const initialRuntime = initialValues.runtime ?? "";
     const preservedProvider =
-      trimmedRuntime === initialRuntime ? initialValues.provider : undefined;
+      "id" in initialValues && trimmedRuntime !== initialRuntime
+        ? undefined
+        : initialValues.provider;
     const preservedNamePool =
       "namePool" in initialValues ? initialValues.namePool : undefined;
     const preservedEnvVars =
