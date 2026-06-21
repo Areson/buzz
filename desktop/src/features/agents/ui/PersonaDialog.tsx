@@ -32,6 +32,7 @@ import {
   getImportErrorLabel,
   IMPORT_ERROR_VISIBILITY_MS,
 } from "./personaDialogImportState";
+import { shouldClearModelForRuntimeChange } from "./personaRuntimeModel";
 
 type PersonaDialogProps = {
   open: boolean;
@@ -543,8 +544,16 @@ export function PersonaDialog({
               <Select
                 disabled={isPending || runtimesLoading}
                 onValueChange={(nextRuntime) => {
+                  const previousRuntime = runtime;
                   setRuntime(nextRuntime);
-                  setModel("");
+                  if (
+                    shouldClearModelForRuntimeChange(
+                      previousRuntime,
+                      nextRuntime,
+                    )
+                  ) {
+                    setModel("");
+                  }
                 }}
                 value={runtime}
               >
