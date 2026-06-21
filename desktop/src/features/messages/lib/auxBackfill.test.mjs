@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  backfillAuxForMessages,
   collectAuxEventIdsForDeletionBackfill,
   collectMessageIdsForAuxBackfill,
   mergeAuxEventsWithDeletionBackfill,
 } from "./auxBackfill.ts";
 import { formatTimelineMessages } from "./formatTimelineMessages.ts";
-import { buildChannelAuxFilter } from "@/shared/api/relayChannelFilters.ts";
+import { buildChannelReactionAuxFilter } from "@/shared/api/relayChannelFilters.ts";
+import { channelMessagesKey } from "./messageQueryKeys.ts";
 
 const CHANNEL_ID = "36411e44-0e2d-4cfe-bd6e-567eb169db9f";
 
@@ -158,9 +160,9 @@ test("old reaction outside the history window is backfilled by #e and renders", 
   const messageIds = collectMessageIdsForAuxBackfill(history);
   assert.deepEqual(messageIds, [messageId]);
 
-  // Step 2: the aux filter references those ids by `#e`, with no time window —
-  // so an old reaction is reachable regardless of when it was created.
-  const auxFilter = buildChannelAuxFilter(CHANNEL_ID, messageIds);
+  // Step 2: the reaction aux filter references those ids by `#e`, with no time
+  // window — so an old reaction is reachable regardless of when it was created.
+  const auxFilter = buildChannelReactionAuxFilter(CHANNEL_ID, messageIds);
   assert.deepEqual(auxFilter["#e"], [messageId]);
   assert.equal("since" in auxFilter, false);
   assert.equal("until" in auxFilter, false);
@@ -205,5 +207,91 @@ test("old reaction outside the history window is backfilled by #e and renders", 
       mine: r.reactedByCurrentUser,
     })),
     [{ emoji: "✅", count: 1, mine: true }],
+  );
+});
+
+// Minimal in-memory stand-in for the React-Query client: only the two methods
+// backfillAuxForMessages touches. `setQueryData` mirrors React-Query's updater
+// contract (receives current value, defaulted to [] by the caller).
+function makeQueryClientStub() {
+  const store = new Map();
+  return {
+    getQueryData(key) {
+      return store.get(JSON.stringify(key));
+    },
+    setQueryData(key, updater) {
+      const k = JSON.stringify(key);
+      const next =
+        typeof updater === "function" ? updater(store.get(k) ?? []) : updater;
+      store.set(k, next);
+      return next;
+    },
+  };
+}
+
+function reactionAux(id, messageId, emoji = "✅") {
+  return event(id, 7, {
+    pubkey: hex("c"),
+    content: emoji,
+    tags: [["e", messageId]],
+  });
+}
+
+// The whole point of the kind-split: a slow/failed structural (kind:5/9005/
+// 40003) fetch must NOT blank reactions. Reactions are committed first on their
+// own REQ; the structural overlay's failure is caught and logged, leaving the
+// reactions in cache. Pre-fix, both rode one bundled REQ under one try/catch,
+// so a structural timeout dropped every reaction in the view.
+test("structural-overlay failure does not strand already-committed reactions", async () => {
+  const messageId = hex("1");
+  const queryClient = makeQueryClientStub();
+  // Seed the content message into cache, as the cold-load history fetch would.
+  queryClient.setQueryData(channelMessagesKey(CHANNEL_ID), [
+    event(messageId, 9, { pubkey: hex("a"), content: "ship it?" }),
+  ]);
+
+  await backfillAuxForMessages(queryClient, CHANNEL_ID, [event(messageId, 9)], {
+    fetchReactionAuxEventsForMessages: async () => [
+      reactionAux(hex("2"), messageId),
+    ],
+    // The slow half blows up — exactly the cold-load kind:5 timeout.
+    fetchStructuralAuxEventsForMessages: async () => {
+      throw new Error("Timed out while loading channel history.");
+    },
+    fetchAuxDeletionEventsForAuxEvents: async () => [],
+  });
+
+  const cached = queryClient.getQueryData(channelMessagesKey(CHANNEL_ID));
+  assert.ok(
+    cached.some((e) => e.id === hex("2") && e.kind === 7),
+    "reaction must survive a structural-overlay fetch failure",
+  );
+});
+
+// Symmetric guarantee: a reaction-fetch failure must not abort the structural
+// overlay. Each half owns its try/catch, so an edit/deletion still applies even
+// if reactions couldn't be fetched this pass (they self-heal next backfill).
+test("reaction-fetch failure does not block the structural overlay", async () => {
+  const messageId = hex("1");
+  const editId = hex("3");
+  const queryClient = makeQueryClientStub();
+  queryClient.setQueryData(channelMessagesKey(CHANNEL_ID), [
+    event(messageId, 9, { pubkey: hex("a"), content: "original" }),
+  ]);
+
+  await backfillAuxForMessages(queryClient, CHANNEL_ID, [event(messageId, 9)], {
+    fetchReactionAuxEventsForMessages: async () => {
+      throw new Error("Timed out while loading channel history.");
+    },
+    fetchStructuralAuxEventsForMessages: async () => [
+      event(editId, 40003, { tags: [["e", messageId]] }),
+    ],
+    fetchAuxDeletionEventsForAuxEvents: async () => [],
+  });
+
+  const cached = queryClient.getQueryData(channelMessagesKey(CHANNEL_ID));
+  assert.ok(
+    cached.some((e) => e.id === editId && e.kind === 40003),
+    "edit must apply even when the reaction fetch failed",
   );
 });
