@@ -39,3 +39,13 @@ test("resolveImportedPersonaAvatarUrl preserves ordinary image URLs", () => {
     "https://example.com/avatar.png",
   );
 });
+
+test("resolveImportedPersonaAvatarUrl preserves URL avatar refs", () => {
+  assert.equal(
+    resolveImportedPersonaAvatarUrl({
+      avatarDataUrl: null,
+      avatarRef: " https://example.com/persona-avatar.png ",
+    }),
+    "https://example.com/persona-avatar.png",
+  );
+});

@@ -65,8 +65,12 @@ export function resolveImportedPersonaAvatarUrl({
     return gooseRef;
   }
 
-  const trimmedAvatarUrl = avatarDataUrl?.trim();
-  return trimmedAvatarUrl && isPersistableAvatarUrl(trimmedAvatarUrl)
-    ? trimmedAvatarUrl
-    : null;
+  for (const candidate of [avatarRef, avatarDataUrl]) {
+    const trimmedAvatarUrl = candidate?.trim();
+    if (trimmedAvatarUrl && isPersistableAvatarUrl(trimmedAvatarUrl)) {
+      return trimmedAvatarUrl;
+    }
+  }
+
+  return null;
 }
