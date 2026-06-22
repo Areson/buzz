@@ -4,12 +4,17 @@ import test from "node:test";
 import { computeThreadBadgeCounts } from "./threadBadgeCounts.ts";
 import { buildDirectRepliesByParentId } from "./subtreeCreatedAt.ts";
 
-// Minimal TimelineMessage shape the badge counter reads: id, parentId,
+// Minimal TimelineMessage shape the badge counter reads: id, parentId, rootId,
 // createdAt, pubkey. createdAt defaults high so replies count unread against a
-// null frontier unless a test sets it lower.
-const msg = (id, parentId, createdAt = 100, pubkey = "author") => ({
+// null frontier unless a test sets it lower. `rootId` defaults to the parent
+// (mirroring getThreadReference's `rootTag?.[1] ?? parentId` fallback) so the
+// broken-chain fixtures can pin the orphan-immune root explicitly: the orphan
+// carries its true rootId even when the middle ancestor is unloaded, which is
+// what keeps these tests falsifiable once the roll-up re-keys on rootId.
+const msg = (id, parentId, createdAt = 100, pubkey = "author", rootId) => ({
   id,
   parentId,
+  rootId: rootId ?? parentId ?? id,
   createdAt,
   pubkey,
 });
@@ -134,12 +139,15 @@ test("computeThreadBadgeCounts_brokenParentChain_orphanedReplyMissesRoot_DEFECT"
   // (root -> [a], a -> [] because b is absent), so `c` is orphaned. The root
   // badge counts only `a` (1), NOT the 2 it would show with the chain intact.
   // With the bug, opening the thread shows `c` unread at its level while the
-  // channel-root summary undercounts it.
+  // channel-root summary undercounts it. `c.rootId === "root"` is set
+  // explicitly: today's parentId-keyed walk ignores it and still orphans `c`
+  // (this assertion holds), but once the roll-up re-keys on rootId this fixture
+  // flips — `c` will roll up and the expected count becomes 2.
   const loaded = [
     msg("root", null),
     msg("a", "root"),
     // msg("b", "a") — intentionally absent: unloaded intermediate ancestor.
-    msg("c", "b"),
+    msg("c", "b", 100, "author", "root"),
   ];
   assert.equal(counts(loaded, undefined).get("root"), 1);
 });
@@ -149,10 +157,13 @@ test("computeThreadBadgeCounts_brokenParentChain_orphanedSoleReply_noBadge_DEFEC
   // intermediate ancestor `b` is unloaded. DEFECT: root shows NO badge at all
   // (count absent) even though `c` is genuinely unread, because the orphaned
   // `c` is unreachable from root and root then has zero tallied replies.
+  // `c.rootId === "root"` is set explicitly so the fixture stays falsifiable:
+  // today's parentId walk still orphans it (root absent from the count map),
+  // but once re-keyed on rootId the badge appears with count 1.
   const loaded = [
     msg("root", null),
     // msg("b", "root") — intentionally absent: unloaded intermediate ancestor.
-    msg("c", "b"),
+    msg("c", "b", 100, "author", "root"),
   ];
   assert.equal(counts(loaded, undefined).has("root"), false);
 });
@@ -162,11 +173,14 @@ test("computeThreadBadgeCounts_fullParentChain_orphanRollsUp_DESIRED", () => {
   // chain root -> a -> b -> c is intact, so every descendant rolls up and the
   // root badge correctly counts 3. This is the behavior the broken-chain cases
   // above SHOULD produce once the deep reply's ancestors are guaranteed loaded.
+  // rootId is set on `c` for parity with the broken-chain fixtures; with the
+  // chain intact the parentId walk already reaches it, so this stays green
+  // whether the roll-up keys on parentId or rootId.
   const loaded = [
     msg("root", null),
     msg("a", "root"),
     msg("b", "a"),
-    msg("c", "b"),
+    msg("c", "b", 100, "author", "root"),
   ];
   assert.equal(counts(loaded, undefined).get("root"), 3);
 });
