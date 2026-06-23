@@ -24,6 +24,7 @@ import {
   addReaction,
   deleteMessage,
   editMessage,
+  nip44EncryptToPeer,
   removeReaction,
   sendChannelMessage,
 } from "@/shared/api/tauri";
@@ -32,6 +33,10 @@ import type { Channel, Identity, RelayEvent } from "@/shared/api/types";
 // from the on-render overlay.
 import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay.mjs";
 import { backfillAuxForMessages } from "@/features/messages/lib/auxBackfill";
+import {
+  dmPeerPubkey,
+  makeDmIngestDecryptor,
+} from "@/features/messages/lib/dmCrypto";
 import { countTopLevelTimelineRows } from "@/features/messages/lib/formatTimelineMessages";
 import {
   MIN_TOP_LEVEL_ROWS_PER_FETCH,
@@ -168,9 +173,13 @@ function createOptimisticMessage(
   };
 }
 
-export function useChannelMessagesQuery(channel: Channel | null) {
+export function useChannelMessagesQuery(
+  channel: Channel | null,
+  selfPubkey?: string,
+) {
   const queryClient = useQueryClient();
   const queryKey = channelMessagesKey(channel?.id ?? "none");
+  const decryptIngested = makeDmIngestDecryptor(channel, selfPubkey);
 
   return useQuery({
     enabled: channel !== null && channel.channelType !== "forum",
@@ -181,9 +190,11 @@ export function useChannelMessagesQuery(channel: Channel | null) {
         throw new Error("No channel selected.");
       }
 
-      const history = await relayClient.fetchChannelHistory(
-        channel.id,
-        CHANNEL_HISTORY_LIMIT,
+      const history = await decryptIngested(
+        await relayClient.fetchChannelHistory(
+          channel.id,
+          CHANNEL_HISTORY_LIMIT,
+        ),
       );
       const currentMessages =
         queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
@@ -194,7 +205,12 @@ export function useChannelMessagesQuery(channel: Channel | null) {
 
       // Paint messages immediately; backfill their reactions/edits/deletions
       // by `#e` in the background (it self-merges into the same cache key).
-      void backfillAuxForMessages(queryClient, channel.id, history);
+      void backfillAuxForMessages(
+        queryClient,
+        channel.id,
+        history,
+        decryptIngested,
+      );
 
       // Seed the cache, then — only if the cold window renders thinner than a
       // normal scroll page — top it up to the same visible-row floor. A
@@ -208,6 +224,7 @@ export function useChannelMessagesQuery(channel: Channel | null) {
           queryClient,
           channel.id,
           () => true,
+          decryptIngested,
         );
       }
       return queryClient.getQueryData<RelayEvent[]>(queryKey) ?? mergedHistory;
@@ -217,18 +234,21 @@ export function useChannelMessagesQuery(channel: Channel | null) {
   });
 }
 
-export function useChannelSubscription(channel: Channel | null) {
+export function useChannelSubscription(
+  channel: Channel | null,
+  selfPubkey?: string,
+) {
   const queryClient = useQueryClient();
   const channelId = channel?.id ?? null;
   const channelType = channel?.channelType ?? null;
+  const decryptIngested = makeDmIngestDecryptor(channel, selfPubkey);
   const syncLatestHistory = useEffectEvent(async () => {
     if (!channelId) {
       return;
     }
 
-    const history = await relayClient.fetchChannelHistory(
-      channelId,
-      CHANNEL_HISTORY_LIMIT,
+    const history = await decryptIngested(
+      await relayClient.fetchChannelHistory(channelId, CHANNEL_HISTORY_LIMIT),
     );
 
     queryClient.setQueryData<RelayEvent[]>(
@@ -236,22 +256,29 @@ export function useChannelSubscription(channel: Channel | null) {
       (current = []) => mergeTimelineHistoryMessages(current, history),
     );
 
-    void backfillAuxForMessages(queryClient, channelId, history);
+    void backfillAuxForMessages(
+      queryClient,
+      channelId,
+      history,
+      decryptIngested,
+    );
   });
 
-  const appendMessage = useEffectEvent((event: RelayEvent) => {
+  const appendMessage = useEffectEvent(async (event: RelayEvent) => {
     if (!channelId) {
       return;
     }
 
+    const [decrypted] = await decryptIngested([event]);
+
     queryClient.setQueryData<RelayEvent[]>(
       channelMessagesKey(channelId),
-      (current = []) => mergeTimelineCacheMessages(current, event),
+      (current = []) => mergeTimelineCacheMessages(current, decrypted),
     );
 
-    if (event.kind === KIND_SYSTEM_MESSAGE) {
+    if (decrypted.kind === KIND_SYSTEM_MESSAGE) {
       try {
-        const payload = JSON.parse(event.content) as { type?: string };
+        const payload = JSON.parse(decrypted.content) as { type?: string };
         if (
           payload.type === "member_joined" ||
           payload.type === "member_left" ||
@@ -293,7 +320,9 @@ export function useChannelSubscription(channel: Channel | null) {
     relayClient
       .subscribeToChannel(channelId, (event) => {
         if (!isDisposed) {
-          appendMessage(event);
+          void appendMessage(event).catch((error) => {
+            console.error("Failed to append channel message", channelId, error);
+          });
         }
       })
       .then((dispose) => {
@@ -358,6 +387,16 @@ export function useSendMessageMutation(
         throw new Error("No identity available for sending messages.");
       }
 
+      // Encrypt the body once, before the REST/WS branch, when this is a
+      // 2-party DM — both transports send `wireContent`. The plaintext `content`
+      // is preserved for the optimistic cache copy and the success re-key, so
+      // the cache holds plaintext (matching the decrypt-at-ingest funnel) while
+      // the wire and relay only ever see ciphertext.
+      const peerPubkey = dmPeerPubkey(channel, identity.pubkey);
+      const wireContent = peerPubkey
+        ? await nip44EncryptToPeer(peerPubkey, content.trim())
+        : content;
+
       // `mediaTags` arrives as the merged outgoing tag set (imeta + NIP-30
       // emoji). Split it so each kind goes to its own validated Tauri arg —
       // emoji tags must NOT ride the imeta-only `media` channel (that gate
@@ -378,7 +417,7 @@ export function useSendMessageMutation(
           ) ?? [];
         const result = await sendChannelMessage(
           channel.id,
-          content,
+          wireContent,
           parentEventId ?? null,
           imetaTags,
           mentionPubkeys,
@@ -429,12 +468,18 @@ export function useSendMessageMutation(
         };
       }
 
-      return relayClient.sendMessage(
+      const result = await relayClient.sendMessage(
         channel.id,
-        content,
+        wireContent,
         mentionPubkeys ?? [],
         mentionTags,
       );
+      // For a DM, `result.content` is the ciphertext the relay stored. Override
+      // it with the plaintext so `onSuccess` re-keys the optimistic copy to a
+      // plaintext-bodied event — matching the cache invariant the REST branch
+      // already upholds (it synthesizes `content: content.trim()`). A no-op
+      // outside DMs, where `wireContent === content`.
+      return peerPubkey ? { ...result, content: content.trim() } : result;
     },
     onMutate: async ({ content, mentionPubkeys, parentEventId, mediaTags }) => {
       if (!channel || !identity || channel.channelType === "forum") {
@@ -538,7 +583,10 @@ export function useDeleteMessageMutation(channel: Channel | null) {
   });
 }
 
-export function useEditMessageMutation(channel: Channel | null) {
+export function useEditMessageMutation(
+  channel: Channel | null,
+  selfPubkey?: string,
+) {
   const queryClient = useQueryClient();
 
   return useMutation<
@@ -555,13 +603,22 @@ export function useEditMessageMutation(channel: Channel | null) {
         throw new Error("No channel selected.");
       }
 
+      // Encrypt the edit body for a 2-party DM so the relay's ciphertext gate
+      // accepts it (a plaintext kind-40003 into a latched DM is rejected). The
+      // plaintext `content` flows on to the `onSuccess` cache update, keeping
+      // the cache plaintext-only like the send path and decrypt-at-ingest.
+      const peerPubkey = dmPeerPubkey(channel, selfPubkey);
+      const wireContent = peerPubkey
+        ? await nip44EncryptToPeer(peerPubkey, content)
+        : content;
+
       // `mediaTags` arrives as the merged outgoing set (imeta + NIP-30 emoji).
       // Split so each rides its own validated Tauri arg — emoji tags must NOT
       // go through the imeta-only `mediaTags` channel (the Rust `imeta_tags`
       // guard rejects any non-imeta prefix), mirroring the send path.
       const { mediaTags: imetaTags, emojiTags } = splitOutgoingTags(mediaTags);
 
-      await editMessage(channel.id, eventId, content, imetaTags, emojiTags);
+      await editMessage(channel.id, eventId, wireContent, imetaTags, emojiTags);
     },
     onSuccess: (_data, { eventId, content, mediaTags }) => {
       if (!channel) {

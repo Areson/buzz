@@ -172,12 +172,18 @@ export function ChannelScreen({
         : current;
     });
   }, [activeChannelId, openThreadHeadId]);
-  const messagesQuery = useChannelMessagesQuery(activeChannel);
-  useChannelSubscription(activeChannel);
+  const messagesQuery = useChannelMessagesQuery(activeChannel, currentPubkey);
+  useChannelSubscription(activeChannel, currentPubkey);
   const { fetchOlder, hasOlderMessages, isFetchingOlder } =
-    useFetchOlderMessages(activeChannel);
-  // Newest top-level message only: opening a channel should clear the timeline
-  // without clearing unread thread replies.
+    useFetchOlderMessages(activeChannel, currentPubkey);
+  // Newest TOP-LEVEL message only. The channel read-marker must clear the
+  // channel timeline without clearing its threads (NIP-RS Option 1): thread
+  // replies are kind-9 channel events, so taking the last message outright
+  // would advance the channel frontier past unread replies and the hierarchical
+  // effective(thread) = max(thread, channel) would silently clear every thread
+  // badge on channel entry. Scanning from the end for the last message with no
+  // reply tag keeps the frontier at the last top-level message, leaving thread
+  // badges intact until the thread itself is read.
   const latestActiveMessage = React.useMemo(() => {
     const messages = messagesQuery.data;
     if (!messages) return null;
@@ -238,7 +244,10 @@ export function ChannelScreen({
   );
   const toggleReactionMutation = useToggleReactionMutation();
   const deleteMessageMutation = useDeleteMessageMutation(activeChannel);
-  const editMessageMutation = useEditMessageMutation(activeChannel);
+  const editMessageMutation = useEditMessageMutation(
+    activeChannel,
+    currentPubkey,
+  );
   const joinChannelMutation = useJoinChannelMutation(activeChannelId);
   const resolvedMessages = React.useMemo(() => {
     const currentMessages = messagesQuery.data ?? [];

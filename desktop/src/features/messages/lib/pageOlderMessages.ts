@@ -57,6 +57,9 @@ export async function pageOlderMessagesUntilRowFloor(
   queryClient: QueryClient,
   channelId: string,
   shouldContinue: () => boolean,
+  decryptBatch: (events: RelayEvent[]) => Promise<RelayEvent[]> = async (
+    events,
+  ) => events,
 ): Promise<PageOlderResult> {
   const queryKey = channelMessagesKey(channelId);
   const baseline = queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
@@ -78,10 +81,12 @@ export async function pageOlderMessagesUntilRowFloor(
     // sortMessages dedupes by id. Subtracting 1 risks skipping same-second
     // messages.
     const oldestTimestamp = before[0].created_at;
-    const olderMessages = await relayClient.fetchChannelHistoryBefore(
-      channelId,
-      oldestTimestamp,
-      OLDER_MESSAGES_BATCH_SIZE,
+    const olderMessages = await decryptBatch(
+      await relayClient.fetchChannelHistoryBefore(
+        channelId,
+        oldestTimestamp,
+        OLDER_MESSAGES_BATCH_SIZE,
+      ),
     );
     batchesFetched += 1;
 
@@ -100,7 +105,12 @@ export async function pageOlderMessagesUntilRowFloor(
       queryClient.setQueryData<RelayEvent[]>(queryKey, (current = []) =>
         mergeTimelineHistoryMessages(current, olderMessages),
       );
-      void backfillAuxForMessages(queryClient, channelId, olderMessages);
+      void backfillAuxForMessages(
+        queryClient,
+        channelId,
+        olderMessages,
+        decryptBatch,
+      );
     }
 
     // Progress guard, not exhaustion: if the oldest timestamp didn't move back
