@@ -250,8 +250,15 @@ export function useLiveChannelUpdates(
     // useChannelSubscription also writes to this cache, but there's a
     // race window where it hasn't connected yet. Writes are idempotent
     // (mergeTimelineCacheMessages deduplicates by event ID).
+    //
+    // Keyed on the same selfPubkey (currentPubkey) as useChannelMessagesQuery
+    // so this write lands in the identity-scoped bucket the renderer reads —
+    // not a stale 2-element key that would orphan the event. The `if (!current)`
+    // guard means this only appends to an already-populated cache, so it never
+    // seeds a DM bucket with the still-ciphertext event ahead of the decrypting
+    // subscription path.
     queryClient.setQueryData<RelayEvent[]>(
-      channelMessagesKey(channelId),
+      channelMessagesKey(channelId, options.currentPubkey),
       (current) => {
         if (!current) {
           return current;

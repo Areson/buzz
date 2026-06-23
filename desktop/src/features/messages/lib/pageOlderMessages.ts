@@ -60,8 +60,9 @@ export async function pageOlderMessagesUntilRowFloor(
   decryptBatch: (events: RelayEvent[]) => Promise<RelayEvent[]> = async (
     events,
   ) => events,
+  selfPubkey?: string,
 ): Promise<PageOlderResult> {
-  const queryKey = channelMessagesKey(channelId);
+  const queryKey = channelMessagesKey(channelId, selfPubkey);
   const baseline = queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
   if (baseline.length === 0) {
     return { hasOlderMessages: false };
@@ -110,6 +111,7 @@ export async function pageOlderMessagesUntilRowFloor(
         channelId,
         olderMessages,
         decryptBatch,
+        selfPubkey,
       );
     }
 

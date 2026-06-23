@@ -37,7 +37,7 @@ export function useFetchOlderMessages(
       return;
     }
 
-    const queryKey = channelMessagesKey(channelId);
+    const queryKey = channelMessagesKey(channelId, selfPubkey);
     const currentMessages =
       queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
     if (currentMessages.length === 0) {
@@ -54,6 +54,7 @@ export function useFetchOlderMessages(
         channelId,
         () => previousChannelIdRef.current === channelId,
         decryptIngested,
+        selfPubkey,
       );
       if (!more) {
         hasOlderMessagesRef.current = false;
@@ -65,7 +66,7 @@ export function useFetchOlderMessages(
       isFetchingOlderRef.current = false;
       setIsFetchingOlder(false);
     }
-  }, [channelId, queryClient, decryptIngested]);
+  }, [channelId, queryClient, decryptIngested, selfPubkey]);
 
   return { fetchOlder, isFetchingOlder, hasOlderMessages };
 }

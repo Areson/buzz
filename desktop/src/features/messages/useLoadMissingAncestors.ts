@@ -13,6 +13,7 @@ import type { Channel, RelayEvent } from "@/shared/api/types";
 export function useLoadMissingAncestors(
   activeChannel: Channel | null,
   resolvedMessages: RelayEvent[],
+  selfPubkey?: string,
 ) {
   const queryClient = useQueryClient();
   const requestedAncestorIdsRef = React.useRef<Set<string>>(new Set());
@@ -90,7 +91,7 @@ export function useLoadMissingAncestors(
           }
 
           queryClient.setQueryData<RelayEvent[]>(
-            channelMessagesKey(activeChannel.id),
+            channelMessagesKey(activeChannel.id, selfPubkey),
             (current = []) => mergeMessages(current, event),
           );
         } catch (error) {
@@ -102,5 +103,5 @@ export function useLoadMissingAncestors(
     return () => {
       isCancelled = true;
     };
-  }, [activeChannel, queryClient, resolvedMessages]);
+  }, [activeChannel, queryClient, resolvedMessages, selfPubkey]);
 }

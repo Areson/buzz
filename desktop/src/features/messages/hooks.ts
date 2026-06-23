@@ -178,7 +178,7 @@ export function useChannelMessagesQuery(
   selfPubkey?: string,
 ) {
   const queryClient = useQueryClient();
-  const queryKey = channelMessagesKey(channel?.id ?? "none");
+  const queryKey = channelMessagesKey(channel?.id ?? "none", selfPubkey);
   const decryptIngested = makeDmIngestDecryptor(channel, selfPubkey);
 
   return useQuery({
@@ -210,6 +210,7 @@ export function useChannelMessagesQuery(
         channel.id,
         history,
         decryptIngested,
+        selfPubkey,
       );
 
       // Seed the cache, then — only if the cold window renders thinner than a
@@ -225,6 +226,7 @@ export function useChannelMessagesQuery(
           channel.id,
           () => true,
           decryptIngested,
+          selfPubkey,
         );
       }
       return queryClient.getQueryData<RelayEvent[]>(queryKey) ?? mergedHistory;
@@ -252,7 +254,7 @@ export function useChannelSubscription(
     );
 
     queryClient.setQueryData<RelayEvent[]>(
-      channelMessagesKey(channelId),
+      channelMessagesKey(channelId, selfPubkey),
       (current = []) => mergeTimelineHistoryMessages(current, history),
     );
 
@@ -261,6 +263,7 @@ export function useChannelSubscription(
       channelId,
       history,
       decryptIngested,
+      selfPubkey,
     );
   });
 
@@ -272,7 +275,7 @@ export function useChannelSubscription(
     const [decrypted] = await decryptIngested([event]);
 
     queryClient.setQueryData<RelayEvent[]>(
-      channelMessagesKey(channelId),
+      channelMessagesKey(channelId, selfPubkey),
       (current = []) => mergeTimelineCacheMessages(current, decrypted),
     );
 
@@ -298,6 +301,7 @@ export function useChannelSubscription(
     }
   });
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: selfPubkey is an intentional re-subscribe trigger, not a read — the effect-event closures (syncLatestHistory, appendMessage) read the latest selfPubkey, so biome sees it as unused in the effect body. When identity resolves during a cold start the live sub must re-establish against the resolved decryptor; the initial-history ciphertext is separately re-keyed by the query-key change (channelMessagesKey now includes selfPubkey).
   useEffect(() => {
     if (!channelId || channelType === "forum") {
       return;
@@ -353,7 +357,7 @@ export function useChannelSubscription(
         void cleanup();
       }
     };
-  }, [channelId, channelType]);
+  }, [channelId, channelType, selfPubkey]);
 }
 
 export function useSendMessageMutation(
@@ -413,7 +417,7 @@ export function useSendMessageMutation(
       if (parentEventId || imetaTags.length > 0 || emojiTags.length > 0) {
         const cachedMessages =
           queryClient.getQueryData<RelayEvent[]>(
-            channelMessagesKey(channel.id),
+            channelMessagesKey(channel.id, identity.pubkey),
           ) ?? [];
         const result = await sendChannelMessage(
           channel.id,
@@ -486,7 +490,7 @@ export function useSendMessageMutation(
         return undefined;
       }
 
-      const queryKey = channelMessagesKey(channel.id);
+      const queryKey = channelMessagesKey(channel.id, identity.pubkey);
       await queryClient.cancelQueries({ queryKey });
 
       const previousMessages =
@@ -563,7 +567,10 @@ export function useToggleReactionMutation() {
   });
 }
 
-export function useDeleteMessageMutation(channel: Channel | null) {
+export function useDeleteMessageMutation(
+  channel: Channel | null,
+  selfPubkey?: string,
+) {
   const queryClient = useQueryClient();
 
   return useMutation<void, Error, { eventId: string }>({
@@ -576,7 +583,7 @@ export function useDeleteMessageMutation(channel: Channel | null) {
     onSuccess: (_data, { eventId }) => {
       if (!channel) return;
       queryClient.setQueryData<RelayEvent[]>(
-        channelMessagesKey(channel.id),
+        channelMessagesKey(channel.id, selfPubkey),
         (current = []) => current.filter((message) => message.id !== eventId),
       );
     },
@@ -609,7 +616,7 @@ export function useEditMessageMutation(
       // the cache plaintext-only like the send path and decrypt-at-ingest.
       const peerPubkey = dmPeerPubkey(channel, selfPubkey);
       const wireContent = peerPubkey
-        ? await nip44EncryptToPeer(peerPubkey, content)
+        ? await nip44EncryptToPeer(peerPubkey, content.trim())
         : content;
 
       // `mediaTags` arrives as the merged outgoing set (imeta + NIP-30 emoji).
@@ -626,7 +633,7 @@ export function useEditMessageMutation(
       }
 
       queryClient.setQueryData<RelayEvent[]>(
-        channelMessagesKey(channel.id),
+        channelMessagesKey(channel.id, selfPubkey),
         (current = []) =>
           current.map((message) => {
             if (message.id !== eventId) return message;
@@ -640,7 +647,10 @@ export function useEditMessageMutation(
             const nextTags = mediaTags
               ? applyEditTagOverlay(message.tags, mediaTags)
               : message.tags;
-            return { ...message, content, tags: nextTags };
+            // Trim to match the encrypted wire body (content.trim()) so the
+            // cached plaintext and the relay-stored ciphertext decode to the
+            // same string — mirroring the send path's trim convention.
+            return { ...message, content: content.trim(), tags: nextTags };
           }),
       );
     },

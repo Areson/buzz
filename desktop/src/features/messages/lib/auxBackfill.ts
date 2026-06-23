@@ -87,6 +87,7 @@ export async function backfillAuxForMessages(
   decryptBatch: (events: RelayEvent[]) => Promise<RelayEvent[]> = async (
     events,
   ) => events,
+  selfPubkey?: string,
 ): Promise<void> {
   const messageIds = collectMessageIdsForAuxBackfill(historyEvents);
   if (messageIds.length === 0) {
@@ -94,7 +95,7 @@ export async function backfillAuxForMessages(
   }
 
   try {
-    const cacheKey = channelMessagesKey(channelId);
+    const cacheKey = channelMessagesKey(channelId, selfPubkey);
     const cachedEvents = queryClient.getQueryData<RelayEvent[]>(cacheKey) ?? [];
     const auxEvents = await relayClient.fetchAuxEventsByReference(
       channelId,

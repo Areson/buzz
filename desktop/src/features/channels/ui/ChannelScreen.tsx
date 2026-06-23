@@ -243,7 +243,10 @@ export function ChannelScreen({
     currentIdentity,
   );
   const toggleReactionMutation = useToggleReactionMutation();
-  const deleteMessageMutation = useDeleteMessageMutation(activeChannel);
+  const deleteMessageMutation = useDeleteMessageMutation(
+    activeChannel,
+    currentPubkey,
+  );
   const editMessageMutation = useEditMessageMutation(
     activeChannel,
     currentPubkey,
@@ -631,7 +634,7 @@ export function ChannelScreen({
     threadReplyTargetMessage,
   ]);
 
-  useLoadMissingAncestors(activeChannel, resolvedMessages);
+  useLoadMissingAncestors(activeChannel, resolvedMessages, currentPubkey);
   const hasAuxiliaryPanel = Boolean(
     effectiveOpenThreadHeadId ||
       openAgentSessionPubkey ||
