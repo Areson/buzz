@@ -375,7 +375,7 @@ mod tests {
         let md = br#"---
 name: fizz
 display_name: Fizz
-avatar: app-avatar:pollies-12
+avatar: app-avatar:persona-12
 runtime: goose
 ---
 You are Fizz.
@@ -388,7 +388,7 @@ You are Fizz.
         assert_eq!(result.personas[0].display_name, "Fizz");
         assert_eq!(
             result.personas[0].avatar_ref.as_deref(),
-            Some("app-avatar:pollies-12")
+            Some("app-avatar:persona-12")
         );
         assert_eq!(result.personas[0].source_file, "fizz.md");
     }
