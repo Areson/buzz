@@ -409,21 +409,34 @@ pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
 }
 
 /// Channel-scoped kinds that carry a free-text display body. In a latched E2E
-/// DM these bodies MUST be NIP-44 ciphertext (rule 15c) — gating kind:9 alone
-/// left the edit (40003), v2 (40002), diff (40008), forum comment (45003),
-/// forum post (45001), and canvas (40100) paths able to land plaintext into a
-/// latched channel, the exact leak the latch exists to prevent. None of these
-/// are global-only kinds, so each carries an `h` tag and resolves to a channel
-/// at ingest. The boundary is "carries a free-text body", not membership in any
-/// one enumeration of channel kinds: structured-content kinds (forum vote
-/// `+`/`-`, reactions, deletions, membership/admin/typing — empty content) and
-/// global-only kinds (kind:1) stay out because they have no user text to leak.
+/// DM these bodies MUST be NIP-44 ciphertext (rule 15c), or the relay would
+/// silently store plaintext — the exact leak the latch exists to prevent.
+///
+/// This is the content-bearing half of the relay's channel-scoped acceptance
+/// surface (`requires_h_channel_scope`). The two must stay in lockstep: any kind
+/// the relay accepts as channel-scoped is either gated here (free-text body) or
+/// listed as bodyless in the `e2e_drift_guard` test. That guard derives from
+/// `requires_h_channel_scope` and fails if a new channel-scoped kind is added
+/// without classification, so this list cannot silently drift behind the
+/// acceptance surface (the bug that left 40003-40007 ungated across two passes).
+///
+/// 40004 (pinned) and 40005 (bookmarked) are gated despite having no SDK builder
+/// or relay-side schema: they are named "a stream message that has been
+/// pinned/bookmarked" and are accepted as persisted channel events with no
+/// structure constraining their content, so a client can place free text in the
+/// body. With no proof they are bodyless (unlike forum vote's `+`/`-`) and no
+/// legitimate plaintext producer to break, fail-visible rejection is the safe
+/// default for the latch boundary.
 pub(crate) fn is_e2e_enforced_content_kind(kind: u32) -> bool {
     matches!(
         kind,
         KIND_STREAM_MESSAGE
             | KIND_STREAM_MESSAGE_V2
             | KIND_STREAM_MESSAGE_EDIT
+            | KIND_STREAM_MESSAGE_PINNED
+            | KIND_STREAM_MESSAGE_BOOKMARKED
+            | KIND_STREAM_MESSAGE_SCHEDULED
+            | KIND_STREAM_REMINDER
             | KIND_STREAM_MESSAGE_DIFF
             | KIND_FORUM_COMMENT
             | KIND_FORUM_POST
@@ -2281,12 +2294,17 @@ mod tests {
         // The latch-enforcement gate must span every channel-scoped kind that
         // carries a free-text display body — not kind:9 alone. A plaintext edit
         // (40003), v2 message (40002), diff (40008), forum comment (45003),
-        // forum post (45001), or canvas (40100) into a latched DM is the exact
-        // leak the latch exists to prevent.
+        // forum post (45001), canvas (40100), scheduled message (40006),
+        // reminder (40007), pinned (40004), or bookmarked (40005) into a latched
+        // DM is the exact leak the latch exists to prevent.
         for kind in [
             KIND_STREAM_MESSAGE,
             KIND_STREAM_MESSAGE_V2,
             KIND_STREAM_MESSAGE_EDIT,
+            KIND_STREAM_MESSAGE_PINNED,
+            KIND_STREAM_MESSAGE_BOOKMARKED,
+            KIND_STREAM_MESSAGE_SCHEDULED,
+            KIND_STREAM_REMINDER,
             KIND_STREAM_MESSAGE_DIFF,
             KIND_FORUM_COMMENT,
             KIND_FORUM_POST,
@@ -2310,6 +2328,59 @@ mod tests {
             assert!(
                 !is_e2e_enforced_content_kind(kind),
                 "kind {kind} carries no free-text body and must not be E2E-gated"
+            );
+        }
+    }
+
+    /// Channel-scoped kinds whose body is structurally bodyless — they carry no
+    /// free-text user content, so they are deliberately NOT E2E-gated. Each must
+    /// be justified by its content shape, not by absence from an enumeration:
+    /// - forum vote: "+"/"-" only;
+    /// - NIP-29 admin (put/remove user, edit metadata, delete event/group,
+    ///   leave request): membership/admin commands, empty or structured content;
+    /// - huddle lifecycle (started/joined/left/ended/guidelines): structured
+    ///   session state, no message body.
+    ///
+    /// This list is the test's accounting of the bodyless half of the
+    /// channel-scoped surface; `e2e_drift_guard` asserts the two halves together
+    /// cover every channel-scoped kind, so a new kind can't slip in unclassified.
+    const BODYLESS_CHANNEL_SCOPED_KINDS: &[u32] = &[
+        KIND_FORUM_VOTE,
+        KIND_NIP29_PUT_USER,
+        KIND_NIP29_REMOVE_USER,
+        KIND_NIP29_EDIT_METADATA,
+        KIND_NIP29_DELETE_EVENT,
+        KIND_NIP29_DELETE_GROUP,
+        KIND_NIP29_LEAVE_REQUEST,
+        KIND_HUDDLE_STARTED,
+        KIND_HUDDLE_PARTICIPANT_JOINED,
+        KIND_HUDDLE_PARTICIPANT_LEFT,
+        KIND_HUDDLE_ENDED,
+        KIND_HUDDLE_GUIDELINES,
+    ];
+
+    #[test]
+    fn e2e_drift_guard_classifies_every_channel_scoped_kind() {
+        // Structural fix for the kind-set-drift bug class: the E2E gate
+        // (`is_e2e_enforced_content_kind`) is a hand-written list that ran
+        // parallel to the relay's actual channel-scoped acceptance surface
+        // (`requires_h_channel_scope`) and drifted from it, leaving content kinds
+        // ungated. This guard derives directly from the acceptance surface: every
+        // kind the relay accepts as channel-scoped MUST be classified as either
+        // E2E-gated (carries a free-text body) or explicitly bodyless. Adding a
+        // new arm to `requires_h_channel_scope` without classifying it here fails
+        // this test — so the gate can't silently drift behind the surface again.
+        for kind in 0u32..=50_000 {
+            if !requires_h_channel_scope(kind) {
+                continue;
+            }
+            let gated = is_e2e_enforced_content_kind(kind);
+            let bodyless = BODYLESS_CHANNEL_SCOPED_KINDS.contains(&kind);
+            assert!(
+                gated ^ bodyless,
+                "channel-scoped kind {kind} is unclassified: it must be either \
+                 E2E-gated (free-text body) or in BODYLESS_CHANNEL_SCOPED_KINDS, \
+                 and exactly one of the two — got gated={gated}, bodyless={bodyless}"
             );
         }
     }
