@@ -370,6 +370,44 @@ fn parse_channel_uuid(channel_id: &str) -> Result<uuid::Uuid, String> {
     uuid::Uuid::parse_str(channel_id).map_err(|_| format!("invalid channel UUID: {channel_id}"))
 }
 
+/// Poll the relay for a channel's kind:39000 metadata event by `#d` tag.
+///
+/// `submit_event` returns once the relay has *accepted* a write, but the
+/// read-side index is eventually-consistent: a read-back issued immediately
+/// after can race ahead of indexing and come back empty. To return the
+/// canonical metadata after a create/update we retry the read on a short
+/// bounded schedule before reporting it as missing.
+async fn poll_channel_metadata(
+    state: &State<'_, AppState>,
+    channel_id: &str,
+) -> Result<Option<nostr::Event>, String> {
+    // ~1.5s total across 5 attempts; the first read usually wins, so the
+    // backoff only matters when indexing genuinely lags behind the write.
+    const BACKOFF_MS: [u64; 5] = [0, 100, 200, 500, 700];
+
+    for delay_ms in BACKOFF_MS {
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        let events = query_relay(
+            state,
+            &[serde_json::json!({
+                "kinds": [39000],
+                "#d": [channel_id],
+                "limit": 1
+            })],
+        )
+        .await?;
+
+        if let Some(event) = events.into_iter().next() {
+            return Ok(Some(event));
+        }
+    }
+
+    Ok(None)
+}
+
 #[tauri::command]
 pub async fn create_channel(
     name: String,
@@ -400,23 +438,15 @@ pub async fn create_channel(
     )?;
     submit_event(builder, &state).await?;
 
-    // Re-fetch the canonical metadata event to return ChannelInfo.
+    // Re-fetch the canonical metadata event to return ChannelInfo. The relay's
+    // read-side indexing is eventually-consistent, so the just-written event may
+    // not be queryable on the first read-back — poll briefly before giving up.
     let channel_uuid_string = channel_uuid.to_string();
-    let events = query_relay(
-        &state,
-        &[serde_json::json!({
-            "kinds": [39000],
-            "#d": [channel_uuid_string],
-            "limit": 1
-        })],
-    )
-    .await?;
+    let event = poll_channel_metadata(&state, &channel_uuid_string)
+        .await?
+        .ok_or_else(|| "channel created but metadata not yet available".to_string())?;
 
-    events
-        .first()
-        .map(|ev| nostr_convert::channel_info_from_event(ev, None, None))
-        .transpose()?
-        .ok_or_else(|| "channel created but metadata not yet available".to_string())
+    nostr_convert::channel_info_from_event(&event, None, None)
 }
 
 #[derive(serde::Deserialize)]
@@ -449,21 +479,13 @@ pub async fn update_channel(
     )?;
     submit_event(builder, &state).await?;
 
-    let events = query_relay(
-        &state,
-        &[serde_json::json!({
-            "kinds": [39000],
-            "#d": [input.channel_id],
-            "limit": 1
-        })],
-    )
-    .await?;
+    // See `create_channel`: the relay's read-side indexing is eventually
+    // consistent, so poll briefly for the just-written metadata event.
+    let event = poll_channel_metadata(&state, &input.channel_id)
+        .await?
+        .ok_or_else(|| "channel updated but metadata not yet available".to_string())?;
 
-    events
-        .first()
-        .map(nostr_convert::channel_detail_from_event)
-        .transpose()?
-        .ok_or_else(|| "channel updated but metadata not yet available".to_string())
+    nostr_convert::channel_detail_from_event(&event)
 }
 
 #[tauri::command]
