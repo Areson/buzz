@@ -129,7 +129,7 @@ fn fixture(
         private_key_nsec: "nsec1fake".into(),
         auth_tag,
         relay_url: "ws://localhost:3000".into(),
-        avatar_url: None,
+        avatar_url: crate::managed_agents::AvatarState::Unmigrated,
         acp_command: "buzz-acp".into(),
         agent_command: "goose".into(),
         agent_args: vec![],

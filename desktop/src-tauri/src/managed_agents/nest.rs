@@ -992,7 +992,7 @@ mod tests {
             private_key_nsec: String::new(),
             auth_tag: None,
             relay_url: String::new(),
-            avatar_url: None,
+            avatar_url: crate::managed_agents::AvatarState::Unmigrated,
             acp_command: String::new(),
             agent_command: String::new(),
             agent_args: vec![],

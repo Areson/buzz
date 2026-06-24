@@ -211,6 +211,27 @@ pub async fn update_managed_agent(
             record.env_vars = env_vars;
         }
 
+        // Avatar tri-state write. This is the only path that ever produces
+        // `AvatarState::Cleared`. Absent (`None`) leaves the stored state
+        // untouched; `Some(None)` is an explicit user clear; `Some(Some(url))`
+        // sets an explicit URL (empty/whitespace also collapses to `Cleared`,
+        // since "set it to blank" is a clear).
+        let mut avatar_changed = false;
+        if let Some(avatar_update) = input.avatar_url {
+            let next = match avatar_update
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                Some(url) => crate::managed_agents::AvatarState::Set(url.to_string()),
+                None => crate::managed_agents::AvatarState::Cleared,
+            };
+            if next != record.avatar_url {
+                record.avatar_url = next;
+                avatar_changed = true;
+            }
+        }
+
         // Inbound author gate: merge patch onto current values, then validate
         // the merged state. This lets a single update switch to Allowlist AND
         // supply pubkeys atomically.
@@ -243,20 +264,29 @@ pub async fn update_managed_agent(
             .find(|r| r.pubkey == input.pubkey)
             .ok_or_else(|| format!("agent {} not found", input.pubkey))?;
 
-        let sync_params = if name_changed {
+        let sync_params = if name_changed || avatar_changed {
             let agent_keys = Keys::parse(&record.private_key_nsec)
                 .map_err(|e| format!("failed to parse agent keys: {e}"))?;
-            // Re-publish the renamed profile to the agent's effective relay:
+            // Re-publish the profile to the agent's effective relay:
             // an explicit per-agent relay wins; empty falls back to workspace.
             let relay_url = crate::relay::effective_agent_relay_url(
                 &record.relay_url,
                 &relay_ws_url_with_override(&state),
             );
             let display_name = record.name.clone();
-            let avatar_url = record
-                .avatar_url
-                .clone()
-                .or_else(|| managed_agent_avatar_url(&record.agent_command));
+            // Resolve the avatar to publish from the tri-state:
+            // - `Set` → that URL.
+            // - `Cleared` → `None`, so the kind:0 is published with no picture
+            //   (the deliberate clear propagates to the relay immediately).
+            // - `Unmigrated` → fall back to the command default, matching the
+            //   pre-tri-state behavior for legacy records.
+            let avatar_url = match &record.avatar_url {
+                crate::managed_agents::AvatarState::Set(url) => Some(url.clone()),
+                crate::managed_agents::AvatarState::Cleared => None,
+                crate::managed_agents::AvatarState::Unmigrated => {
+                    managed_agent_avatar_url(&record.agent_command)
+                }
+            };
             let auth_tag = record.auth_tag.clone();
             Some((agent_keys, relay_url, display_name, avatar_url, auth_tag))
         } else {

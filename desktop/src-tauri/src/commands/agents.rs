@@ -9,8 +9,8 @@ use crate::{
         managed_agent_avatar_url, managed_agent_log_path, managed_agents_base_dir,
         normalize_agent_args, provider_deploy, read_log_tail, resolve_provider_binary,
         save_managed_agents, start_managed_agent_process, stop_managed_agent_process,
-        sync_managed_agent_processes, try_regenerate_nest, validate_provider_config, BackendKind,
-        BackendProviderInfo, CreateManagedAgentRequest, CreateManagedAgentResponse,
+        sync_managed_agent_processes, try_regenerate_nest, validate_provider_config, AvatarState,
+        BackendKind, BackendProviderInfo, CreateManagedAgentRequest, CreateManagedAgentResponse,
         ManagedAgentLogResponse, ManagedAgentRecord, ManagedAgentSummary, RelayMeshConfig,
         DEFAULT_ACP_COMMAND, DEFAULT_AGENT_PARALLELISM, DEFAULT_AGENT_TURN_TIMEOUT_SECONDS,
     },
@@ -60,15 +60,24 @@ fn resolve_created_avatar_url(
     requested_avatar_url: Option<&str>,
     persona_avatar_url: Option<String>,
     agent_command: &str,
-) -> Option<String> {
-    requested_avatar_url
+) -> AvatarState {
+    let resolved = requested_avatar_url
         .and_then(trim_to_optional_string)
         .or_else(|| {
             persona_avatar_url
                 .as_deref()
                 .and_then(trim_to_optional_string)
         })
-        .or_else(|| managed_agent_avatar_url(agent_command))
+        .or_else(|| managed_agent_avatar_url(agent_command));
+
+    match resolved {
+        Some(url) => AvatarState::Set(url),
+        // A brand-new record with no resolvable avatar is treated as unmigrated,
+        // not cleared: it should still pick up a relay/persona avatar on first
+        // reconciliation, exactly like the legacy `None` path did. `Cleared` is
+        // reserved for an explicit user clear via the update path.
+        None => AvatarState::Unmigrated,
+    }
 }
 
 #[cfg(feature = "mesh-llm")]
@@ -655,7 +664,7 @@ pub async fn create_managed_agent(
         &resolved_relay_url,
         &agent_keys,
         &name,
-        resolved_avatar_url.as_deref(),
+        resolved_avatar_url.url(),
         auth_tag.as_deref(),
     )
     .await)
@@ -743,10 +752,11 @@ pub(crate) struct ProfileReconcileData {
     pub(crate) private_key_nsec: String,
     pub(crate) name: String,
     pub(crate) relay_url: String,
-    /// Expected avatar URL for the published profile. `None` for legacy records
-    /// that predate the `avatar_url` field — these will be backfilled from the
-    /// relay's existing kind:0 profile on first reconciliation.
-    pub(crate) avatar_url: Option<String>,
+    /// Expected avatar state for the published profile. [`AvatarState::Unmigrated`]
+    /// for legacy records that predate the avatar field — these are backfilled
+    /// from the relay's existing kind:0 profile on first reconciliation.
+    /// [`AvatarState::Cleared`] suppresses sync entirely.
+    pub(crate) avatar_url: crate::managed_agents::AvatarState,
     pub(crate) auth_tag: Option<String>,
     /// The agent's pubkey (hex). Needed to update the persisted record during
     /// avatar backfill migration.
@@ -944,9 +954,15 @@ pub(crate) async fn reconcile_agent_profile(
 
     // Resolve the expected avatar — backfilling for legacy records that have no
     // stored avatar_url yet.
-    let expected_avatar = match data.avatar_url.as_deref() {
-        Some(url) => url.to_string(),
-        None => {
+    // Resolve the expected avatar from the tri-state. `Set` uses the URL as-is;
+    // `Cleared` is a deliberate empty (never backfilled); `Unmigrated` is a
+    // legacy record that gets backfilled once and persisted as `Set`.
+    let expected_avatar = match &data.avatar_url {
+        AvatarState::Set(url) => url.to_string(),
+        // The user deliberately cleared this avatar — leave the profile empty
+        // and never resurrect it from a default.
+        AvatarState::Cleared => return Ok(()),
+        AvatarState::Unmigrated => {
             // Legacy record: the relay profile may have been corrupted by the
             // old reconciliation code (it overwrote the persona avatar with the
             // command default), so the persona record is the authoritative source.
@@ -972,7 +988,7 @@ pub(crate) async fn reconcile_agent_profile(
                     .map_err(|e| e.to_string())?;
                 let mut records = load_managed_agents(app)?;
                 if let Some(record) = records.iter_mut().find(|r| r.pubkey == data.pubkey) {
-                    record.avatar_url = Some(backfilled.clone());
+                    record.avatar_url = AvatarState::Set(backfilled.clone());
                     save_managed_agents(app, &records)?;
                 }
             }

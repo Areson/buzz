@@ -13,6 +13,104 @@ pub enum BackendKind {
     },
 }
 
+/// Tri-state for a managed agent's avatar, replacing the overloaded
+/// `Option<String>` where `None` meant two contradictory things at once
+/// ("legacy record, backfill a default" *and* "user deliberately cleared it").
+///
+/// Making the three states mutually exclusive and type-enforced means every
+/// read site must handle all three, and a user-cleared avatar can never be
+/// resurrected by the legacy backfill path.
+///
+/// ## On-disk back-compatibility
+///
+/// The custom serde impls keep pre-existing records readable with no data
+/// migration:
+/// - a JSON string (`"https://…"`) deserializes as [`AvatarState::Set`]
+/// - JSON `null` or an absent field deserializes as [`AvatarState::Unmigrated`]
+/// - the sentinel object `{ "cleared": true }` deserializes as
+///   [`AvatarState::Cleared`]
+///
+/// No pre-existing record can deserialize as `Cleared` — that state is only
+/// ever written by an explicit clear via the update path — so legacy `null`
+/// keeps its original "backfill once" meaning while `Cleared` is a brand-new,
+/// forward-only state. `Unmigrated` serializes back to `null` so untouched
+/// legacy records round-trip byte-stable.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AvatarState {
+    /// An explicit avatar URL. Used as-is; never backfilled.
+    Set(String),
+    /// The user deliberately cleared the avatar. Stays empty; never backfilled.
+    Cleared,
+    /// Legacy/pre-PR-921 record with no recorded intent. Backfilled once on the
+    /// next reconciliation, then persisted as `Set`.
+    #[default]
+    Unmigrated,
+}
+
+impl AvatarState {
+    /// The avatar URL if one is explicitly set, else `None`. `Cleared` and
+    /// `Unmigrated` both yield `None`, but callers must distinguish them — use
+    /// the enum directly where backfill eligibility matters.
+    pub fn url(&self) -> Option<&str> {
+        match self {
+            AvatarState::Set(url) => Some(url.as_str()),
+            AvatarState::Cleared | AvatarState::Unmigrated => None,
+        }
+    }
+}
+
+impl Serialize for AvatarState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match self {
+            AvatarState::Set(url) => serializer.serialize_str(url),
+            // Distinct sentinel so a cleared avatar round-trips and never
+            // collides with the `null` used for `Unmigrated`.
+            AvatarState::Cleared => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("cleared", &true)?;
+                map.end()
+            }
+            AvatarState::Unmigrated => serializer.serialize_none(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AvatarState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct ClearedSentinel {
+            cleared: bool,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Str(String),
+            Sentinel(ClearedSentinel),
+            // Catches JSON `null`. An absent field is handled by
+            // `#[serde(default)]` on the struct field, which yields
+            // `AvatarState::default()` == `Unmigrated`.
+            Null,
+        }
+
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Str(url) => AvatarState::Set(url),
+            Raw::Sentinel(s) if s.cleared => AvatarState::Cleared,
+            // `{ "cleared": false }` is not a state we ever write; treat it as
+            // unmigrated rather than inventing a fourth meaning.
+            Raw::Sentinel(_) => AvatarState::Unmigrated,
+            Raw::Null => AvatarState::Unmigrated,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonaRecord {
     pub id: String,
@@ -100,13 +198,15 @@ pub struct ManagedAgentRecord {
     #[serde(default)]
     pub auth_tag: Option<String>,
     pub relay_url: String,
-    /// Avatar URL resolved at creation time (user-supplied input, else the
-    /// command-based fallback). Persisted so startup reconciliation compares
-    /// against what was actually published rather than re-deriving it from
-    /// persona config — which would silently overwrite user intent on restart.
-    /// `#[serde(default)]` so pre-existing records deserialize as `None`.
+    /// Avatar state resolved at creation time and reconciliation: an explicit
+    /// URL, a deliberate clear, or an unmigrated legacy record. Persisted so
+    /// startup reconciliation compares against what was actually published
+    /// rather than re-deriving it from persona config — which would silently
+    /// overwrite user intent on restart. See [`AvatarState`] for the on-disk
+    /// back-compat rules; `#[serde(default)]` makes an absent field deserialize
+    /// as [`AvatarState::Unmigrated`], preserving the legacy backfill path.
     #[serde(default)]
-    pub avatar_url: Option<String>,
+    pub avatar_url: AvatarState,
     pub acp_command: String,
     pub agent_command: String,
     pub agent_args: Vec<String>,
@@ -434,6 +534,11 @@ pub struct UpdateManagedAgentRequest {
     pub system_prompt: Option<Option<String>>,
     #[serde(default)]
     pub mcp_toolsets: Option<Option<String>>,
+    /// Absent = don't touch. null = the user cleared the avatar
+    /// ([`AvatarState::Cleared`]). "url" = set it ([`AvatarState::Set`]).
+    /// This is the only path that ever writes `Cleared`.
+    #[serde(default)]
+    pub avatar_url: Option<Option<String>>,
     /// Absent = don't touch. Present = replace the env_vars map entirely.
     #[serde(default)]
     pub env_vars: Option<BTreeMap<String, String>>,
@@ -636,7 +741,7 @@ pub fn validate_respond_to_allowlist(input: &[String]) -> Result<Vec<String>, St
 
 #[cfg(test)]
 mod tests {
-    use super::{ManagedAgentRecord, PersonaRecord};
+    use super::{AvatarState, ManagedAgentRecord, PersonaRecord};
     use std::path::PathBuf;
 
     #[test]
@@ -687,7 +792,7 @@ mod tests {
         .expect("legacy agent record without auth_tag should deserialize");
 
         assert_eq!(record.auth_tag, None);
-        assert_eq!(record.avatar_url, None);
+        assert_eq!(record.avatar_url, AvatarState::Unmigrated);
         assert_eq!(record.pubkey, "abcd1234");
     }
 

@@ -50,7 +50,7 @@ fn created_avatar_prefers_explicit_input() {
         "goose",
     );
 
-    assert_eq!(resolved.as_deref(), Some("https://x/input.png"));
+    assert_eq!(resolved.url(), Some("https://x/input.png"));
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn created_avatar_uses_persona_before_command_fallback() {
     let resolved =
         resolve_created_avatar_url(None, Some(" https://x/persona.png ".to_string()), "goose");
 
-    assert_eq!(resolved.as_deref(), Some("https://x/persona.png"));
+    assert_eq!(resolved.url(), Some("https://x/persona.png"));
 }
 
 #[test]
@@ -67,7 +67,8 @@ fn created_avatar_uses_command_fallback_without_input_or_persona() {
 
     let resolved = resolve_created_avatar_url(None, None, "goose");
 
-    assert_eq!(resolved, managed_agent_avatar_url("goose"));
+    // The command default resolves to an explicit `Set`, never `Unmigrated`.
+    assert_eq!(resolved.url(), managed_agent_avatar_url("goose").as_deref());
 }
 
 fn profile(name: Option<&str>, picture: Option<&str>) -> crate::relay::AgentProfileInfo {
