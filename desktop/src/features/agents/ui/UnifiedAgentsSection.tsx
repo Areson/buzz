@@ -418,7 +418,9 @@ function AgentPersonaCard({
           onOpenAgentProfile(agent.pubkey);
           return;
         }
-        personaMenuProps.onEditPersona(persona);
+        if (!persona.isBuiltIn) {
+          personaMenuProps.onEditPersona(persona);
+        }
       }}
       status={
         agent ? (
@@ -463,7 +465,7 @@ function StandaloneAgentCard({
       onClick={() => {
         if (onOpenAgentProfile) {
           onOpenAgentProfile(agent.pubkey);
-        } else {
+        } else if (agent.backend.type === "local") {
           agentMenuProps.onOpenLogs(agent.pubkey);
         }
       }}
