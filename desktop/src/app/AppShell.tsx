@@ -1,13 +1,8 @@
 import * as React from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, useLocation } from "@tanstack/react-router";
 
-import {
-  deriveShellRoute,
-  isWindowDragHandleEvent,
-  toSearchHit,
-} from "@/app/AppShell.helpers";
+import { deriveShellRoute } from "@/app/AppShell.helpers";
 import { AppShellProvider } from "@/app/AppShellContext";
 import {
   AppShellOverlays,
@@ -19,7 +14,9 @@ import { useBackForwardControls } from "@/app/navigation/useBackForwardControls"
 import { useLiveHomeFeedActions } from "@/app/useLiveHomeFeedActions";
 import { useMarkAsReadShortcuts } from "@/app/useMarkAsReadShortcuts";
 import { useSettingsShortcuts } from "@/app/useSettingsShortcuts";
+import { useAppShellDesktopNotifications } from "@/app/useAppShellDesktopNotifications";
 import { useThreadActivityFeedItems } from "@/app/useThreadActivityFeedItems";
+import { useTauriWindowDrag } from "@/app/useTauriWindowDrag";
 import { useWebviewZoomShortcuts } from "@/app/useWebviewZoomShortcuts";
 import {
   channelsQueryKey,
@@ -32,26 +29,15 @@ import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
 import { msgContextKey } from "@/features/channels/readState/readStateFormat";
 import { useMembershipNotifications } from "@/features/channels/useMembershipNotifications";
 import { useFeedItemState } from "@/features/home/useFeedItemState";
-import { getThreadReference } from "@/features/messages/lib/threading";
-import { hasMentionForEvent } from "@/features/notifications/lib/shouldNotify";
 import { useThreadFollows } from "@/features/messages/lib/useThreadFollows";
 import {
   useHomeFeedNotifications,
   useHomeFeedNotificationState,
 } from "@/features/notifications/hooks";
-import {
-  listenForDesktopNotificationActions,
-  requestDockBounce,
-  revealDesktopAppWindow,
-  sendDesktopNotification,
-  setDesktopAppBadge,
-  type DesktopNotificationTarget,
-} from "@/features/notifications/lib/desktop";
-import {
-  playNotificationSound,
-  resolveSlotSound,
-} from "@/features/notifications/lib/sound";
+import { setDesktopAppBadge } from "@/features/notifications/lib/desktop";
 import { PreventSleepProvider } from "@/features/agents/usePreventSleep";
+import { requestOpenCreateAgent } from "@/features/agents/openCreateAgentEvent";
+import { usePersonaSync } from "@/features/agents/lib/usePersonaSync";
 import {
   usePresenceSession,
   usePresenceSubscription,
@@ -82,7 +68,7 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import { useRelayAutoHeal } from "@/shared/api/useRelayAutoHeal";
 import { useDeferredStartup } from "@/shared/hooks/useDeferredStartup";
 import { joinChannel } from "@/shared/api/tauri";
-import type { Channel, RelayEvent, SearchHit } from "@/shared/api/types";
+import type { SearchHit } from "@/shared/api/types";
 import { ChannelNavigationProvider } from "@/shared/context/ChannelNavigationContext";
 import { MainInsetProvider } from "@/shared/layout/MainInsetContext";
 import { chromeCssVarDefaults } from "@/shared/layout/chromeLayout";
@@ -99,12 +85,15 @@ const LazySettingsScreen = React.lazy(async () => {
 
 export function AppShell() {
   useWebviewZoomShortcuts();
+  useTauriWindowDrag();
 
   const workspacesHook = useWorkspaces();
   const [isAddWorkspaceOpen, setIsAddWorkspaceOpen] = React.useState(false);
-
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
+  const [managedChannelId, setManagedChannelId] = React.useState<string | null>(
+    null,
+  );
   const [searchFocusRequest, setSearchFocusRequest] = React.useState(0);
   const [browseDialogType, setBrowseDialogType] =
     React.useState<BrowseDialogType>(null);
@@ -131,9 +120,7 @@ export function AppShell() {
     () => deriveShellRoute(location.pathname),
     [location.pathname],
   );
-  // Settings lives in the history stack: /settings?section=… opens it, back
-  // (or "Back to app") returns to the previous entry — panels and all — and
-  // reloads restore the open section from the URL.
+  // Settings lives in history so back returns to the previous app entry.
   const settingsOpen = location.pathname === "/settings";
   const locationSearchSection = (location.search as { section?: unknown })
     .section;
@@ -142,7 +129,6 @@ export function AppShell() {
   )
     ? locationSearchSection
     : DEFAULT_SETTINGS_SECTION;
-
   const startupReady = useDeferredStartup();
 
   const identityQuery = useIdentityQuery();
@@ -152,6 +138,7 @@ export function AppShell() {
   const { starredChannelIds, starChannel, unstarChannel } = useChannelStars(
     identityQuery.data?.pubkey,
   );
+  usePersonaSync(identityQuery.data?.pubkey);
   const profileQuery = useProfileQuery();
   const deferredPubkey = startupReady ? identityQuery.data?.pubkey : undefined;
   useRelayAutoHeal();
@@ -178,56 +165,6 @@ export function AppShell() {
     identityQuery.data?.pubkey,
     refetchHomeFeedFromLiveSignal,
   );
-  const handleChannelNotification = React.useEffectEvent(
-    (_channelId: string, _event: RelayEvent) => {
-      if (!notificationSettings.settings.desktopEnabled) return;
-      void requestDockBounce();
-    },
-  );
-
-  const handleDmNotification = React.useEffectEvent(
-    (event: RelayEvent, channel: Channel) => {
-      if (
-        !notificationSettings.settings.desktopEnabled ||
-        !notificationSettings.settings.slotAlertsEnabled.dm
-      ) {
-        return;
-      }
-
-      const channelName = channel.name?.trim() || "Direct message";
-      const content = event.content.trim();
-      const body =
-        content.length > 0
-          ? content.length > 140
-            ? `${content.slice(0, 137).trimEnd()}...`
-            : content
-          : "New message";
-
-      const threadRootId = getThreadReference(event.tags).rootId ?? null;
-
-      void sendDesktopNotification({
-        title: channelName,
-        body,
-        target: {
-          channelId: channel.id,
-          channelName,
-          content: event.content,
-          createdAt: event.created_at,
-          eventId: event.id,
-          kind: event.kind,
-          pubkey: event.pubkey,
-          threadRootId,
-        },
-      }).then((didSend) => {
-        if (!didSend) return;
-        playNotificationSound(
-          resolveSlotSound(notificationSettings.settings, "dm"),
-        );
-        void requestDockBounce();
-      });
-    },
-  );
-
   const channelsQuery = useChannelsQuery();
   const { refetch: refetchChannels } = channelsQuery;
   const channels = channelsQuery.data ?? [];
@@ -250,57 +187,25 @@ export function AppShell() {
         : null,
     [channels, selectedChannelId],
   );
+  const managedChannel = React.useMemo(() => {
+    const targetChannelId = managedChannelId ?? selectedChannelId;
+    return targetChannelId
+      ? (channels.find((channel) => channel.id === targetChannelId) ?? null)
+      : null;
+  }, [channels, managedChannelId, selectedChannelId]);
 
-  const handleThreadReplyDesktopNotification = React.useEffectEvent(
-    (channelId: string, event: RelayEvent) => {
-      if (
-        !notificationSettings.settings.desktopEnabled ||
-        !notificationSettings.settings.slotAlertsEnabled.thread_reply
-      ) {
-        return;
-      }
-
-      // Replies that @-mention the user are owned by the home-feed mention
-      // path — skip them here so they don't notify (and sound) twice.
-      const pubkey = identityQuery.data?.pubkey?.trim().toLowerCase() ?? "";
-      if (hasMentionForEvent(event, pubkey)) {
-        return;
-      }
-
-      const channel = channels.find((entry) => entry.id === channelId);
-      const channelName = channel?.name?.trim() || "Thread";
-      const content = event.content.trim();
-      const body =
-        content.length > 0
-          ? content.length > 140
-            ? `${content.slice(0, 137).trimEnd()}...`
-            : content
-          : "New reply";
-
-      const threadRootId = getThreadReference(event.tags).rootId ?? null;
-
-      void sendDesktopNotification({
-        title: `Reply in ${channelName}`,
-        body,
-        target: {
-          channelId,
-          channelName,
-          content: event.content,
-          createdAt: event.created_at,
-          eventId: event.id,
-          kind: event.kind,
-          pubkey: event.pubkey,
-          threadRootId,
-        },
-      }).then((didSend) => {
-        if (!didSend) return;
-        playNotificationSound(
-          resolveSlotSound(notificationSettings.settings, "thread_reply"),
-        );
-        void requestDockBounce();
-      });
-    },
-  );
+  const {
+    handleChannelNotification,
+    handleDmNotification,
+    handleThreadReplyDesktopNotification,
+  } = useAppShellDesktopNotifications({
+    channels,
+    goChannel,
+    goHome,
+    notificationSettings: notificationSettings.settings,
+    openSearchHit,
+    pubkey: identityQuery.data?.pubkey,
+  });
 
   const {
     followedRootIds,
@@ -390,11 +295,7 @@ export function AppShell() {
     channels,
   );
 
-  // Badge count is computed here (rather than inside useHomeFeedNotifications)
-  // so it can consume the NIP-RS read-state lifted from the single
-  // ReadStateManager mounted via useUnreadChannels above. Channel-backed
-  // feed items contribute to the badge iff strictly newer than that
-  // channel's read marker; non-channel items keep their seen-set fallback.
+  // Badge count consumes the shared NIP-RS read-state from useUnreadChannels.
   const { homeBadgeCount, homeBadgeCountExcludingHighPriority } =
     useHomeFeedNotificationState(
       homeFeedQuery.data,
@@ -410,10 +311,9 @@ export function AppShell() {
       feedItemState.unreadSet,
       threadActivityFeedItems,
       getThreadReadAt,
+      getMessageReadAt,
     );
 
-  // Raw add to the in-app nav badge, mirroring the inbox filter badge; gated by
-  // homeBadgeEnabled to match every other badge contribution.
   const dueReminderBadge = useDueReminderBadgeCount(
     identityQuery.data?.pubkey,
     notificationSettings.settings.homeBadgeEnabled,
@@ -523,25 +423,6 @@ export function AppShell() {
     [openSearchHit],
   );
 
-  const handleDesktopNotificationAction = React.useEffectEvent(
-    async (target: DesktopNotificationTarget) => {
-      await revealDesktopAppWindow();
-
-      if (!target.channelId) {
-        void goHome();
-        return;
-      }
-
-      const anchor = toSearchHit(target);
-      if (!anchor) {
-        await goChannel(target.channelId);
-        return;
-      }
-
-      await openSearchHit(anchor);
-    },
-  );
-
   // Prevent webview file:/// navigation on file drop outside the composer.
   // Scoped to file drags only (text drag-and-drop into inputs still works).
   // Composer's onDrop fires first (React synthetic before window bubble).
@@ -592,50 +473,27 @@ export function AppShell() {
   }, []);
 
   React.useEffect(() => {
-    const numericCount =
+    const count =
       unreadChannelNotificationCount + homeBadgeCountExcludingHighPriority;
-    if (numericCount > 0) {
-      void setDesktopAppBadge({ kind: "count", count: numericCount });
-    } else {
-      void setDesktopAppBadge({ kind: "none" });
-    }
-  }, [homeBadgeCountExcludingHighPriority, unreadChannelNotificationCount]);
+    void setDesktopAppBadge(
+      count
+        ? { kind: "count", count }
+        : { kind: unreadChannelIds.size ? "dot" : "none" },
+    );
+  }, [
+    homeBadgeCountExcludingHighPriority,
+    unreadChannelIds,
+    unreadChannelNotificationCount,
+  ]);
 
   // Dispatch `buzz://message` deep links into the router.
   useMessageDeepLinks();
 
-  React.useEffect(() => {
-    let isCancelled = false;
-    let cleanup = () => {};
-
-    void listenForDesktopNotificationActions((target) => {
-      if (isCancelled) {
-        return;
-      }
-
-      void handleDesktopNotificationAction(target);
-    }).then((dispose) => {
-      if (isCancelled) {
-        dispose();
-        return;
-      }
-
-      cleanup = dispose;
-    });
-
-    return () => {
-      isCancelled = true;
-      cleanup();
-    };
-  }, []);
-
   const handleOpenNewDm = React.useCallback(() => setIsNewDmOpen(true), []);
-
   const handleOpenCreateChannel = React.useCallback(
     () => setIsCreateChannelOpen(true),
     [],
   );
-
   React.useLayoutEffect(() => {
     if (settingsOpen) {
       return;
@@ -690,13 +548,11 @@ export function AppShell() {
     goHome,
     settingsOpen,
   ]);
-
   useSettingsShortcuts({
     onClose: handleCloseSettings,
     onOpenSettings: handleOpenSettings,
     open: settingsOpen,
   });
-
   useMarkAsReadShortcuts({
     activeChannelId: activeChannel?.id ?? null,
     activeChannelLastMessageAt: activeChannel?.lastMessageAt,
@@ -704,36 +560,6 @@ export function AppShell() {
     markChannelRead,
     selectedView,
   });
-
-  React.useEffect(() => {
-    function handlePointerDown(event: PointerEvent) {
-      if (event.button !== 0 || event.detail > 1) {
-        return;
-      }
-
-      if (!isWindowDragHandleEvent(event)) {
-        return;
-      }
-
-      void getCurrentWindow().startDragging();
-    }
-
-    function handleDoubleClick(event: MouseEvent) {
-      if (event.button !== 0 || !isWindowDragHandleEvent(event)) {
-        return;
-      }
-
-      event.preventDefault();
-      void getCurrentWindow().toggleMaximize();
-    }
-
-    window.addEventListener("pointerdown", handlePointerDown, true);
-    window.addEventListener("dblclick", handleDoubleClick, true);
-    return () => {
-      window.removeEventListener("pointerdown", handlePointerDown, true);
-      window.removeEventListener("dblclick", handleDoubleClick, true);
-    };
-  }, []);
 
   return (
     <PreventSleepProvider>
@@ -744,7 +570,12 @@ export function AppShell() {
             markChannelRead,
             markChannelUnread,
             openCreateChannel: handleOpenCreateChannel,
-            openChannelManagement: () => setIsChannelManagementOpen(true),
+            openChannelManagement: (channelId?: string) => {
+              setManagedChannelId(
+                typeof channelId === "string" ? channelId : null,
+              );
+              setIsChannelManagementOpen(true);
+            },
             getChannelReadAt,
             getThreadReadAt,
             markThreadRead,
@@ -774,7 +605,7 @@ export function AppShell() {
                     isHuddleDrawerOpen && "buzz-huddle-app-surface-open",
                   )}
                 >
-                  <SidebarProvider className="min-h-0 flex-1 overflow-hidden">
+                  <SidebarProvider className="min-h-0 flex-1 flex-col overflow-hidden">
                     {!settingsOpen ? (
                       <AppTopChrome
                         canGoBack={canGoBack}
@@ -784,45 +615,49 @@ export function AppShell() {
                       />
                     ) : null}
                     {settingsOpen ? (
-                      <React.Suspense fallback={null}>
-                        <LazySettingsScreen
-                          currentPubkey={identityQuery.data?.pubkey}
-                          fallbackDisplayName={identityQuery.data?.displayName}
-                          isUpdatingDesktopNotifications={
-                            notificationSettings.isUpdatingDesktopEnabled
-                          }
-                          notificationErrorMessage={
-                            notificationSettings.errorMessage
-                          }
-                          notificationPermission={
-                            notificationSettings.permission
-                          }
-                          notificationSettings={notificationSettings.settings}
-                          onClose={handleCloseSettings}
-                          onSectionChange={handleSettingsSectionChange}
-                          onSetDesktopNotificationsEnabled={
-                            notificationSettings.setDesktopEnabled
-                          }
-                          onSetHomeBadgeEnabled={
-                            notificationSettings.setHomeBadgeEnabled
-                          }
-                          onSetSlotAlertsEnabled={
-                            notificationSettings.setSlotAlertsEnabled
-                          }
-                          onSetNotifyWhileViewing={
-                            notificationSettings.setNotifyWhileViewing
-                          }
-                          onSetAllSlotAlertsEnabled={
-                            notificationSettings.setAllSlotAlertsEnabled
-                          }
-                          onSetSoundForSlot={
-                            notificationSettings.setSoundForSlot
-                          }
-                          section={settingsSection}
-                        />
-                      </React.Suspense>
+                      <div className="flex min-h-0 flex-1 overflow-hidden">
+                        <React.Suspense fallback={null}>
+                          <LazySettingsScreen
+                            currentPubkey={identityQuery.data?.pubkey}
+                            fallbackDisplayName={
+                              identityQuery.data?.displayName
+                            }
+                            isUpdatingDesktopNotifications={
+                              notificationSettings.isUpdatingDesktopEnabled
+                            }
+                            notificationErrorMessage={
+                              notificationSettings.errorMessage
+                            }
+                            notificationPermission={
+                              notificationSettings.permission
+                            }
+                            notificationSettings={notificationSettings.settings}
+                            onClose={handleCloseSettings}
+                            onSectionChange={handleSettingsSectionChange}
+                            onSetDesktopNotificationsEnabled={
+                              notificationSettings.setDesktopEnabled
+                            }
+                            onSetHomeBadgeEnabled={
+                              notificationSettings.setHomeBadgeEnabled
+                            }
+                            onSetSlotAlertsEnabled={
+                              notificationSettings.setSlotAlertsEnabled
+                            }
+                            onSetNotifyWhileViewing={
+                              notificationSettings.setNotifyWhileViewing
+                            }
+                            onSetAllSlotAlertsEnabled={
+                              notificationSettings.setAllSlotAlertsEnabled
+                            }
+                            onSetSoundForSlot={
+                              notificationSettings.setSoundForSlot
+                            }
+                            section={settingsSection}
+                          />
+                        </React.Suspense>
+                      </div>
                     ) : (
-                      <>
+                      <div className="flex min-h-0 flex-1 overflow-hidden">
                         <AppSidebar
                           activeWorkspace={workspacesHook.activeWorkspace}
                           channels={sidebarChannels}
@@ -849,6 +684,9 @@ export function AppShell() {
                           onUpdateWorkspace={workspacesHook.updateWorkspace}
                           onRemoveWorkspace={workspacesHook.removeWorkspace}
                           onSwitchWorkspace={workspacesHook.switchWorkspace}
+                          onCreateAgent={() =>
+                            void goAgents().then(requestOpenCreateAgent)
+                          }
                           selfPresenceStatus={presenceSession.currentStatus}
                           workspaces={workspacesHook.workspaces}
                           onCreateChannel={async ({
@@ -954,33 +792,39 @@ export function AppShell() {
                           onStarChannel={starChannel}
                           onUnstarChannel={unstarChannel}
                         />
-
                         <MainInsetProvider mainInsetRef={mainInsetRef}>
                           <SidebarInset
                             ref={mainInsetRef}
-                            className="min-h-0 min-w-0 overflow-hidden"
+                            className="isolate min-h-0 min-w-0 overflow-hidden bg-sidebar"
                             style={chromeCssVarDefaults}
                           >
-                            <ConnectionBanner
-                              errorMessage={channelsErrorMessage}
-                            />
-                            <Outlet />
+                            <div className="relative z-10 ml-px mt-px flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-xl bg-background shadow-[-1px_-1px_0_0_hsl(var(--sidebar-border)/0.45)]">
+                              <ConnectionBanner
+                                errorMessage={channelsErrorMessage}
+                              />
+                              <Outlet />
+                            </div>
                           </SidebarInset>
                         </MainInsetProvider>
-                      </>
+                      </div>
                     )}
-
                     <AppShellOverlays
-                      activeChannel={activeChannel}
+                      activeChannel={managedChannel}
                       browseDialogType={browseDialogType}
                       channels={channels}
                       currentPubkey={identityQuery.data?.pubkey}
                       isChannelManagementOpen={isChannelManagementOpen}
                       onBrowseChannelJoin={handleBrowseChannelJoin}
                       onBrowseDialogOpenChange={handleBrowseDialogOpenChange}
-                      onChannelManagementOpenChange={setIsChannelManagementOpen}
+                      onChannelManagementOpenChange={(open) => {
+                        setIsChannelManagementOpen(open);
+                        if (!open) {
+                          setManagedChannelId(null);
+                        }
+                      }}
                       onDeleteActiveChannel={() => {
                         setIsChannelManagementOpen(false);
+                        setManagedChannelId(null);
                         void goHome({ replace: true });
                       }}
                       onSelectChannel={(channelId) => {

@@ -1,4 +1,5 @@
 import {
+  Bot,
   CalendarDays,
   FolderGit2,
   GitBranch,
@@ -25,6 +26,7 @@ import {
   useProjectActivitySummariesQuery,
   useProjectsQuery,
 } from "@/features/projects/hooks";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import { topChromeInset } from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -33,8 +35,12 @@ import { Card } from "@/shared/ui/card";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 
 type ProjectsViewMode = "grid" | "list";
+type ProjectsFilter = "all" | "mine" | "agents" | "users";
+type ProjectsSort = "updated" | "created" | "name";
 
 const PROJECTS_VIEW_MODE_STORAGE_KEY = "buzz.projects.viewMode";
+const PROJECTS_FILTER_STORAGE_KEY = "buzz.projects.filter";
+const PROJECTS_SORT_STORAGE_KEY = "buzz.projects.sort";
 const MANY_PROJECTS_THRESHOLD = 12;
 
 function readStoredViewMode(): ProjectsViewMode | null {
@@ -51,6 +57,42 @@ function readStoredViewMode(): ProjectsViewMode | null {
 function writeStoredViewMode(viewMode: ProjectsViewMode) {
   try {
     globalThis.localStorage?.setItem(PROJECTS_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Persistence is best-effort; the in-memory toggle still works.
+  }
+}
+
+function readStoredFilter(): ProjectsFilter {
+  try {
+    const value = globalThis.localStorage?.getItem(PROJECTS_FILTER_STORAGE_KEY);
+    return value === "mine" || value === "agents" || value === "users"
+      ? value
+      : "all";
+  } catch {
+    return "all";
+  }
+}
+
+function writeStoredFilter(filter: ProjectsFilter) {
+  try {
+    globalThis.localStorage?.setItem(PROJECTS_FILTER_STORAGE_KEY, filter);
+  } catch {
+    // Persistence is best-effort; the in-memory toggle still works.
+  }
+}
+
+function readStoredSort(): ProjectsSort {
+  try {
+    const value = globalThis.localStorage?.getItem(PROJECTS_SORT_STORAGE_KEY);
+    return value === "created" || value === "name" ? value : "updated";
+  } catch {
+    return "updated";
+  }
+}
+
+function writeStoredSort(sort: ProjectsSort) {
+  try {
+    globalThis.localStorage?.setItem(PROJECTS_SORT_STORAGE_KEY, sort);
   } catch {
     // Persistence is best-effort; the in-memory toggle still works.
   }
@@ -99,6 +141,42 @@ function getActivityLabel(summary: ProjectActivitySummary | undefined) {
     summary.activityCount,
     "event",
   )}`;
+}
+
+function getProjectUpdatedAt(
+  project: Project,
+  summary: ProjectActivitySummary | undefined,
+) {
+  return summary?.updatedAt ?? project.createdAt;
+}
+
+function isProjectMine(project: Project, currentPubkey: string | undefined) {
+  if (!currentPubkey) return false;
+  const normalizedCurrentPubkey = normalizePubkey(currentPubkey);
+  return (
+    normalizePubkey(project.owner) === normalizedCurrentPubkey ||
+    project.contributors.some(
+      (pubkey) => normalizePubkey(pubkey) === normalizedCurrentPubkey,
+    )
+  );
+}
+
+function projectHasAgent(
+  project: Project,
+  people: string[],
+  profiles: UserProfileLookup | undefined,
+) {
+  const projectPubkeys = [project.owner, ...people];
+  return projectPubkeys.some(
+    (pubkey) => profiles?.[normalizePubkey(pubkey)]?.isAgent === true,
+  );
+}
+
+function projectOwnerIsUser(
+  project: Project,
+  profiles: UserProfileLookup | undefined,
+) {
+  return profiles?.[normalizePubkey(project.owner)]?.isAgent !== true;
 }
 
 function WorkOwnerBadge({
@@ -242,33 +320,111 @@ function EmptyState() {
   );
 }
 
-function ProjectsToolbar({
-  projectCount,
-  viewMode,
-  onViewModeChange,
-}: {
-  projectCount: number;
-  viewMode: ProjectsViewMode;
-  onViewModeChange: (viewMode: ProjectsViewMode) => void;
-}) {
+function EmptyFilteredState() {
   return (
-    <div className="mb-4 flex flex-col gap-3 border-b border-border/50 pb-4 lg:flex-row lg:items-center lg:justify-between">
-      <div className="min-w-0 space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold text-foreground">Projects</h2>
-          <span className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-            {pluralize(projectCount, "project")}
-          </span>
-        </div>
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          Internal git projects bring code, issues, discussion, and agent work
-          into one shared space.
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border/60 px-4 py-12 text-center">
+      <FolderGit2 className="h-9 w-9 text-muted-foreground/40" />
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">
+          No matching projects
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Try another owner filter or sort mode.
         </p>
       </div>
-      <ProjectsViewModeToggle
-        onViewModeChange={onViewModeChange}
-        viewMode={viewMode}
-      />
+    </div>
+  );
+}
+
+function ProjectsToolbar({
+  filter,
+  onFilterChange,
+  onSortChange,
+  onViewModeChange,
+  projectCount,
+  sort,
+  totalProjectCount,
+  viewMode,
+}: {
+  filter: ProjectsFilter;
+  onFilterChange: (filter: ProjectsFilter) => void;
+  onSortChange: (sort: ProjectsSort) => void;
+  onViewModeChange: (viewMode: ProjectsViewMode) => void;
+  projectCount: number;
+  sort: ProjectsSort;
+  totalProjectCount: number;
+  viewMode: ProjectsViewMode;
+}) {
+  const filterOptions: Array<{ label: string; value: ProjectsFilter }> = [
+    { label: "All", value: "all" },
+    { label: "Mine", value: "mine" },
+    { label: "Agents", value: "agents" },
+    { label: "Users", value: "users" },
+  ];
+
+  return (
+    <div className="mb-4 flex flex-col gap-3 border-b border-border/50 pb-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-semibold text-foreground">Projects</h2>
+            <span className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
+              {pluralize(projectCount, "project")}
+              {projectCount !== totalProjectCount
+                ? ` of ${totalProjectCount}`
+                : ""}
+            </span>
+          </div>
+          <p className="max-w-2xl text-sm text-muted-foreground">
+            Internal git projects bring code, issues, discussion, and agent work
+            into one shared space.
+          </p>
+        </div>
+        <ProjectsViewModeToggle
+          onViewModeChange={onViewModeChange}
+          viewMode={viewMode}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+        <fieldset className="flex flex-wrap items-center gap-1 rounded-lg border border-border/60 bg-muted/30 p-1">
+          <legend className="sr-only">Project owner filter</legend>
+          {filterOptions.map((option) => (
+            <Button
+              aria-pressed={filter === option.value}
+              className="h-7 gap-1.5 px-2"
+              key={option.value}
+              onClick={() => onFilterChange(option.value)}
+              size="xs"
+              type="button"
+              variant={filter === option.value ? "secondary" : "ghost"}
+            >
+              {option.value === "agents" ? (
+                <Bot className="h-3.5 w-3.5" />
+              ) : null}
+              {option.value === "users" ? (
+                <Users className="h-3.5 w-3.5" />
+              ) : null}
+              {option.label}
+            </Button>
+          ))}
+        </fieldset>
+
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          Sort
+          <select
+            className="h-7 rounded-md border border-border/60 bg-background px-2 text-xs text-foreground outline-hidden focus:ring-1 focus:ring-ring"
+            onChange={(event) =>
+              onSortChange(event.target.value as ProjectsSort)
+            }
+            value={sort}
+          >
+            <option value="updated">Recent activity</option>
+            <option value="created">Created date</option>
+            <option value="name">Name</option>
+          </select>
+        </label>
+      </div>
     </div>
   );
 }
@@ -500,10 +656,15 @@ function ProjectListRow({
 export function ProjectsView() {
   const { goProject } = useAppNavigation();
   const projectsQuery = useProjectsQuery();
+  const identityQuery = useIdentityQuery();
   const projects = projectsQuery.data ?? [];
   const activitySummariesQuery = useProjectActivitySummariesQuery(projects);
   const [storedViewMode, setStoredViewMode] =
     React.useState<ProjectsViewMode | null>(() => readStoredViewMode());
+  const [filter, setFilter] = React.useState<ProjectsFilter>(() =>
+    readStoredFilter(),
+  );
+  const [sort, setSort] = React.useState<ProjectsSort>(() => readStoredSort());
   const viewMode =
     storedViewMode ??
     (projects.length > MANY_PROJECTS_THRESHOLD ? "list" : "grid");
@@ -534,6 +695,51 @@ export function ProjectsView() {
     },
     [],
   );
+
+  const handleFilterChange = React.useCallback((nextFilter: ProjectsFilter) => {
+    setFilter(nextFilter);
+    writeStoredFilter(nextFilter);
+  }, []);
+
+  const handleSortChange = React.useCallback((nextSort: ProjectsSort) => {
+    setSort(nextSort);
+    writeStoredSort(nextSort);
+  }, []);
+
+  const visibleProjects = React.useMemo(() => {
+    const currentPubkey = identityQuery.data?.pubkey;
+    return projects
+      .filter((project) => {
+        const summary = activitySummariesQuery.data?.[project.repoAddress];
+        const people = projectPeople(project, summary);
+        if (filter === "mine") return isProjectMine(project, currentPubkey);
+        if (filter === "agents")
+          return projectHasAgent(project, people, profiles);
+        if (filter === "users") return projectOwnerIsUser(project, profiles);
+        return true;
+      })
+      .sort((left, right) => {
+        const leftSummary = activitySummariesQuery.data?.[left.repoAddress];
+        const rightSummary = activitySummariesQuery.data?.[right.repoAddress];
+        if (sort === "name") {
+          return left.name.localeCompare(right.name);
+        }
+        if (sort === "created") {
+          return right.createdAt - left.createdAt;
+        }
+        return (
+          getProjectUpdatedAt(right, rightSummary) -
+          getProjectUpdatedAt(left, leftSummary)
+        );
+      });
+  }, [
+    activitySummariesQuery.data,
+    filter,
+    identityQuery.data?.pubkey,
+    profiles,
+    projects,
+    sort,
+  ]);
 
   const handleOpenProject = React.useCallback(
     (project: Project) => {
@@ -592,14 +798,21 @@ export function ProjectsView() {
       )}
     >
       <ProjectsToolbar
+        filter={filter}
+        onFilterChange={handleFilterChange}
+        onSortChange={handleSortChange}
         onViewModeChange={handleViewModeChange}
-        projectCount={projects.length}
+        projectCount={visibleProjects.length}
+        sort={sort}
+        totalProjectCount={projects.length}
         viewMode={viewMode}
       />
 
-      {viewMode === "grid" ? (
+      {visibleProjects.length === 0 ? (
+        <EmptyFilteredState />
+      ) : viewMode === "grid" ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {projects.map((project) => {
+          {visibleProjects.map((project) => {
             const summary = activitySummariesQuery.data?.[project.repoAddress];
             return (
               <ProjectGridCard
@@ -619,7 +832,7 @@ export function ProjectsView() {
         </div>
       ) : (
         <div className="space-y-2">
-          {projects.map((project) => {
+          {visibleProjects.map((project) => {
             const summary = activitySummariesQuery.data?.[project.repoAddress];
             return (
               <ProjectListRow

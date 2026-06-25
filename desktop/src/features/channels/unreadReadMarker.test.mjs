@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { computeChannelUnreadMarker } from "../messages/lib/unreadMarker.ts";
 import {
+  countUnreadAppBadgeObservedEvents,
+  countUnreadBadgeObservedEvents,
   countUnreadHighPriorityObservedEvents,
   countUnreadObservedEvents,
   observedUnreadEventReadAt,
@@ -116,6 +118,34 @@ test("observedUnreadEventReadAt_openedThreadReplyUsesThreadMarker", () => {
   assert.equal(event.createdAt > readAt, false);
 });
 
+test("observedUnreadEventReadAt_openedMessageReplyUsesMessageMarker", () => {
+  const event = observed("reply", 500, "root-1");
+
+  const readAt = observedUnreadEventReadAt(
+    event,
+    300,
+    () => null,
+    (messageId) => (messageId === "reply" ? 500 : null),
+  );
+
+  assert.equal(readAt, 500);
+  assert.equal(event.createdAt > readAt, false);
+});
+
+test("observedUnreadEventReadAt_usesNewestAvailableMarker", () => {
+  const event = observed("reply", 500, "root-1");
+
+  assert.equal(
+    observedUnreadEventReadAt(
+      event,
+      300,
+      () => 450,
+      () => 400,
+    ),
+    450,
+  );
+});
+
 test("observedUnreadEventReadAt_topLevelUsesChannelMarker", () => {
   assert.equal(
     observedUnreadEventReadAt(observed("top", 500), 300, () => 900),
@@ -136,16 +166,31 @@ test("observedUnreadEventReadAt_nullChannelMarkerThreadMarkerCanClear", () => {
 
 // --- Fix 2b: sidebar badge evaluates all observed events, not a single aggregate frontier ---
 
-function observed(id, createdAt, rootId = null, highPriority = false) {
-  return { id, createdAt, rootId, highPriority };
+function observed(
+  id,
+  createdAt,
+  rootId = null,
+  highPriority = false,
+  countsTowardBadge = true,
+  countsTowardAppBadge = countsTowardBadge,
+) {
+  return {
+    id,
+    createdAt,
+    rootId,
+    highPriority,
+    countsTowardBadge,
+    countsTowardAppBadge,
+  };
 }
 
-function readAtFor(channelMarker, threadMarkers) {
+function readAtFor(channelMarker, threadMarkers, messageMarkers = new Map()) {
   return (event) =>
     observedUnreadEventReadAt(
       event,
       channelMarker,
       (rootId) => threadMarkers.get(rootId) ?? null,
+      (messageId) => messageMarkers.get(messageId) ?? null,
     );
 }
 
@@ -195,6 +240,32 @@ test("sidebarPipeline_openThreadClearsOnlyUnreadThreadContribution", () => {
   );
 });
 
+test("sidebarPipeline_openedReplyMessageMarkerClearsDelayedReplay", () => {
+  const channelId = "chan";
+  const rootId = "root-1";
+  const reply = observed("reply", 500, rootId);
+  const observedByChannel = new Map();
+  recordObservedUnreadEvent(observedByChannel, channelId, reply, 20);
+
+  const beforeOpenReadAt = readAtFor(300, new Map(), new Map());
+  assert.equal(
+    countUnreadObservedEvents(
+      observedByChannel.get(channelId),
+      beforeOpenReadAt,
+    ),
+    1,
+  );
+
+  const afterOpenReadAt = readAtFor(300, new Map(), new Map([["reply", 500]]));
+  assert.equal(
+    countUnreadObservedEvents(
+      observedByChannel.get(channelId),
+      afterOpenReadAt,
+    ),
+    0,
+  );
+});
+
 test("latestObservedEvent_latestThreadReadDoesNotImplyChannelClear", () => {
   const events = new Map([
     ["older", observed("older", 400, "root-older")],
@@ -217,6 +288,51 @@ test("countUnreadObservedEvents_topLevelUsesChannelMarker", () => {
   ]);
 
   assert.equal(countUnreadObservedEvents(events, readAtFor(300, new Map())), 1);
+});
+
+test("countUnreadBadgeObservedEvents_skipsBoldOnlyGeneralChannelItems", () => {
+  const events = new Map([
+    ["plain", observed("plain", 500, null, false, false)],
+    ["thread", observed("thread", 600, "root-1")],
+  ]);
+
+  assert.equal(countUnreadObservedEvents(events, readAtFor(300, new Map())), 2);
+  assert.equal(
+    countUnreadBadgeObservedEvents(events, readAtFor(300, new Map())),
+    1,
+  );
+  assert.equal(
+    countUnreadAppBadgeObservedEvents(events, readAtFor(300, new Map())),
+    1,
+  );
+});
+
+test("countUnreadObservedEvents_countsThreadRepliesForChannelUnread", () => {
+  const events = new Map([
+    ["reply", observed("reply", 500, "root-1", false, true, false)],
+  ]);
+
+  assert.equal(countUnreadObservedEvents(events, readAtFor(300, new Map())), 1);
+  assert.equal(
+    countUnreadBadgeObservedEvents(events, readAtFor(300, new Map())),
+    1,
+  );
+  assert.equal(
+    countUnreadAppBadgeObservedEvents(events, readAtFor(300, new Map())),
+    0,
+  );
+});
+
+test("highPriorityObservedEvents_countsMentionBadgeForGeneralMessage", () => {
+  const events = new Map([
+    ["mention", observed("mention", 500, null, true, true)],
+  ]);
+  const getReadAt = readAtFor(300, new Map());
+
+  assert.equal(countUnreadObservedEvents(events, getReadAt), 1);
+  assert.equal(countUnreadBadgeObservedEvents(events, getReadAt), 1);
+  assert.equal(countUnreadAppBadgeObservedEvents(events, getReadAt), 1);
+  assert.equal(countUnreadHighPriorityObservedEvents(events, getReadAt), 1);
 });
 
 test("recordObservedUnreadEvent_reportsOutOfOrderInsertForInvalidation", () => {

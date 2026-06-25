@@ -35,7 +35,7 @@ import { PresenceDot } from "@/features/presence/ui/PresenceBadge";
 const SECTION_LABEL_BUTTON_CLASS =
   "group/section-label flex w-fit max-w-[calc(100%-3rem)] cursor-pointer appearance-none items-center gap-1 text-left transition-colors hover:text-sidebar-foreground focus-visible:text-sidebar-foreground";
 const SECTION_LABEL_CHEVRON_CLASS =
-  "relative size-2.5 shrink-0 opacity-0 text-sidebar-foreground/45 transition-[color,opacity] group-hover/sidebar-section:opacity-100 group-hover/sidebar-section:text-sidebar-foreground group-hover/section-label:opacity-100 group-hover/section-label:text-sidebar-foreground group-focus-within/sidebar-section:opacity-100 group-focus-within/sidebar-section:text-sidebar-foreground group-focus-visible/section-label:opacity-100 group-focus-visible/section-label:text-sidebar-foreground";
+  "relative size-2.5 shrink-0 text-current opacity-0 transition-[color,opacity] group-hover/sidebar-section:opacity-100 group-hover/section-label:opacity-100 group-focus-within/sidebar-section:opacity-100 group-focus-visible/section-label:opacity-100";
 const SECTION_LABEL_CHEVRON_ICON_CLASS =
   "absolute left-1/2 top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2";
 const SIDEBAR_ROW_ACTION_VISIBILITY_CLASS =
@@ -66,6 +66,23 @@ function UnreadCountBadge({
     >
       {formatUnreadCount(count)}
       <span className="sr-only"> new comment{count === 1 ? "" : "s"}</span>
+    </span>
+  );
+}
+
+function UnreadDotBadge({
+  channelName,
+  className,
+}: {
+  channelName: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn("h-2 w-2 shrink-0 rounded-full bg-primary", className)}
+      data-testid={`channel-unread-dot-${channelName}`}
+    >
+      <span className="sr-only">unread</span>
     </span>
   );
 }
@@ -234,11 +251,15 @@ export function ChannelMenuButton({
         />
       ) : null}
       {hasUnread && !isActive && channel.channelType !== "dm" ? (
-        <UnreadCountBadge
-          channelName={channel.name}
-          className="ml-auto"
-          count={Math.max(unreadCount, 1)}
-        />
+        unreadCount > 0 ? (
+          <UnreadCountBadge
+            channelName={channel.name}
+            className="ml-auto"
+            count={unreadCount}
+          />
+        ) : (
+          <UnreadDotBadge channelName={channel.name} className="ml-auto" />
+        )
       ) : null}
     </SidebarMenuButton>
   );
@@ -300,8 +321,8 @@ export function SidebarSection({
   const canToggle = Boolean(onToggleCollapsed);
 
   return (
-    <SidebarGroup>
-      <div className="group/sidebar-section relative">
+    <SidebarGroup className="group/sidebar-section">
+      <div className="relative">
         <SidebarGroupLabel asChild={canToggle}>
           {canToggle ? (
             <button

@@ -1,5 +1,8 @@
-import { topChromeInset } from "@/shared/layout/chromeLayout";
-import { cn } from "@/shared/lib/cn";
+import * as React from "react";
+import {
+  consumePendingOpenCreateAgent,
+  subscribeOpenCreateAgent,
+} from "@/features/agents/openCreateAgentEvent";
 import { AddAgentToChannelDialog } from "./AddAgentToChannelDialog";
 import { AddTeamToChannelDialog } from "./AddTeamToChannelDialog";
 import { BatchImportDialog } from "./BatchImportDialog";
@@ -42,14 +45,19 @@ export function AgentsView() {
     teamActions.updateTeamMutation.isPending ||
     teamActions.deleteTeamMutation.isPending;
 
+  React.useEffect(() => {
+    if (consumePendingOpenCreateAgent()) {
+      agents.setIsCreateOpen(true);
+    }
+
+    return subscribeOpenCreateAgent(() => {
+      agents.setIsCreateOpen(true);
+    });
+  }, [agents.setIsCreateOpen]);
+
   return (
     <>
-      <div
-        className={cn(
-          "flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pb-4 sm:px-6",
-          topChromeInset.padding,
-        )}
-      >
+      <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pb-4 pt-4 sm:px-6">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
           <div className="flex flex-col gap-6">
             <UnifiedAgentsSection

@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.3.33
+
+- fix(desktop): always use legacy keyring for blob entry on macOS ([#1271](https://github.com/block/buzz/pull/1271)) ([`e7c3638fe`](https://github.com/block/buzz/commit/e7c3638fe984e7785a6e51e547b5844e894ed013))
+- chore(release): release Buzz Relay version 0.1.1 ([#1269](https://github.com/block/buzz/pull/1269)) ([`68a0cc850`](https://github.com/block/buzz/commit/68a0cc8506be4ea1fb110b65eec0787e4cd84378))
+- perf(desktop): consolidate keychain secrets into a single blob entry ([#1267](https://github.com/block/buzz/pull/1267)) ([`fa942cb51`](https://github.com/block/buzz/commit/fa942cb51d0714cba54747bcc7197c14e770c338))
+- feat(desktop): re-snapshot persona config on every agent spawn ([#1268](https://github.com/block/buzz/pull/1268)) ([`048e8fdc0`](https://github.com/block/buzz/commit/048e8fdc004322e5feccc4fd76c8fc0dc87d91f0))
+- feat(relay): add buzz-admin member management CLI with NIP-43 roster publish ([#1265](https://github.com/block/buzz/pull/1265)) ([`0cee0435f`](https://github.com/block/buzz/commit/0cee0435f7f955a42d7824f1967e4f4fc6a02f74))
+- fix(desktop): fall back to old keychain when DPK unavailable (unsigned builds) ([#1266](https://github.com/block/buzz/pull/1266)) ([`958ac7aaa`](https://github.com/block/buzz/commit/958ac7aaaae90da76c864af744242f29ee4f08de))
+- Align channel management panel with profile ([#1066](https://github.com/block/buzz/pull/1066)) ([`9f35b0188`](https://github.com/block/buzz/commit/9f35b018803f56b2330bfb79de4ab19f18d80256))
+- fix(relay): multi-pod subscription coherence (one access-gated fan-out path + cross-pod cache invalidation + REQ/COUNT DB guard) ([#1261](https://github.com/block/buzz/pull/1261)) ([`628445429`](https://github.com/block/buzz/commit/6284454298cb5be72cefbeaf13abed04afe3cc9e))
+- fix(desktop): switch macOS keychain to Data Protection Keychain ([#1264](https://github.com/block/buzz/pull/1264)) ([`35522311a`](https://github.com/block/buzz/commit/35522311a963b54f32df864d338ab7d75102247f))
+- fix(desktop): use IPv4 loopback for media proxy URLs ([#1245](https://github.com/block/buzz/pull/1245)) ([`cee2c5f26`](https://github.com/block/buzz/commit/cee2c5f2634ae7d15262a2ec07cccacc8460cd0e))
+- perf(relay/git): stream read-path, manifest info/refs fast path, idx sidecar (A/B/C) ([#1240](https://github.com/block/buzz/pull/1240)) ([`856815994`](https://github.com/block/buzz/commit/856815994c3441268eb48d2264aeb3492b701fe5))
+
+
+## v0.3.32
+
+- fix(desktop): restore solid dot for top-level channel unreads ([#1253](https://github.com/block/buzz/pull/1253)) ([`9d3bfd38b`](https://github.com/block/buzz/commit/9d3bfd38b0876cd1bdf5bb90d6639f200ceb12e0))
+- Allow explicit root posts from reply prompts ([#1251](https://github.com/block/buzz/pull/1251)) ([`ebd74d11b`](https://github.com/block/buzz/commit/ebd74d11b4e77195fa94158205787e6e5edca3ff))
+- feat: publish personas, teams, and managed agents as relay events ([#939](https://github.com/block/buzz/pull/939)) ([`d256935c3`](https://github.com/block/buzz/commit/d256935c3620f30ae54e9d02e48adc6ee0bc578f))
+- fix(observability): gate agent observability on declared ownership, not key custody ([#1229](https://github.com/block/buzz/pull/1229)) ([`e993b9e74`](https://github.com/block/buzz/commit/e993b9e741649f73c24f9afbb01420cffc822e5a))
+- fix(desktop): split AppShell notification effects ([#1248](https://github.com/block/buzz/pull/1248)) ([`a9ce477a0`](https://github.com/block/buzz/commit/a9ce477a041c7f201b1f7c0b79c68d7b0aa3f38e))
+- feat(desktop): store nsec private keys in the OS keyring ([#1172](https://github.com/block/buzz/pull/1172)) ([`4be43d708`](https://github.com/block/buzz/commit/4be43d7086753e843884f5f541c3a8cbf1512fff))
+- fix: add evict-completed-work prompt rule and unblock desktop file-size gate ([#1247](https://github.com/block/buzz/pull/1247)) ([`048228889`](https://github.com/block/buzz/commit/048228889122160ce73f9e32aba36961613e984e))
+- fix(desktop): scope mention/add autocomplete to reachable identities ([#1243](https://github.com/block/buzz/pull/1243)) ([`a3e8fb6fd`](https://github.com/block/buzz/commit/a3e8fb6fd512f34d53b7ed36e68ab7f8bfa01291))
+- test(e2e): raise scroll-history pagination test timeout to 90s ([#1234](https://github.com/block/buzz/pull/1234)) ([`09dbeb86f`](https://github.com/block/buzz/commit/09dbeb86fa8b6f430c79adf7c585194e2ec0a3d0))
+- Polish thread and media layout ([#1239](https://github.com/block/buzz/pull/1239)) ([`b264a32cf`](https://github.com/block/buzz/commit/b264a32cfbdc8481e9dd4ceadbb05990bd7af02a))
+- Polish desktop navigation chrome ([#1238](https://github.com/block/buzz/pull/1238)) ([`092546495`](https://github.com/block/buzz/commit/092546495d73d305e4d0226ee14bf0d5de4d2f53))
+- fix: propagate persona harness edits to live agent instances ([#1244](https://github.com/block/buzz/pull/1244)) ([`2e426b2fd`](https://github.com/block/buzz/commit/2e426b2fddbbec1f1261125c81d83cd57e838fd1))
+- fix(desktop): render autolinked message links as chips ([#1241](https://github.com/block/buzz/pull/1241)) ([`45067ec13`](https://github.com/block/buzz/commit/45067ec13507c406ee41d3f184fc96c988b1348b))
+- fix(desktop): clear unread projections from message read markers ([#1242](https://github.com/block/buzz/pull/1242)) ([`733c766eb`](https://github.com/block/buzz/commit/733c766eba90733a00dc397dd2ab9706935e5183))
+- fix(desktop): resolve repos_dir symlink at boot before agent restore ([#1231](https://github.com/block/buzz/pull/1231)) ([`86d7748eb`](https://github.com/block/buzz/commit/86d7748ebd93027754bfd2326958c4324aa817d6))
+- Fix presence fan-out across relay pods ([#1227](https://github.com/block/buzz/pull/1227)) ([`36d3d2ed1`](https://github.com/block/buzz/commit/36d3d2ed1e57e399d5221edfd109082fd8a4d73e))
+- fix(relay): raise grace limit, add replay backpressure, and NOTICE on oversized frames ([#1226](https://github.com/block/buzz/pull/1226)) ([`142a5c909`](https://github.com/block/buzz/commit/142a5c909542f1e1d2119ca4562129d492aca94c))
+- [codex] Make relay frame limit configurable ([#1225](https://github.com/block/buzz/pull/1225)) ([`38a953343`](https://github.com/block/buzz/commit/38a95334396dae0e271a478b46baa62d29deebff))
+
+
+## v0.3.31
+
+- fix(release): publish versioned relay Docker tags via independent release lanes ([#1173](https://github.com/block/buzz/pull/1173)) ([`549b7d24`](https://github.com/block/buzz/commit/549b7d24813320045bdda629d865c6c7418e7450))
+- fix(desktop): align settings section headers ([#1165](https://github.com/block/buzz/pull/1165)) ([`6ad68a6b`](https://github.com/block/buzz/commit/6ad68a6b095cd5db328ae07dfac4013eeda5820a))
+- fix(desktop): ground agent workspace, migrate legacy nest, configurable repos_dir ([#1194](https://github.com/block/buzz/pull/1194)) ([`1011cea2`](https://github.com/block/buzz/commit/1011cea2682a5e8cd92c9da255d5ba6c8f7ced78))
+- fix(desktop): enable mesh llm for release builds ([#1221](https://github.com/block/buzz/pull/1221)) ([`fa1262a9`](https://github.com/block/buzz/commit/fa1262a92c85b96c1d643c247d28df4f2f57e81a))
+- fix(desktop): move crypto commands off the main thread ([#1222](https://github.com/block/buzz/pull/1222)) ([`e35e84b0`](https://github.com/block/buzz/commit/e35e84b08bdc44f1f5297e6957bcc52e7c31eb70))
+- fix: tolerate missing private_key_nsec in agent store ([#1220](https://github.com/block/buzz/pull/1220)) ([`c58e9880`](https://github.com/block/buzz/commit/c58e9880bf60324b0fbb64917b6d1c8e197d4ea4))
+- Update navigation header height ([#1212](https://github.com/block/buzz/pull/1212)) ([`6b5cf325`](https://github.com/block/buzz/commit/6b5cf325c2777f64696923cf5b1c1ffd4fdf82e2))
+- Improve global search ([#1195](https://github.com/block/buzz/pull/1195)) ([`5130a6a0`](https://github.com/block/buzz/commit/5130a6a0b60c56a5c31549d3d4e85b956e35a671))
+- Parse Typesense multi_search errors ([#1208](https://github.com/block/buzz/pull/1208)) ([`65ccb126`](https://github.com/block/buzz/commit/65ccb1262fb876b74584bca1165feef39eda67a6))
+- fix(desktop): keep settings shortcut from opening search ([#1204](https://github.com/block/buzz/pull/1204)) ([`89ff9504`](https://github.com/block/buzz/commit/89ff950444d03ea09eb54661a21f0cb96f0bfcb6))
+- Polish sidebar channel navigation ([#1213](https://github.com/block/buzz/pull/1213)) ([`c0a872e8`](https://github.com/block/buzz/commit/c0a872e898479bcb2c3dda1b642c0d1373174f68))
+- fix(desktop): restore channel unread badges ([#1218](https://github.com/block/buzz/pull/1218)) ([`89aaa264`](https://github.com/block/buzz/commit/89aaa26443486244b6f004a7c419f4e0dc86aa44))
+- Fix collapsed home header chrome overlap ([#1215](https://github.com/block/buzz/pull/1215)) ([`b4e75a1e`](https://github.com/block/buzz/commit/b4e75a1e41a614fa3449e814ccbd9f31090dfbfc))
+- fix(desktop): dedupe welcome intro per channel ([#1216](https://github.com/block/buzz/pull/1216)) ([`2a522826`](https://github.com/block/buzz/commit/2a522826edc6dfb4df79f34256beea6b8597505b))
+- fix(desktop): defer agent page secondary requests ([#1217](https://github.com/block/buzz/pull/1217)) ([`bee2d64c`](https://github.com/block/buzz/commit/bee2d64cf7f093088cc28463e96a6c94b64f280e))
+- ci(release): enable Tauri auto-updater on Windows and Linux builds ([#1206](https://github.com/block/buzz/pull/1206)) ([`3ef2a8e5`](https://github.com/block/buzz/commit/3ef2a8e5c7e655f3347931135dde5f65b919c915))
+- Hydrate reactions for rendered messages ([#1205](https://github.com/block/buzz/pull/1205)) ([`ed556f3d`](https://github.com/block/buzz/commit/ed556f3deb895e0adfa18274b3ed90f255b5f6ad))
+- fix(desktop): show NIP-OA owners in profile pane ([#1198](https://github.com/block/buzz/pull/1198)) ([`40070a58`](https://github.com/block/buzz/commit/40070a58559938ed649950ccabce0725dd3c966e))
+- fix(desktop): preserve login-shell PATH for managed agents ([#1193](https://github.com/block/buzz/pull/1193)) ([`29978b6f`](https://github.com/block/buzz/commit/29978b6f93cdd2c5d061093ddce87d567d8d4c17))
+- Fix nav chrome offset in fullscreen ([#1192](https://github.com/block/buzz/pull/1192)) ([`b3b0704e`](https://github.com/block/buzz/commit/b3b0704efb5afc74dca0a093a6e4594973e9edf4))
+- fix(desktop): show due-reminder count in the Inbox nav badge ([#1191](https://github.com/block/buzz/pull/1191)) ([`c0858dac`](https://github.com/block/buzz/commit/c0858dac12a3efd09d301f5424074f18df5cf422))
+
+
 ## v0.3.30
 
 - fix(desktop): collapse mark-read/unread menu into one toggling item ([#1188](https://github.com/block/buzz/pull/1188)) ([`ce994df74`](https://github.com/block/buzz/commit/ce994df74e60cf43b2fb0b97ea9989aacd47650e))
