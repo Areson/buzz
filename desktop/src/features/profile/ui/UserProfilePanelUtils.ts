@@ -254,8 +254,13 @@ export function personaManagedAgentUpdate(
     hasChanges = true;
   }
 
-  if (!stringRecordEqual(persona.envVars, agent.envVars)) {
-    input.envVars = persona.envVars;
+  const nextEnvVars = mergedPersonaEnvVarsForAgent(
+    agent,
+    persona,
+    options.previousPersona,
+  );
+  if (!stringRecordEqual(nextEnvVars, agent.envVars)) {
+    input.envVars = nextEnvVars;
     hasChanges = true;
   }
 
@@ -284,6 +289,27 @@ export function personaManagedAgentUpdate(
   }
 
   return hasChanges ? input : null;
+}
+
+function mergedPersonaEnvVarsForAgent(
+  agent: ManagedAgent,
+  persona: AgentPersona,
+  previousPersona: AgentPersona | undefined,
+) {
+  if (!previousPersona) {
+    return persona.envVars;
+  }
+  if (stringRecordEqual(persona.envVars, previousPersona.envVars)) {
+    return agent.envVars;
+  }
+
+  const nextEnvVars = { ...persona.envVars };
+  for (const [key, value] of Object.entries(agent.envVars)) {
+    if (previousPersona.envVars[key] !== value) {
+      nextEnvVars[key] = value;
+    }
+  }
+  return nextEnvVars;
 }
 
 function stringArrayEqual(left: readonly string[], right: readonly string[]) {

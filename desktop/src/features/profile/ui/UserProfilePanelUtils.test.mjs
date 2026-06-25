@@ -113,20 +113,48 @@ test("personaManagedAgentUpdate skips unrelated or unchanged agents", () => {
 
 test("personaManagedAgentUpdate maps changed persona runtime to linked agent commands", () => {
   assert.deepEqual(
-    personaManagedAgentUpdate(agent(), persona({ runtime: "claude" }), {
-      previousPersona: persona({ runtime: "goose" }),
-      runtimes: [runtime()],
-    }),
+    personaManagedAgentUpdate(
+      agent({ envVars: { SHARED: "old", AGENT_ONLY: "keep" } }),
+      persona({
+        runtime: "claude",
+        envVars: { SHARED: "new", PERSONA_ONLY: "set" },
+      }),
+      {
+        previousPersona: persona({
+          runtime: "goose",
+          envVars: { SHARED: "old" },
+        }),
+        runtimes: [runtime()],
+      },
+    ),
     {
       pubkey: "deadbeef".repeat(8),
       name: "Fizz Prime",
       systemPrompt: "New prompt",
       model: "new-model",
-      envVars: { NEW_KEY: "2" },
+      envVars: { SHARED: "new", PERSONA_ONLY: "set", AGENT_ONLY: "keep" },
       agentCommand: "claude",
       agentArgs: ["mcp", "serve"],
       mcpCommand: "claude-mcp",
     },
+  );
+});
+
+test("personaManagedAgentUpdate preserves agent env overrides when persona env is unchanged", () => {
+  assert.deepEqual(
+    personaManagedAgentUpdate(
+      agent({
+        name: "Fizz Prime",
+        systemPrompt: "New prompt",
+        model: "new-model",
+        envVars: { API_KEY: "agent-secret" },
+      }),
+      persona({ envVars: { API_KEY: "persona-default" } }),
+      {
+        previousPersona: persona({ envVars: { API_KEY: "persona-default" } }),
+      },
+    ),
+    null,
   );
 });
 

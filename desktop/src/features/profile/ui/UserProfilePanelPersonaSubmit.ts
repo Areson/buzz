@@ -53,6 +53,9 @@ export function validateLinkedAgentRuntimeEdit({
   if (previousRuntime === nextRuntime) {
     return null;
   }
+  if (!nextRuntime) {
+    return null;
+  }
 
   const runtime = runtimes?.find((candidate) => candidate.id === nextRuntime);
   if (runtime?.availability === "available" && runtime.command) {

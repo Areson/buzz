@@ -151,16 +151,13 @@ export function UserProfilePanel({
   const personasQuery = usePersonasQuery();
   const managedAgentsQuery = useManagedAgentsQuery({ enabled: true });
   const managedAgent = React.useMemo(() => {
+    if (!pubkey) {
+      return undefined;
+    }
     const agents = managedAgentsQuery.data ?? [];
-    if (pubkey) {
-      const pubkeyLower = pubkey.toLowerCase();
-      return agents.find((agent) => agent.pubkey.toLowerCase() === pubkeyLower);
-    }
-    if (persona) {
-      return agents.find((agent) => agent.personaId === persona.id);
-    }
-    return undefined;
-  }, [managedAgentsQuery.data, persona, pubkey]);
+    const pubkeyLower = pubkey.toLowerCase();
+    return agents.find((agent) => agent.pubkey.toLowerCase() === pubkeyLower);
+  }, [managedAgentsQuery.data, pubkey]);
   const resolvedPersonaFromSource = React.useMemo(() => {
     const personaId = persona?.id ?? managedAgent?.personaId;
     if (personaId) {

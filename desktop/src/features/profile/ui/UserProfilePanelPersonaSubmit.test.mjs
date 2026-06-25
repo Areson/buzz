@@ -136,3 +136,15 @@ test("validateLinkedAgentRuntimeEdit allows unchanged or unlinked runtime prefer
     null,
   );
 });
+
+test("validateLinkedAgentRuntimeEdit allows clearing linked runtime preference", () => {
+  assert.equal(
+    validateLinkedAgentRuntimeEdit({
+      input: updateInput({ runtime: undefined }),
+      managedAgent: agent(),
+      previousPersona: persona({ runtime: "goose" }),
+      runtimes: [],
+    }),
+    null,
+  );
+});
