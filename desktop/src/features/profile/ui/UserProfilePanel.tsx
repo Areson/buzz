@@ -1,5 +1,4 @@
 import * as React from "react";
-import { ArrowLeft, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
@@ -7,7 +6,6 @@ import {
   useAgentMemoryQuery,
   useIsManagedAgent,
 } from "@/features/agent-memory/hooks";
-import { MemoryRefreshButton } from "@/features/agent-memory/ui/MemorySection";
 import {
   type AttachManagedAgentToChannelResult,
   useAcpRuntimesQuery,
@@ -85,8 +83,6 @@ import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
 import { THREAD_PANEL_MIN_WIDTH_PX } from "@/shared/hooks/useThreadPanelWidth";
 import {
   AuxiliaryPanelHeader,
-  AuxiliaryPanelHeaderGroup,
-  AuxiliaryPanelTitle,
   auxiliaryPanelContentPaddingClass,
 } from "@/shared/layout/AuxiliaryPanelHeader";
 import { cn } from "@/shared/lib/cn";
@@ -97,13 +93,16 @@ import type {
   CreatePersonaInput,
   UpdatePersonaInput,
 } from "@/shared/api/types";
-import { Button } from "@/shared/ui/button";
 import {
   OverlayPanelBackdrop,
   PANEL_BASE_CLASS,
   PANEL_OVERLAY_CLASS,
   PANEL_SINGLE_COLUMN_HEADER_LAYER_CLASS,
 } from "@/shared/ui/OverlayPanelBackdrop";
+import {
+  UserProfilePanelHeaderActions,
+  UserProfilePanelHeaderLeft,
+} from "./UserProfilePanelHeaderControls";
 
 export type { ProfilePanelView };
 
@@ -712,46 +711,20 @@ export function UserProfilePanel({
   });
 
   const headerLeftContent = (
-    <AuxiliaryPanelHeaderGroup>
-      {view !== "summary" ? (
-        <Button
-          aria-label="Back to profile"
-          className="shrink-0"
-          data-testid="user-profile-panel-back"
-          onClick={() => setView("summary")}
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          <ArrowLeft />
-        </Button>
-      ) : null}
-      <AuxiliaryPanelTitle>
-        {PROFILE_PANEL_VIEW_TITLES[view]}
-      </AuxiliaryPanelTitle>
-    </AuxiliaryPanelHeaderGroup>
+    <UserProfilePanelHeaderLeft
+      title={PROFILE_PANEL_VIEW_TITLES[view]}
+      view={view}
+      onBack={() => setView("summary")}
+    />
   );
 
   const headerActions = (
-    <div className="ml-auto flex shrink-0 items-center gap-2">
-      {view === "memories" && viewerIsOwner && effectivePubkey ? (
-        <MemoryRefreshButton
-          agentPubkey={effectivePubkey}
-          variant="outline"
-          viewerIsOwner={viewerIsOwner}
-        />
-      ) : null}
-      <Button
-        aria-label="Close profile"
-        data-testid="user-profile-panel-close"
-        onClick={onClose}
-        size="icon"
-        type="button"
-        variant="ghost"
-      >
-        <X />
-      </Button>
-    </div>
+    <UserProfilePanelHeaderActions
+      effectivePubkey={effectivePubkey}
+      view={view}
+      viewerIsOwner={viewerIsOwner}
+      onClose={onClose}
+    />
   );
 
   const profileBody = (
