@@ -12,7 +12,7 @@ import {
   KIND_SYSTEM_MESSAGE,
 } from "@/shared/constants/kinds";
 
-const MAX_TIMELINE_MESSAGES = 2_000;
+export const MAX_TIMELINE_MESSAGES = 2_000;
 
 export function channelMessagesKey(channelId: string) {
   return ["channel-messages", channelId] as const;
@@ -49,7 +49,7 @@ export function sortMessages(messages: RelayEvent[]) {
   });
 }
 
-function isTimelineWindowContentEvent(event: RelayEvent) {
+export function isTimelineWindowContentEvent(event: RelayEvent) {
   return (
     event.kind === KIND_STREAM_MESSAGE ||
     event.kind === KIND_STREAM_MESSAGE_V2 ||

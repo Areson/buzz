@@ -5,6 +5,8 @@ import {
   channelMessagesKey,
   dedupeMessagesById,
   mergeTimelineHistoryMessages,
+  MAX_TIMELINE_MESSAGES,
+  isTimelineWindowContentEvent,
   normalizeTimelineMessages,
   sortMessages,
 } from "@/features/messages/lib/messageQueryKeys";
@@ -111,11 +113,40 @@ export function mergeTimelineCacheMessages(
   current: RelayEvent[],
   incoming: RelayEvent,
 ): RelayEvent[] {
-  return mergeMessagesWithNormalizer(
-    current,
-    incoming,
-    normalizeTimelineMessages,
+  const normalizedCurrent = dedupeMessagesById(current);
+  const replacedPending = normalizedCurrent.find((message) =>
+    isMatchingPendingMessage(message, incoming),
   );
+  const incomingWithLocalKey = replacedPending
+    ? {
+        ...incoming,
+        localKey: replacedPending.localKey ?? replacedPending.id,
+      }
+    : incoming;
+  const incomingLocalKey = getLocalRenderKey(incomingWithLocalKey);
+  const deduped = normalizedCurrent.filter(
+    (message) =>
+      message.id !== incoming.id &&
+      getLocalRenderKey(message) !== incomingLocalKey &&
+      !isMatchingPendingMessage(message, incoming),
+  );
+  const merged = [...deduped, incomingWithLocalKey];
+  // Check backward-paged state on the ORIGINAL current (before dedup+incoming)
+  // so a live event arriving while scrolled back doesn't evict the older roots.
+  const contentCount = current.filter(isTimelineWindowContentEvent).length;
+  if (contentCount > MAX_TIMELINE_MESSAGES) {
+    // Backward-paged state: the cache has grown past MAX_TIMELINE_MESSAGES via
+    // prepend (the user has scrolled back far enough to load older history).
+    // Skip the cap here so a live event doesn't evict the backward-paged roots
+    // and stall pagination. Note: this means the cache can grow beyond
+    // MAX_TIMELINE_MESSAGES while the user is scrolled back — the same gap
+    // that already exists on the normalizeTimelineHistoryMessages path. A
+    // bounded ceiling for both paths is a follow-up; the risk is acceptable
+    // because scrollback sessions are finite and the cap re-engages on the
+    // next channel mount.
+    return sortMessages(merged);
+  }
+  return normalizeTimelineMessages(merged);
 }
 
 function createOptimisticMessage(
