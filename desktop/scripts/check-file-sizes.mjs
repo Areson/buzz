@@ -103,9 +103,10 @@ const overrides = new Map([
   // singular-create persona-template: the "Save as persona template" re-home
   // adds saveAsPersonaTemplateDialogState import + handleSaveAsTemplate handler
   // + the Slot prop (~15 lines) onto main's already-decomposed-but-edge-riding
-  // panel (998 lines on main). A small overage from load-bearing feature
+  // panel (998 lines on main); the no-spawn follow-up threads templateOnly
+  // through handleSubmitPersona (+3). A small overage from load-bearing feature
   // plumbing, not generic debt growth. Queued to split with the rest.
-  ["src/features/profile/ui/UserProfilePanel.tsx", 1014],
+  ["src/features/profile/ui/UserProfilePanel.tsx", 1017],
 ]);
 
 await runFileSizeCheck({

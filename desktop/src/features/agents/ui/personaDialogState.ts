@@ -12,6 +12,15 @@ export type PersonaDialogState = {
   description: string;
   initialValues: CreatePersonaInput | UpdatePersonaInput;
   submitLabel: string;
+  /**
+   * Template-only intent. When `true`, submit mints the persona template and
+   * stops there — it must NOT spawn a managed agent. Only the "Save as persona
+   * template" route on an existing agent sets this; every other create-persona
+   * flow leaves it unset so it keeps spawning its agent as before. The
+   * structural `CreatePersonaInput` is identical across routes, so this flag is
+   * the sole signal distinguishing "save a template" from "create + spawn".
+   */
+  templateOnly?: boolean;
   title: string;
 };
 
@@ -132,6 +141,9 @@ export function saveAsPersonaTemplateDialogState(
     title: "Save as persona template",
     description: "Reuse this setup to create more agents.",
     submitLabel: "Save as persona template",
+    // Template-only: minting the template is the whole job here. Submit must
+    // NOT spawn a duplicate running agent off the agent we promoted from.
+    templateOnly: true,
     initialValues: {
       displayName: agent.name,
       avatarUrl: "",

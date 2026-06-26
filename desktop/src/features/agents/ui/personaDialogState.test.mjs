@@ -302,6 +302,16 @@ test("saveAsPersonaTemplateDialogState uses persona-template vocabulary", () => 
   assert.equal(state.description, "Reuse this setup to create more agents.");
 });
 
+test("saveAsPersonaTemplateDialogState marks the dialog template-only so submit skips the agent spawn", () => {
+  const state = saveAsPersonaTemplateDialogState(makeAgent(), []);
+
+  assert.equal(state.templateOnly, true);
+});
+
+test("createPersonaDialogState does not mark template-only (it still spawns)", () => {
+  assert.equal(createPersonaDialogState().templateOnly, undefined);
+});
+
 test("saveAsPersonaTemplateDialogState reverse-maps agentCommand to a runtime id", () => {
   // commandsMatch compares basenames, so the absolute agentCommand path
   // resolves to the catalog runtime whose command shares that basename.

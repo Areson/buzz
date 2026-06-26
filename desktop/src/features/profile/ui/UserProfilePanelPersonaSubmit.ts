@@ -21,6 +21,14 @@ type SubmitProfilePersonaDialogOptions = {
   onDone: () => void;
   previousPersona?: AgentPersona;
   runtimes?: readonly AcpRuntimeCatalogEntry[];
+  /**
+   * Template-only intent (set by the "Save as persona template" route on an
+   * existing agent). When `true`, the no-`id` branch mints the persona template
+   * and stops — it does NOT call `createManagedAgentForPersona`, so no
+   * duplicate agent spawns. Every other create-persona flow leaves this unset
+   * and keeps spawning its agent as before.
+   */
+  templateOnly?: boolean;
   updateManagedAgent: (
     input: UpdateManagedAgentInput,
   ) => Promise<{ agent: ManagedAgent; profileSyncError: string | null }>;
@@ -71,6 +79,7 @@ export async function submitProfilePersonaDialog({
   onDone,
   previousPersona,
   runtimes,
+  templateOnly,
   updateManagedAgent,
   updatePersona,
 }: SubmitProfilePersonaDialogOptions) {
@@ -103,26 +112,32 @@ export async function submitProfilePersonaDialog({
       toast.success(`Updated ${input.displayName}.`);
     } else {
       const persona = await createPersona(input);
-      try {
-        const created = await createManagedAgentForPersona(persona);
-        if (created.spawnError) {
+      if (templateOnly) {
+        // "Save as persona template" from an existing agent: minting the
+        // template is the whole job — do NOT spawn a duplicate running agent.
+        toast.success(`Saved ${persona.displayName} as a persona template.`);
+      } else {
+        try {
+          const created = await createManagedAgentForPersona(persona);
+          if (created.spawnError) {
+            toast.error(
+              `${persona.displayName} was created, but it did not start: ${created.spawnError}`,
+            );
+          } else {
+            toast.success(`Created and started ${created.agent.name}.`);
+          }
+          if (created.profileSyncError) {
+            toast.warning(
+              `${created.agent.name} was created, but profile sync failed: ${created.profileSyncError}`,
+            );
+          }
+        } catch (error) {
           toast.error(
-            `${persona.displayName} was created, but it did not start: ${created.spawnError}`,
-          );
-        } else {
-          toast.success(`Created and started ${created.agent.name}.`);
-        }
-        if (created.profileSyncError) {
-          toast.warning(
-            `${created.agent.name} was created, but profile sync failed: ${created.profileSyncError}`,
+            error instanceof Error
+              ? `${persona.displayName} was created, but the agent instance could not be created: ${error.message}`
+              : `${persona.displayName} was created, but the agent instance could not be created.`,
           );
         }
-      } catch (error) {
-        toast.error(
-          error instanceof Error
-            ? `${persona.displayName} was created, but the agent instance could not be created: ${error.message}`
-            : `${persona.displayName} was created, but the agent instance could not be created.`,
-        );
       }
     }
 

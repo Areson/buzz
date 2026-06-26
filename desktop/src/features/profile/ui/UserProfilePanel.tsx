@@ -558,6 +558,8 @@ export function UserProfilePanel({
         },
         previousPersona: resolvedPersona,
         runtimes: acpRuntimesQuery.data ?? [],
+        // Template-only intent → submit mints the template, spawns no agent.
+        templateOnly: personaDialogState?.templateOnly,
         updateManagedAgent: updateManagedAgentMutation.mutateAsync,
         updatePersona: updatePersonaMutation.mutateAsync,
       });
@@ -566,6 +568,7 @@ export function UserProfilePanel({
       createPersonaMutation.mutateAsync,
       createManagedAgentForPersona,
       managedAgent,
+      personaDialogState?.templateOnly,
       personasQuery.refetch,
       resolvedPersona,
       acpRuntimesQuery.data,

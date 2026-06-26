@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { validateLinkedAgentRuntimeEdit } from "./UserProfilePanelPersonaSubmit.ts";
+import {
+  submitProfilePersonaDialog,
+  validateLinkedAgentRuntimeEdit,
+} from "./UserProfilePanelPersonaSubmit.ts";
 
 function agent(overrides = {}) {
   return {
@@ -73,6 +76,20 @@ function updateInput(overrides = {}) {
   };
 }
 
+function createInput(overrides = {}) {
+  return {
+    displayName: "Fizz",
+    avatarUrl: "",
+    systemPrompt: "Prompt",
+    runtime: "goose",
+    model: undefined,
+    provider: undefined,
+    namePool: [],
+    envVars: {},
+    ...overrides,
+  };
+}
+
 function runtime(overrides = {}) {
   return {
     id: "claude",
@@ -135,4 +152,73 @@ test("validateLinkedAgentRuntimeEdit allows unchanged or unlinked runtime prefer
     }),
     null,
   );
+});
+
+// Helpers to build a submit-options bundle with spy-able mutations. Mutations
+// default to recording their calls so a test can assert spawn behavior.
+function submitOptions(overrides = {}) {
+  const calls = {
+    createPersona: [],
+    createManagedAgentForPersona: [],
+    onDone: 0,
+  };
+  const createdPersona = persona({ id: "new-persona", displayName: "Fizz" });
+  const options = {
+    createManagedAgentForPersona: async (p) => {
+      calls.createManagedAgentForPersona.push(p);
+      return {
+        agent: agent({ name: "Fizz", personaId: "new-persona" }),
+        spawnError: null,
+        profileSyncError: null,
+      };
+    },
+    createPersona: async (input) => {
+      calls.createPersona.push(input);
+      return createdPersona;
+    },
+    input: createInput(),
+    managedAgent: undefined,
+    onDone: () => {
+      calls.onDone += 1;
+    },
+    previousPersona: undefined,
+    runtimes: [],
+    templateOnly: undefined,
+    updateManagedAgent: async () => {
+      throw new Error("updateManagedAgent should not be called in create path");
+    },
+    updatePersona: async () => {
+      throw new Error("updatePersona should not be called in create path");
+    },
+    ...overrides,
+  };
+  return { calls, options };
+}
+
+test("submitProfilePersonaDialog template-only creates the persona but spawns no agent", async () => {
+  const { calls, options } = submitOptions({ templateOnly: true });
+
+  await submitProfilePersonaDialog(options);
+
+  assert.equal(calls.createPersona.length, 1, "persona template is created");
+  assert.equal(
+    calls.createManagedAgentForPersona.length,
+    0,
+    "no managed agent is spawned for a template-only save-as",
+  );
+  assert.equal(calls.onDone, 1, "dialog closes on success");
+});
+
+test("submitProfilePersonaDialog create path still spawns an agent when not template-only", async () => {
+  const { calls, options } = submitOptions({ templateOnly: undefined });
+
+  await submitProfilePersonaDialog(options);
+
+  assert.equal(calls.createPersona.length, 1, "persona is created");
+  assert.equal(
+    calls.createManagedAgentForPersona.length,
+    1,
+    "legit create-and-spawn flow is unaffected",
+  );
+  assert.equal(calls.onDone, 1, "dialog closes on success");
 });
