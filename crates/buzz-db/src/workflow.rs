@@ -1700,4 +1700,165 @@ mod tests {
              retention cutoff MUST exceed MAX(interval_secs) + safety margin (§5c)",
         );
     }
+
+    /// F4 adversarial: a direct manual INSERT into `scheduled_workflow_fires`
+    /// with `community_id = A` and `workflow_id = W` where W is owned by
+    /// community B MUST be rejected by the composite FK
+    /// `(community_id, workflow_id) -> workflows(community_id, id)`.
+    ///
+    /// The S1 fix in `claim_scheduled_workflow_fire` (1fa3d837f) closes the
+    /// caller-supplied-tenant path, but the composite FK that Mari added
+    /// (Eva [7]) is the defense-in-depth that makes a forged cross-tenant
+    /// claim row impossible *even from a future second writer or a manual
+    /// INSERT*. This test exercises that schema invariant directly — bypass
+    /// the safe `claim_scheduled_workflow_fire` and attempt to forge.
+    /// Expected error class: foreign key violation (`23503`).
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn forged_claim_with_wrong_community_id_rejected_by_fk() {
+        let pool = setup_pool().await;
+
+        let attacker_community = make_community(&pool).await;
+        let owner_community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, owner_community).await;
+
+        let scheduled_for = Utc.with_ymd_and_hms(2026, 6, 28, 0, 0, 0).unwrap();
+
+        // Forge: pair the attacker's community with the owner's workflow id.
+        // The PK (workflow_id, scheduled_for) is satisfied (no prior claim),
+        // so the only thing that can reject this is the composite FK.
+        let result = sqlx::query(
+            r#"
+            INSERT INTO scheduled_workflow_fires
+                (community_id, workflow_id, scheduled_for)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(attacker_community.as_uuid())
+        .bind(workflow_id)
+        .bind(scheduled_for)
+        .execute(&pool)
+        .await;
+
+        let err = result.expect_err("forged FK pair must be rejected");
+        let pg_err = match &err {
+            sqlx::Error::Database(db) => db,
+            other => panic!("expected database FK error, got {other:?}"),
+        };
+        assert_eq!(
+            pg_err.code().as_deref(),
+            Some("23503"),
+            "expected foreign_key_violation (23503), got code={:?} message={:?}",
+            pg_err.code(),
+            pg_err.message(),
+        );
+    }
+
+    /// F4 adversarial: `workflows.community_id` is immutable post-insert.
+    /// The schema-level trigger `trg_workflows_community_id_immutable` must
+    /// raise on any `UPDATE OF community_id`, including no-op same-value
+    /// updates — the trigger guards the column, not the value transition.
+    /// Without this, a future code path could silently re-tenant a workflow
+    /// and break the S1 binding between workflow and claim rows.
+    ///
+    /// Mari's migration test (`migration.rs:159`) checks the trigger *exists*
+    /// in the migration SQL; this checks it *fires*. Schema-existence is not
+    /// behavior.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn workflow_community_id_update_blocked_by_trigger() {
+        let pool = setup_pool().await;
+
+        let owner_community = make_community(&pool).await;
+        let other_community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, owner_community).await;
+
+        // Attempt to retenant: change the workflow's community to a different
+        // (real) community. Must fail at the trigger.
+        let result = sqlx::query("UPDATE workflows SET community_id = $1 WHERE id = $2")
+            .bind(other_community.as_uuid())
+            .bind(workflow_id)
+            .execute(&pool)
+            .await;
+
+        let err = result.expect_err("community_id UPDATE must be rejected");
+        let pg_err = match &err {
+            sqlx::Error::Database(db) => db,
+            other => panic!("expected database trigger error, got {other:?}"),
+        };
+        // `RAISE EXCEPTION` from plpgsql defaults to SQLSTATE P0001
+        // (raise_exception). Asserting the code keeps the test honest about
+        // *which* layer rejected the write.
+        assert_eq!(
+            pg_err.code().as_deref(),
+            Some("P0001"),
+            "expected raise_exception (P0001) from trg_workflows_community_id_immutable, \
+             got code={:?} message={:?}",
+            pg_err.code(),
+            pg_err.message(),
+        );
+
+        // Confirm the row is unchanged — the trigger fired BEFORE the update,
+        // so no state should have moved.
+        let post: Uuid = sqlx::query_scalar("SELECT community_id FROM workflows WHERE id = $1")
+            .bind(workflow_id)
+            .fetch_one(&pool)
+            .await
+            .expect("re-read workflow");
+        assert_eq!(
+            post,
+            *owner_community.as_uuid(),
+            "workflow community_id moved despite the trigger — invariant broken"
+        );
+    }
+
+    /// F4 characterization: two claim windows whose `scheduled_for` differ by
+    /// any amount — even one microsecond — are distinct claim keys under the
+    /// PK `(workflow_id, scheduled_for)`. Both must succeed independently;
+    /// neither blocks the other.
+    ///
+    /// This pins Quinn's (c) at the DB layer (per Quinn [3]): clock-skewed
+    /// adjacent windows each fire exactly once. The engine-layer guarantee
+    /// (only the canonical due boundary is computed) lives in Max's lane on
+    /// `rewrite/workflow-cron-claim`; here we prove the layer below
+    /// won't merge them.
+    ///
+    /// If a future "drift tolerance" change ever coalesces nearby
+    /// `scheduled_for` values at the DB layer (e.g. a time-bucket index),
+    /// this test's assertion is the contract that has to be re-litigated.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn clock_skewed_adjacent_windows_each_claim_independently() {
+        let pool = setup_pool().await;
+
+        let community = make_community(&pool).await;
+        let (workflow_id, expected_community) = make_workflow_in(&pool, community).await;
+
+        let window_a = Utc.with_ymd_and_hms(2026, 6, 27, 1, 0, 0).unwrap();
+        // Microsecond-adjacent; the PK separates them as distinct rows.
+        let window_b = window_a + chrono::Duration::microseconds(1);
+
+        let claim_a = claim_scheduled_workflow_fire(&pool, workflow_id, window_a)
+            .await
+            .expect("claim A ok")
+            .expect("A wins");
+        let claim_b = claim_scheduled_workflow_fire(&pool, workflow_id, window_b)
+            .await
+            .expect("claim B ok")
+            .expect("B wins — distinct scheduled_for key");
+
+        assert_eq!(claim_a.scheduled_for, window_a);
+        assert_eq!(claim_b.scheduled_for, window_b);
+        assert_eq!(claim_a.community_id, expected_community);
+        assert_eq!(claim_b.community_id, expected_community);
+
+        // Repeating window A must now fail-with-None — dedup boundary holds.
+        let replay = claim_scheduled_workflow_fire(&pool, workflow_id, window_a)
+            .await
+            .expect("replay ok");
+        assert!(
+            replay.is_none(),
+            "second claim on identical scheduled_for must collide; got {replay:?}",
+        );
+    }
 }
