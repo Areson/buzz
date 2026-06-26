@@ -16,6 +16,7 @@ import type { TimelineMessage } from "@/features/messages/types";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
 import { UpdateIndicator } from "@/features/settings/UpdateIndicator";
 import type { Channel } from "@/shared/api/types";
+import { topChromeInsetHeaderTransparentClassName } from "@/shared/layout/chromeLayout";
 import { TopChromeInsetHeader } from "@/shared/layout/TopChromeInsetHeader";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
@@ -231,7 +232,11 @@ export function InboxDetailPane({
       ref={detailPaneRef}
     >
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-        <TopChromeInsetHeader flush>
+        <TopChromeInsetHeader
+          className={topChromeInsetHeaderTransparentClassName}
+          data-home-inbox-header=""
+          flush
+        >
           <div className="px-5 py-2">
             <div className="flex min-h-9 min-w-0 items-center justify-between gap-3">
               <div

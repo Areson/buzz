@@ -14,6 +14,7 @@ import {
   type InboxTypeLabel,
 } from "@/features/home/lib/inbox";
 import { RemindersPanel } from "@/features/reminders/ui/RemindersPanel";
+import { topChromeInsetHeaderTransparentClassName } from "@/shared/layout/chromeLayout";
 import { TopChromeInsetHeader } from "@/shared/layout/TopChromeInsetHeader";
 import { cn } from "@/shared/lib/cn";
 import {
@@ -324,7 +325,11 @@ export function InboxListPane({
         showRightDivider && INBOX_PANE_RIGHT_DIVIDER_CLASS,
       )}
     >
-      <TopChromeInsetHeader flush>
+      <TopChromeInsetHeader
+        className={topChromeInsetHeaderTransparentClassName}
+        data-home-inbox-header=""
+        flush
+      >
         <div className="px-5 py-2">
           <div className="flex min-h-9 w-full min-w-0 items-center justify-between gap-3">
             <Popover>

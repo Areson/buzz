@@ -47,7 +47,10 @@ import { useRemindLater } from "@/features/reminders/ui/RemindMeLaterProvider";
 import { deleteMessage, sendChannelMessage } from "@/shared/api/tauri";
 import type { HomeFeedResponse } from "@/shared/api/types";
 import { KIND_REACTION } from "@/shared/constants/kinds";
-import { topChromeInset } from "@/shared/layout/chromeLayout";
+import {
+  topChromeInset,
+  topChromeInsetHeaderBackdropClassName,
+} from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
 import { resolveMentionNames } from "@/shared/lib/resolveMentionNames";
 import { useElementWidth } from "@/shared/hooks/use-mobile";
@@ -435,6 +438,8 @@ export function HomeView({
       <div
         className={cn(
           "relative grid min-h-0 w-full flex-1",
+          "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:z-30 before:h-[3.25rem] before:content-['']",
+          topChromeInsetHeaderBackdropClassName,
           isSinglePanelChannelManagementView
             ? "grid-cols-1"
             : showListPane && showDetailPane && isChannelManagementOpen

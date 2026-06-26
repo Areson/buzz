@@ -17,6 +17,15 @@ export const channelContentTopPaddingMeasurement = {
 } as const;
 
 /** Tailwind class fragments for content below the in-flow global top chrome. */
+export const topChromeInsetHeaderChromeClassName =
+  "bg-background/75 backdrop-blur-md supports-backdrop-filter:bg-background/65 dark:bg-background/45 dark:backdrop-blur-xl dark:supports-backdrop-filter:bg-background/35";
+
+export const topChromeInsetHeaderBackdropClassName =
+  "before:bg-background/75 before:backdrop-blur-md supports-backdrop-filter:before:bg-background/65 dark:before:bg-background/45 dark:before:backdrop-blur-xl dark:supports-backdrop-filter:before:bg-background/35";
+
+export const topChromeInsetHeaderTransparentClassName =
+  "bg-transparent backdrop-blur-none supports-backdrop-filter:bg-transparent dark:bg-transparent dark:backdrop-blur-none dark:supports-backdrop-filter:bg-transparent";
+
 export const topChromeInset = {
   /** Absolute/fixed top offset inside the content row. */
   top: "top-0",
@@ -28,8 +37,7 @@ export const topChromeInset = {
   divider:
     "before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-border/35 before:content-['']",
   /** Shared header backdrop and bottom border below the inset row. */
-  headerBase:
-    "relative z-40 shrink-0 bg-background/75 backdrop-blur-md supports-backdrop-filter:bg-background/65 dark:bg-background/45 dark:backdrop-blur-xl dark:supports-backdrop-filter:bg-background/35",
+  headerBase: `relative z-40 shrink-0 ${topChromeInsetHeaderChromeClassName}`,
   /** Vertical pane divider starting at the top of the content row. */
   verticalDivider:
     "after:pointer-events-none after:absolute after:bottom-0 after:right-0 after:top-0 after:z-40 after:w-px after:bg-border/35 after:content-['']",
