@@ -1096,7 +1096,7 @@ mod tests {
             )
         }
 
-        fn register_global_sub(
+        async fn register_global_sub(
             state: &AppState,
             sub_id: &str,
             filter: Filter,
@@ -1115,13 +1115,25 @@ mod tests {
             if let Some(pubkey) = pubkey {
                 state.conn_manager.set_authenticated_pubkey(conn_id, pubkey);
             }
+            let displaced =
+                state
+                    .sub_registry
+                    .register(conn_id, sub_id.to_string(), vec![filter], None);
+            // Drive the dynamic Redis subscription through the same retain/release
+            // path the real REQ handler uses, so the cross-pod presence test
+            // proves delivery from genuine subscription interest — not a manual
+            // retain workaround. Global sub → `EventTopic::Global`.
             state
-                .sub_registry
-                .register(conn_id, sub_id.to_string(), vec![filter], None);
+                .pubsub
+                .retain_topic(&test_ctx(), EventTopic::Global)
+                .await;
+            if let Some(old) = displaced {
+                state.pubsub.release_topic(&test_ctx(), old).await;
+            }
             (conn_id, rx)
         }
 
-        fn register_presence_sub(
+        async fn register_presence_sub(
             state: &AppState,
             sub_id: &str,
         ) -> (Uuid, mpsc::Receiver<Message>) {
@@ -1131,9 +1143,10 @@ mod tests {
                 Filter::new().kind(Kind::Custom(KIND_PRESENCE_UPDATE as u16)),
                 None,
             )
+            .await
         }
 
-        fn register_membership_sub(
+        async fn register_membership_sub(
             state: &AppState,
             sub_id: &str,
             target: &Keys,
@@ -1146,6 +1159,7 @@ mod tests {
                     .pubkey(target.public_key()),
                 Some(target.public_key().to_bytes().to_vec()),
             )
+            .await
         }
 
         fn presence_event(status: &str) -> nostr::Event {
@@ -1176,7 +1190,7 @@ mod tests {
         #[tokio::test]
         async fn global_presence_pubsub_event_fans_out_to_local_subscribers() {
             let state = test_state().await;
-            let (_conn_id, mut rx) = register_presence_sub(&state, "presence");
+            let (_conn_id, mut rx) = register_presence_sub(&state, "presence").await;
             let event = presence_event("online");
             let event_id = event.id;
 
@@ -1198,7 +1212,7 @@ mod tests {
         #[tokio::test]
         async fn local_echo_presence_pubsub_event_is_not_delivered_twice() {
             let state = test_state().await;
-            let (_conn_id, mut rx) = register_presence_sub(&state, "presence");
+            let (_conn_id, mut rx) = register_presence_sub(&state, "presence").await;
             let event = presence_event("online");
 
             state.mark_local_event(&test_ctx(), &event.id);
@@ -1224,9 +1238,9 @@ mod tests {
             let target = Keys::generate();
             let other = Keys::generate();
             let (_target_conn, mut target_rx) =
-                register_membership_sub(&state, "membership-target", &target);
+                register_membership_sub(&state, "membership-target", &target).await;
             let (_other_conn, mut other_rx) =
-                register_membership_sub(&state, "membership-other", &other);
+                register_membership_sub(&state, "membership-other", &other).await;
             let event = membership_event(&target, Uuid::new_v4());
             let event_id = event.id;
 
@@ -1290,22 +1304,13 @@ mod tests {
             let origin_fanout = spawn_pubsub_fanout_loop(origin.clone());
             let receiver_fanout = spawn_pubsub_fanout_loop(receiver.clone());
 
-            // Both relays declare interest in the community-scoped Global topic —
-            // the dynamic-subscription seam the relay wiring drives from a live
-            // presence/global subscription registering. Without retain, the new
-            // refcounted subscriber never SUBSCRIBEs and nothing is delivered.
-            origin
-                .pubsub
-                .retain_topic(&test_ctx(), EventTopic::Global)
-                .await;
-            receiver
-                .pubsub
-                .retain_topic(&test_ctx(), EventTopic::Global)
-                .await;
-
-            let (_origin_conn, mut origin_rx) = register_presence_sub(&origin, "origin-presence");
+            // Both relays' presence subscriptions drive `retain_topic` through
+            // the real `register()` path inside `register_presence_sub`, so the
+            // refcounted subscriber SUBSCRIBEs from genuine subscription interest.
+            let (_origin_conn, mut origin_rx) =
+                register_presence_sub(&origin, "origin-presence").await;
             let (_receiver_conn, mut receiver_rx) =
-                register_presence_sub(&receiver, "receiver-presence");
+                register_presence_sub(&receiver, "receiver-presence").await;
 
             // Match buzz-pubsub's own Redis round-trip test: give PSUBSCRIBE a
             // bounded moment to attach before publishing the single test event.

@@ -436,6 +436,7 @@ async fn main() -> anyhow::Result<()> {
                     // by the archived=true skip in discover_channels on reconnect.
                     buzz_relay::handlers::side_effects::evict_all_channel_subscriptions(
                         &reaper_state,
+                        &ctx,
                         *channel_id,
                     )
                     .await;

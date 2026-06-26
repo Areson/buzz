@@ -205,7 +205,11 @@ pub async fn handle_connection(
     let _ = send_task.await;
     let _ = heartbeat_task.await;
 
-    state.sub_registry.remove_connection(conn.conn_id);
+    // Release every topic this connection held local interest in so the pubsub
+    // manager can debounce-UNSUBSCRIBE topics with no remaining pod interest.
+    for topic in state.sub_registry.remove_connection(conn.conn_id) {
+        state.pubsub.release_topic(&conn.tenant, topic).await;
+    }
     state.conn_manager.deregister(conn.conn_id);
     if let AuthState::Authenticated(ref auth_ctx) = *conn.auth_state.read().await {
         let remaining = state

@@ -196,9 +196,22 @@ pub async fn handle_req(
         subs.insert(sub_id.clone(), filters.clone());
     }
 
-    state
-        .sub_registry
-        .register(conn_id, sub_id.clone(), filters.clone(), channel_id);
+    let displaced_topic =
+        state
+            .sub_registry
+            .register(conn_id, sub_id.clone(), filters.clone(), channel_id);
+
+    // Drive the dynamic Redis subscription: retain this subscription's topic
+    // (first local interest in `(community, topic)` triggers SUBSCRIBE), and
+    // release any topic displaced by replacing a same-`sub_id` subscription so
+    // the pubsub refcount stays balanced across an in-place REQ replace.
+    let new_topic = channel_id
+        .map(buzz_pubsub::EventTopic::Channel)
+        .unwrap_or(buzz_pubsub::EventTopic::Global);
+    state.pubsub.retain_topic(&conn.tenant, new_topic).await;
+    if let Some(old_topic) = displaced_topic {
+        state.pubsub.release_topic(&conn.tenant, old_topic).await;
+    }
 
     debug!(conn_id = %conn_id, sub_id = %sub_id, "Subscription registered");
 

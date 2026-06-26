@@ -34,13 +34,14 @@ pub fn is_side_effect_kind(kind: u32) -> bool {
 
 async fn evict_live_channel_subscriptions(
     state: &Arc<AppState>,
+    ctx: &buzz_core::TenantContext,
     channel_id: Uuid,
     target_pubkey: &[u8],
 ) {
     let conn_ids = state.conn_manager.connection_ids_for_pubkey(target_pubkey);
 
     for conn_id in conn_ids {
-        evict_conn_channel_subscriptions(state, channel_id, conn_id).await;
+        evict_conn_channel_subscriptions(state, ctx, channel_id, conn_id).await;
     }
 }
 
@@ -48,6 +49,7 @@ async fn evict_live_channel_subscriptions(
 /// the connection's local map and sending `CLOSED restricted` for each.
 async fn evict_conn_channel_subscriptions(
     state: &Arc<AppState>,
+    ctx: &buzz_core::TenantContext,
     channel_id: Uuid,
     conn_id: uuid::Uuid,
 ) {
@@ -56,6 +58,14 @@ async fn evict_conn_channel_subscriptions(
         .remove_channel_subscriptions(conn_id, channel_id);
     if removed.is_empty() {
         return;
+    }
+
+    // Every evicted sub was channel-scoped, so each held interest in the same
+    // `Channel(channel_id)` topic. Release once per removed sub to balance the
+    // pubsub refcount; the manager debounce-UNSUBSCRIBEs when interest hits zero.
+    let topic = buzz_pubsub::EventTopic::Channel(channel_id);
+    for _ in &removed {
+        state.pubsub.release_topic(ctx, topic).await;
     }
 
     if let Some(subscriptions) = state.conn_manager.subscriptions_for(conn_id) {
@@ -80,6 +90,7 @@ async fn evict_conn_channel_subscriptions(
 /// subscriptions promptly so clients stop treating the channel as live.
 async fn evict_non_member_channel_subscriptions(
     state: &Arc<AppState>,
+    ctx: &buzz_core::TenantContext,
     channel_id: Uuid,
 ) -> anyhow::Result<()> {
     let members = state.db.get_members(channel_id).await?;
@@ -92,7 +103,7 @@ async fn evict_non_member_channel_subscriptions(
             None => false,
         };
         if !is_member {
-            evict_conn_channel_subscriptions(state, channel_id, conn_id).await;
+            evict_conn_channel_subscriptions(state, ctx, channel_id, conn_id).await;
         }
     }
     Ok(())
@@ -107,9 +118,13 @@ async fn evict_non_member_channel_subscriptions(
 /// connected agent drops just that channel and keeps its socket — no reconnect
 /// storm. Offline/reconnecting clients are covered by the discovery-time
 /// `archived=true` skip in `discover_channels`.
-pub async fn evict_all_channel_subscriptions(state: &Arc<AppState>, channel_id: Uuid) {
+pub async fn evict_all_channel_subscriptions(
+    state: &Arc<AppState>,
+    ctx: &buzz_core::TenantContext,
+    channel_id: Uuid,
+) {
     for conn_id in state.sub_registry.channel_subscriber_conns(channel_id) {
-        evict_conn_channel_subscriptions(state, channel_id, conn_id).await;
+        evict_conn_channel_subscriptions(state, ctx, channel_id, conn_id).await;
     }
 }
 
@@ -1003,7 +1018,7 @@ async fn handle_remove_user(
         .remove_member(channel_id, &target_pubkey, &actor_bytes)
         .await?;
     state.invalidate_membership(ctx, channel_id, &target_pubkey);
-    evict_live_channel_subscriptions(state, channel_id, &target_pubkey).await;
+    evict_live_channel_subscriptions(state, ctx, channel_id, &target_pubkey).await;
 
     let actor_hex = hex::encode(&actor_bytes);
     let target_hex = hex::encode(&target_pubkey);
@@ -1132,7 +1147,7 @@ async fn handle_edit_metadata(
                     // for an immediate CLOSED on this node. The fan-out access
                     // filter is the cluster-wide correctness backstop.
                     if was_open && val == "private" {
-                        evict_non_member_channel_subscriptions(state, channel_id).await?;
+                        evict_non_member_channel_subscriptions(state, ctx, channel_id).await?;
                     }
                     emit_system_message(
                         state,
@@ -1589,7 +1604,7 @@ async fn handle_leave_request(
         .remove_member(channel_id, &actor_bytes, &actor_bytes)
         .await?;
     state.invalidate_membership(ctx, channel_id, &actor_bytes);
-    evict_live_channel_subscriptions(state, channel_id, &actor_bytes).await;
+    evict_live_channel_subscriptions(state, ctx, channel_id, &actor_bytes).await;
 
     let actor_hex = hex::encode(&actor_bytes);
     emit_system_message(

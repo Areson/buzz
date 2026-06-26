@@ -7,6 +7,7 @@ use nostr::{Alphabet, Filter, Kind, SingleLetterTag};
 use uuid::Uuid;
 
 use buzz_core::{filter::filters_match, StoredEvent};
+use buzz_pubsub::EventTopic;
 
 /// Connection identifier — a UUID assigned to each WebSocket connection.
 pub type ConnId = Uuid;
@@ -14,6 +15,22 @@ pub type ConnId = Uuid;
 pub type SubId = String;
 /// Stored subscription entry: filters paired with an optional channel scope.
 pub type SubEntry = (Vec<Filter>, Option<Uuid>);
+
+/// The pub/sub routing topic a subscription declares local interest in.
+///
+/// A channel-scoped subscription wants its exact channel topic; a global
+/// subscription wants the community-global topic. The registry reports these on
+/// register/remove so the caller can drive `retain_topic`/`release_topic`
+/// against the pubsub manager with that connection's tenant. The topic is
+/// community-agnostic here — the community is bound at the call site via
+/// `TenantContext`, and the pubsub manager's own refcount is keyed by the full
+/// `(community, topic)` pair.
+fn sub_topic(channel_id: Option<Uuid>) -> EventTopic {
+    match channel_id {
+        Some(id) => EventTopic::Channel(id),
+        None => EventTopic::Global,
+    }
+}
 
 /// Index key combining a channel and event kind for O(1) fan-out lookups.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,14 +71,20 @@ impl SubscriptionRegistry {
     }
 
     /// Replaces any existing subscription with the same sub_id (NIP-01).
+    ///
+    /// Returns the routing topic of the subscription this call *displaced* (the
+    /// prior sub with the same `sub_id`), if any. The caller retains the new
+    /// subscription's topic and releases the displaced one against the pubsub
+    /// manager, keeping the per-`(community, topic)` refcount balanced across an
+    /// in-place replace. The new topic is [`sub_topic`] of `channel_id`.
     pub fn register(
         &self,
         conn_id: ConnId,
         sub_id: SubId,
         filters: Vec<Filter>,
         channel_id: Option<Uuid>,
-    ) {
-        self.remove_subscription(conn_id, &sub_id);
+    ) -> Option<EventTopic> {
+        let displaced = self.remove_subscription(conn_id, &sub_id);
 
         self.subs
             .entry(conn_id)
@@ -129,30 +152,49 @@ impl SubscriptionRegistry {
                 }
             }
         }
+
+        displaced
     }
 
     /// Remove a single subscription and clean up its index entries.
-    pub fn remove_subscription(&self, conn_id: ConnId, sub_id: &str) {
+    ///
+    /// Returns the routing topic of the removed subscription, if one existed, so
+    /// the caller can release that topic against the pubsub manager.
+    pub fn remove_subscription(&self, conn_id: ConnId, sub_id: &str) -> Option<EventTopic> {
         if let Some(mut conn_subs) = self.subs.get_mut(&conn_id) {
             if let Some((filters, channel_id)) = conn_subs.remove(sub_id) {
                 self.remove_from_index(conn_id, sub_id, &filters, channel_id);
                 metrics::gauge!("buzz_subscriptions_active").decrement(1.0);
+                return Some(sub_topic(channel_id));
             }
         }
+        None
     }
 
     /// Remove all subscriptions for a connection and clean up index entries.
-    pub fn remove_connection(&self, conn_id: ConnId) {
+    ///
+    /// Returns the routing topic of every removed subscription (one entry per
+    /// subscription, so a topic with N subs on this connection appears N times)
+    /// so the caller can release each against the pubsub manager. The pubsub
+    /// refcount collapses the N releases to a single debounced UNSUBSCRIBE.
+    pub fn remove_connection(&self, conn_id: ConnId) -> Vec<EventTopic> {
+        let mut released = Vec::new();
         if let Some((_, conn_subs)) = self.subs.remove(&conn_id) {
             let count = conn_subs.len();
             for (sub_id, (filters, channel_id)) in &conn_subs {
                 self.remove_from_index(conn_id, sub_id, filters, *channel_id);
+                released.push(sub_topic(*channel_id));
             }
             metrics::gauge!("buzz_subscriptions_active").decrement(count as f64);
         }
+        released
     }
 
     /// Remove all subscriptions on `conn_id` scoped to `channel_id`.
+    ///
+    /// Returns the removed sub ids. Every removed subscription shares the same
+    /// routing topic — `EventTopic::Channel(channel_id)` — so the caller
+    /// releases that topic once per returned id to balance the pubsub refcount.
     pub fn remove_channel_subscriptions(&self, conn_id: ConnId, channel_id: Uuid) -> Vec<SubId> {
         let sub_ids: Vec<SubId> = self
             .subs
@@ -1211,5 +1253,142 @@ mod tests {
             matches[0].0, conn_channel,
             "only channel sub sees channel event"
         );
+    }
+
+    // --- Topic retain/release accounting: the registry reports the exact
+    //     topics the caller must retain on register and release on remove, so
+    //     the pubsub manager's `(community, topic)` refcount stays balanced. ---
+
+    #[test]
+    fn test_register_channel_sub_reports_no_displaced_topic() {
+        let registry = SubscriptionRegistry::new();
+        let conn_id = Uuid::new_v4();
+        let channel_id = Uuid::new_v4();
+
+        // First registration of a sub_id displaces nothing.
+        let displaced = registry.register(
+            conn_id,
+            "s".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            Some(channel_id),
+        );
+        assert_eq!(displaced, None);
+    }
+
+    #[test]
+    fn test_register_replace_same_topic_reports_displaced() {
+        // Replacing a sub_id with another sub on the SAME channel reports the
+        // displaced topic, so the caller does retain(new)+release(old): a
+        // net-zero on the shared topic, no SUBSCRIBE churn.
+        let registry = SubscriptionRegistry::new();
+        let conn_id = Uuid::new_v4();
+        let channel_id = Uuid::new_v4();
+
+        registry.register(
+            conn_id,
+            "s".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            Some(channel_id),
+        );
+        let displaced = registry.register(
+            conn_id,
+            "s".to_string(),
+            vec![Filter::new().kind(Kind::Metadata)],
+            Some(channel_id),
+        );
+        assert_eq!(displaced, Some(EventTopic::Channel(channel_id)));
+    }
+
+    #[test]
+    fn test_register_replace_channel_to_global_reports_old_channel_topic() {
+        // Replacing a channel-scoped sub with a global one displaces the channel
+        // topic; the caller releases Channel(id) and retains Global.
+        let registry = SubscriptionRegistry::new();
+        let conn_id = Uuid::new_v4();
+        let channel_id = Uuid::new_v4();
+
+        registry.register(
+            conn_id,
+            "s".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            Some(channel_id),
+        );
+        let displaced = registry.register(
+            conn_id,
+            "s".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            None,
+        );
+        assert_eq!(displaced, Some(EventTopic::Channel(channel_id)));
+    }
+
+    #[test]
+    fn test_remove_subscription_reports_topic() {
+        let registry = SubscriptionRegistry::new();
+        let conn_id = Uuid::new_v4();
+        let channel_id = Uuid::new_v4();
+
+        registry.register(
+            conn_id,
+            "ch".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            Some(channel_id),
+        );
+        registry.register(conn_id, "gl".to_string(), vec![Filter::new()], None);
+
+        assert_eq!(
+            registry.remove_subscription(conn_id, "ch"),
+            Some(EventTopic::Channel(channel_id))
+        );
+        assert_eq!(
+            registry.remove_subscription(conn_id, "gl"),
+            Some(EventTopic::Global)
+        );
+        // Removing an absent sub reports nothing — caller releases nothing.
+        assert_eq!(registry.remove_subscription(conn_id, "missing"), None);
+    }
+
+    #[test]
+    fn test_remove_connection_reports_every_subscription_topic() {
+        // One entry per subscription (not per distinct topic) so the caller's
+        // release count matches the retain count it issued at register time.
+        let registry = SubscriptionRegistry::new();
+        let conn_id = Uuid::new_v4();
+        let channel_a = Uuid::new_v4();
+        let channel_b = Uuid::new_v4();
+
+        registry.register(
+            conn_id,
+            "a1".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            Some(channel_a),
+        );
+        registry.register(
+            conn_id,
+            "a2".to_string(),
+            vec![Filter::new().kind(Kind::Metadata)],
+            Some(channel_a),
+        );
+        registry.register(
+            conn_id,
+            "b1".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            Some(channel_b),
+        );
+        registry.register(conn_id, "g1".to_string(), vec![Filter::new()], None);
+
+        let mut released = registry.remove_connection(conn_id);
+        released.sort_by_key(|t| format!("{t:?}"));
+        let mut expected = vec![
+            EventTopic::Channel(channel_a),
+            EventTopic::Channel(channel_a),
+            EventTopic::Channel(channel_b),
+            EventTopic::Global,
+        ];
+        expected.sort_by_key(|t| format!("{t:?}"));
+        assert_eq!(released, expected);
+
+        // A second drop reports nothing — no double-release.
+        assert!(registry.remove_connection(conn_id).is_empty());
     }
 }
