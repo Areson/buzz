@@ -443,6 +443,10 @@ export function CreateAgentDialog({
           runtime:
             selectedRuntimeId !== "custom" ? selectedRuntimeId : undefined,
           model: useMesh ? meshModelId.trim() || undefined : undefined,
+          // Carry the backend provider when the agent runs on one ("Run on" is
+          // a provider, not local). Mirrors what the agent input persists in
+          // `backend.id`; local agents leave it unset.
+          provider: isProviderMode ? runOn : undefined,
           envVars,
         };
         try {

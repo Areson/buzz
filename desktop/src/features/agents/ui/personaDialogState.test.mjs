@@ -259,6 +259,7 @@ function makeAgent(overrides = {}) {
     lastStoppedAt: null,
     lastExitCode: null,
     lastError: null,
+    backend: { type: "local" },
     ...overrides,
   };
 }
@@ -316,12 +317,26 @@ test("saveAsPersonaTemplateDialogState carries name, prompt, model, and envVars"
   assert.deepEqual(state.initialValues.namePool, []);
 });
 
-test("saveAsPersonaTemplateDialogState omits provider (no top-level field on ManagedAgent)", () => {
-  // A ManagedAgent has no top-level provider, so there is nothing lossless to
-  // carry — the builder must not invent one.
-  const state = saveAsPersonaTemplateDialogState(makeAgent(), []);
+test("saveAsPersonaTemplateDialogState carries the provider id from a provider backend", () => {
+  // A databricks/anthropic agent must promote with its provider, not lose it.
+  // ManagedAgent has no top-level provider on main; it lives in backend.id.
+  const state = saveAsPersonaTemplateDialogState(
+    makeAgent({ backend: { type: "provider", id: "databricks", config: {} } }),
+    [],
+  );
 
-  assert.equal("provider" in state.initialValues, false);
+  assert.equal(state.initialValues.provider, "databricks");
+});
+
+test("saveAsPersonaTemplateDialogState leaves provider unset for a local backend", () => {
+  // A local backend has no provider; the persona's provider is optional, so it
+  // carries as undefined (auto-detect / provider-locked runtime).
+  const state = saveAsPersonaTemplateDialogState(
+    makeAgent({ backend: { type: "local" } }),
+    [],
+  );
+
+  assert.equal(state.initialValues.provider, undefined);
 });
 
 test("saveAsPersonaTemplateDialogState tolerates null systemPrompt and model", () => {

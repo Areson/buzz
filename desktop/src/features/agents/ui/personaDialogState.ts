@@ -77,20 +77,33 @@ function runtimeIdForAgentCommand(
 }
 
 /**
+ * Extract the LLM provider id from a managed agent's backend so it can carry
+ * into the persona template (a databricks/anthropic agent should promote with
+ * its provider, not lose it). On `main` the provider is NOT a top-level field
+ * on `ManagedAgent`; it lives in the backend union: a `"provider"` backend
+ * carries the provider id, while a `"local"` backend has none. Returns
+ * `undefined` for local backends — the persona's `provider` is optional, so an
+ * absent provider just carries as unset (auto-detect / provider-locked runtime).
+ */
+function providerForAgentBackend(
+  backend: ManagedAgent["backend"],
+): string | undefined {
+  return backend.type === "provider" ? backend.id : undefined;
+}
+
+/**
  * Dialog state for the opt-in "Save as persona template" action on an existing
  * agent. Prefills the persona editor from the agent so the user reviews and
  * confirms before a persona template is created — nothing is minted silently.
  *
  * Near-lossless promote: name, system prompt, model, and env vars copy
- * straight across; the harness command reverse-maps to a runtime ID.
- * `namePool` is persona-only and starts empty — the user can fill it in the
- * same dialog (it's how a template bulk-adds bots later).
+ * straight across; the harness command reverse-maps to a runtime ID and the
+ * backend provider id carries into the persona's provider. `namePool` is
+ * persona-only and starts empty — the user can fill it in the same dialog
+ * (it's how a template bulk-adds bots later).
  *
  * Note: "persona template" is the UI name for what the backend calls a
  * `persona` (kind:30175). This builder produces a backend `CreatePersonaInput`.
- * `provider` is intentionally not carried: a `ManagedAgent` does not expose a
- * top-level provider field (it lives in backend/provider config), so there is
- * nothing lossless to copy here.
  */
 export function saveAsPersonaTemplateDialogState(
   agent: ManagedAgent,
@@ -106,6 +119,9 @@ export function saveAsPersonaTemplateDialogState(
       systemPrompt: agent.systemPrompt ?? "",
       runtime: runtimeIdForAgentCommand(agent.agentCommand, runtimes),
       model: agent.model ?? undefined,
+      // Carry the provider from a `"provider"` backend; `"local"` backends
+      // have none and leave it unset (see providerForAgentBackend).
+      provider: providerForAgentBackend(agent.backend),
       // namePool is persona-only; start empty so the user fills it here.
       namePool: [],
       envVars: agent.envVars ?? {},
