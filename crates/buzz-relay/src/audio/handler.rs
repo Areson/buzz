@@ -183,6 +183,35 @@ async fn handle_audio_connection(socket: WebSocket, state: Arc<AppState>, channe
         return;
     }
 
+    // Huddle audio guardrail (plan §5b). Audio frames are relayed only within
+    // a single pod; under horizontal scaling (any-pod-any-connection) two peers
+    // in one huddle can land on different pods and never hear each other. A
+    // multi-pod deployment sets `huddle_audio_available = false`, and we surface
+    // a clear, client-handleable "unavailable" signal here — BEFORE joining a
+    // room — rather than shipping a silent split-room. Single-pod deployments
+    // leave the flag at its `true` default and keep today's behavior. The fix
+    // is an out-of-relay media/SFU service (Tyler's long-term target), not
+    // sticky-routing huddles into this rewrite.
+    if !state.config.huddle_audio_available {
+        debug!(
+            channel_id = %channel_id,
+            pubkey = %pubkey_hex,
+            "huddle audio unavailable under horizontal scaling — rejecting join"
+        );
+        let _ = ws_send
+            .send(WsMessage::Text(
+                serde_json::json!({
+                    "type": "error",
+                    "code": "huddle_audio_unavailable",
+                    "message": "huddle audio unavailable in this deployment"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await;
+        return;
+    }
+
     let room = state.audio_rooms.get_or_create(channel_id);
 
     // Re-check archived status after obtaining the room. This closes the
