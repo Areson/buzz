@@ -47,7 +47,7 @@ use sqlx::{PgPool, QueryBuilder, Row};
 use std::time::Duration;
 use uuid::Uuid;
 
-use buzz_core::StoredEvent;
+use buzz_core::{CommunityId, StoredEvent};
 
 /// Extract p-tag mentions from an event and insert into the `event_mentions` table.
 ///
@@ -162,6 +162,15 @@ impl Default for DbConfig {
     }
 }
 
+/// Community host-map row returned by [`Db::lookup_community_by_host`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommunityRecord {
+    /// Stable server-resolved community id.
+    pub id: CommunityId,
+    /// Normalized host that maps to this community.
+    pub host: String,
+}
+
 /// Token summary returned by [`Db::list_active_tokens`].
 #[derive(Debug, Clone)]
 pub struct TokenSummary {
@@ -214,6 +223,67 @@ impl Db {
     /// The transaction holds an owned pool handle, not a borrow.
     pub async fn begin_transaction(&self) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
         self.pool.begin().await.map_err(Into::into)
+    }
+
+    /// Returns the community mapped to a normalized request host, if one exists.
+    ///
+    /// The caller owns host normalization and turns `None` into the fail-closed
+    /// request/connection error. buzz-db only reads the durable host map.
+    pub async fn lookup_community_by_host(
+        &self,
+        normalized_host: &str,
+    ) -> Result<Option<CommunityRecord>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, host
+            FROM communities
+            WHERE host = $1
+            "#,
+        )
+        .bind(normalized_host)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|row| {
+            let id: Uuid = row.try_get("id")?;
+            let host: String = row.try_get("host")?;
+
+            Ok(CommunityRecord {
+                id: CommunityId::from_uuid(id),
+                host,
+            })
+        })
+        .transpose()
+    }
+
+    /// Ensure a configured community host exists and return its row.
+    ///
+    /// This is the startup/config seeding path for N=1 deployments. Migrations
+    /// create the schema only; deployment-specific hosts are not hardcoded into
+    /// schema history.
+    pub async fn ensure_configured_community(
+        &self,
+        normalized_host: &str,
+    ) -> Result<CommunityRecord> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO communities (host)
+            VALUES ($1)
+            ON CONFLICT (host) DO UPDATE SET host = EXCLUDED.host
+            RETURNING id, host
+            "#,
+        )
+        .bind(normalized_host)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let id: Uuid = row.try_get("id")?;
+        let host: String = row.try_get("host")?;
+
+        Ok(CommunityRecord {
+            id: CommunityId::from_uuid(id),
+            host,
+        })
     }
 
     /// Inserts an event. Returns `(StoredEvent, was_inserted)` — `false` on duplicate.

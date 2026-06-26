@@ -132,6 +132,13 @@ mod tests {
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(
+            migrations[0]
+                .sql
+                .as_str()
+                .contains("CREATE TABLE communities"),
+            "initial schema migration should include tenant host map"
+        );
+        assert!(
             migrations[0].sql.as_str().contains("CREATE TABLE channels"),
             "initial schema migration should include Buzz core tables"
         );

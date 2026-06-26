@@ -17,6 +17,17 @@ CREATE TYPE subscription_status AS ENUM ('active', 'paused', 'deleted');
 CREATE TYPE pause_reason AS ENUM ('user', 'system', 'rate_limit');
 CREATE TYPE channel_add_policy AS ENUM ('anyone', 'owner_only', 'nobody');
 
+-- ── Communities ───────────────────────────────────────────────────────────────
+
+CREATE TABLE communities (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    host            VARCHAR(255) NOT NULL UNIQUE,
+    signing_key     BYTEA,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_communities_host_not_empty CHECK (LENGTH(TRIM(host)) > 0),
+    CONSTRAINT chk_communities_host_normalized CHECK (host = LOWER(host))
+);
+
 -- ── Channels ──────────────────────────────────────────────────────────────────
 
 CREATE TABLE channels (
