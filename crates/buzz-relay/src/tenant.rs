@@ -73,6 +73,17 @@ pub async fn bind_community<R: HostResolver>(
     raw_host: &str,
 ) -> Result<TenantContext, BindError<R::Error>> {
     let host = normalize_host(raw_host);
+    // Inv_RowZero (host-binding seam): an empty raw_host carries no community
+    // evidence — there is no `connection.host` to resolve, so no community can
+    // be derived from it. Fail closed BEFORE the resolver lookup. The schema
+    // does not forbid an `host = ''` row in `communities`, so without this
+    // guard a request with a missing/whitespace-only Host header would silently
+    // bind to a misconfigured empty-host community. Reuse `UnmappedHost` (not a
+    // distinct variant) so the rejection is byte-identical to any other unmapped
+    // host — an unauthenticated caller cannot probe for an empty-host row.
+    if host.is_empty() {
+        return Err(BindError::UnmappedHost);
+    }
     match resolver.resolve_host(&host).await {
         Ok(Some(community)) => Ok(TenantContext::resolved(community, host)),
         Ok(None) => Err(BindError::UnmappedHost),
@@ -253,4 +264,79 @@ mod tests {
         let err = bind_community(&r, "relay.example").await.unwrap_err();
         assert!(matches!(err, BindError::Lookup("db down")));
     }
+
+    mod redteam_attack2 {
+        use super::*;
+
+        /// RED gate. Configures a resolver with an `""→CommunityId` mapping
+        /// (the schema permits it; no CHECK against empty host exists), then
+        /// asks `bind_community` to bind an empty raw_host as a request with
+        /// a missing/invalid Host header would. Today this returns
+        /// `Ok(TenantContext{community=X})` — the fence collapses to the
+        /// misconfigured row. The fix: short-circuit in `bind_community` so
+        /// that `normalize_host(raw_host).is_empty()` returns
+        /// `Err(BindError::UnmappedHost)` before any resolver lookup.
+        ///
+        /// Generic-rejection note: we reuse `UnmappedHost` (not a new
+        /// `EmptyHost` variant) so the door's response is byte-identical to
+        /// any other unmapped host — an unauthenticated caller cannot probe
+        /// whether the deployment has an empty-host row.
+        ///
+        /// Delete this `#[ignore]` when the fix lands; verified RED with
+        /// `cargo test -p buzz-relay --include-ignored
+        ///   tenant::tests::redteam_attack2::empty_raw_host_fails_closed_even_if_db_has_empty_host_row`
+        
+        #[tokio::test]
+        async fn empty_raw_host_fails_closed_even_if_db_has_empty_host_row() {
+            // Simulate operator misconfig / buggy migration: an empty-host row
+            // exists in `communities`. The schema does not forbid this.
+            let r = resolver_with("", 0xdeadbeef);
+
+            // A request with a missing or unreadable Host header reaches
+            // `bind_community` with raw_host = "" (router.rs:169-172). The
+            // fence must reject — the request never supplied a host.
+            let err = bind_community(&r, "").await.expect_err(
+                "Inv_RowZero: an empty raw_host carries no community evidence; \
+                 bind_community must fail closed regardless of the host map",
+            );
+            assert!(
+                matches!(err, BindError::UnmappedHost),
+                "fence must produce a generic UnmappedHost (no info leak about \
+                 whether an empty-host row exists); got {err:?}",
+            );
+        }
+
+        /// RED gate. Same property, whitespace-only host: `normalize_host`
+        /// trims to empty (`buzz-core::tenant::normalize_host_empty_stays_empty`),
+        /// so this is the same fence collapse via a different raw input.
+        ///
+        /// Delete `#[ignore]` when the fix lands.
+        
+        #[tokio::test]
+        async fn whitespace_only_raw_host_fails_closed_even_if_db_has_empty_host_row() {
+            let r = resolver_with("", 0xdeadbeef);
+
+            let err = bind_community(&r, "   ").await.expect_err(
+                "Inv_RowZero: whitespace-only raw_host normalizes to empty \
+                 (see buzz-core::tenant::normalize_host) and carries no \
+                 community evidence",
+            );
+            assert!(
+                matches!(err, BindError::UnmappedHost),
+                "fence must produce a generic UnmappedHost; got {err:?}",
+            );
+        }
+
+        /// Negative control: a *non-empty* unmapped host must still fail
+        /// closed (this already passes — included so the redteam_attack2
+        /// module documents both shapes of the fence's intended behavior and
+        /// catches a fix that accidentally over-narrows to only-empty).
+        #[tokio::test]
+        async fn non_empty_unmapped_host_still_fails_closed_after_fix() {
+            let r = resolver_with("", 0xdeadbeef);
+            let err = bind_community(&r, "evil.example").await.unwrap_err();
+            assert!(matches!(err, BindError::UnmappedHost));
+        }
+    }
+
 }
