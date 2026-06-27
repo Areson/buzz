@@ -58,7 +58,11 @@ impl ConnectionManager {
     }
 
     /// Registers a connection with its outbound sender, cancellation token,
-    /// shared backpressure counter, mutable subscription map, and grace limit.
+    /// server-resolved community, shared backpressure counter, mutable
+    /// subscription map, and grace limit.
+    // Each argument is a distinct per-connection attribute stored verbatim in
+    // `ConnEntry`; a params struct would only relocate the same fields.
+    #[allow(clippy::too_many_arguments)]
     pub fn register(
         &self,
         conn_id: Uuid,
@@ -229,9 +233,11 @@ pub struct AppState {
     pub local_event_ids: Arc<moka::sync::Cache<[u8; 32], ()>>,
     /// Membership cache: (community_id, channel_id, pubkey_bytes) → is_member.
     /// Short TTL (10s) — membership changes are rare but must propagate.
+    #[allow(clippy::type_complexity)]
     pub membership_cache: Arc<moka::sync::Cache<(CommunityId, Uuid, Vec<u8>), bool>>,
     /// Accessible channel IDs cache: (community_id, pubkey_bytes) → channel UUIDs.
     /// Short TTL (10s) — invalidated on membership or channel visibility changes.
+    #[allow(clippy::type_complexity)]
     pub accessible_channels_cache: Arc<moka::sync::Cache<(CommunityId, Vec<u8>), Vec<Uuid>>>,
     /// Per-community channel visibility string, used to gate the private-channel fan-out
     /// access check so open channels stay zero-cost. Invalidated on a flip.
