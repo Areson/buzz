@@ -2336,7 +2336,7 @@ pub async fn publish_nip43_membership_list(
     tenant: &TenantContext,
     state: &Arc<AppState>,
 ) -> anyhow::Result<()> {
-    let members = state.db.list_relay_members().await?;
+    let members = state.db.list_relay_members(tenant.community()).await?;
     let relay_pubkey_hex = state.relay_keypair.public_key().to_hex();
 
     let mut tags: Vec<Tag> = Vec::with_capacity(members.len() + 1);

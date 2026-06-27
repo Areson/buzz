@@ -112,6 +112,7 @@ impl FromRequestParts<Arc<AppState>> for AuthenticatedUpload {
         let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
         crate::api::relay_members::enforce_relay_membership(
             state,
+            tenant.community(),
             auth_event.pubkey.as_bytes(),
             auth_tag,
         )

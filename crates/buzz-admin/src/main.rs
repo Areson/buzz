@@ -145,7 +145,11 @@ async fn cmd_add_member(pubkey_arg: String, role: String) -> Result<i32> {
 
     let (db, pubsub, relay_keypair) = connect_member_services().await?;
 
-    match db.add_relay_member(&pubkey_hex, &role, None).await {
+    let tenant = resolve_admin_tenant(&db).await?;
+    match db
+        .add_relay_member(tenant.community(), &pubkey_hex, &role, None)
+        .await
+    {
         Ok(true) => println!("added {pubkey_hex} as {role}"),
         Ok(false) => println!("already a member: {pubkey_hex} (no change)"),
         Err(e) => {
@@ -154,7 +158,6 @@ async fn cmd_add_member(pubkey_arg: String, role: String) -> Result<i32> {
         }
     }
 
-    let tenant = resolve_admin_tenant(&db).await?;
     if let Err(e) = publish_membership_list_with_bump(&db, &pubsub, &relay_keypair, &tenant).await {
         eprintln!("warning: member added to DB but list publish failed: {e}");
     }
@@ -180,11 +183,13 @@ async fn cmd_remove_member(pubkey_arg: String, role_filter: Option<String>) -> R
 
     let (db, pubsub, relay_keypair) = connect_member_services().await?;
 
+    let tenant = resolve_admin_tenant(&db).await?;
     use buzz_db::relay_members::RemoveResult;
     let result = if let Some(ref role) = role_filter {
-        db.remove_relay_member_if_role(&pubkey_hex, role).await
+        db.remove_relay_member_if_role(tenant.community(), &pubkey_hex, role)
+            .await
     } else {
-        db.remove_relay_member(&pubkey_hex).await
+        db.remove_relay_member(tenant.community(), &pubkey_hex).await
     };
 
     match result {
@@ -211,7 +216,6 @@ async fn cmd_remove_member(pubkey_arg: String, role_filter: Option<String>) -> R
         }
     }
 
-    let tenant = resolve_admin_tenant(&db).await?;
     if let Err(e) = publish_membership_list_with_bump(&db, &pubsub, &relay_keypair, &tenant).await {
         eprintln!("warning: member removed from DB but list publish failed: {e}");
     }
@@ -221,7 +225,8 @@ async fn cmd_remove_member(pubkey_arg: String, role_filter: Option<String>) -> R
 
 async fn cmd_list_members() -> Result<i32> {
     let db = connect_db().await?;
-    let members = db.list_relay_members().await?;
+    let tenant = resolve_admin_tenant(&db).await?;
+    let members = db.list_relay_members(tenant.community()).await?;
 
     if members.is_empty() {
         println!("(no relay members)");
@@ -303,7 +308,7 @@ async fn publish_membership_list_with_bump(
         None => now,
     };
 
-    let members = db.list_relay_members().await?;
+    let members = db.list_relay_members(tenant.community()).await?;
 
     let mut tags: Vec<Tag> = Vec::with_capacity(members.len() + 1);
     // NIP-70 protected-event marker — prevents re-broadcasting by third parties.

@@ -113,6 +113,7 @@ pub async fn handle_auth(event: nostr::Event, conn: Arc<ConnectionState>, state:
             // Relay membership gate — uses the shared helper with NIP-OA fallback.
             let nip_oa_owner = match crate::api::relay_members::enforce_relay_membership(
                 &state,
+                conn.tenant.community(),
                 pubkey.as_bytes(),
                 auth_tag_json.as_deref(),
             )

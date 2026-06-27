@@ -26,7 +26,7 @@ use buzz_core::event::StoredEvent;
 use buzz_core::kind::{
     event_kind_u32, KIND_MESH_CALL_ME_NOW, KIND_MESH_CONNECT_REQUEST, KIND_MESH_STATUS_REPORT,
 };
-use buzz_core::tenant::TenantContext;
+use buzz_core::tenant::{CommunityId, TenantContext};
 use nostr::{EventBuilder, Kind, Tag};
 
 use crate::api::relay_members::{check_relay_membership, MembershipDecision};
@@ -234,11 +234,11 @@ pub async fn handle_connect_request(
     // BUZZ_ALLOW_NIP_OA_AUTH is on; v1 mesh excludes delegated identities, so we
     // re-check the requester here with no auth tag (which makes ViaOwner
     // unreachable — only Member/OpenRelay/Denied) to match the target check.
-    require_mesh_member(state, requester_pubkey_hex)
+    require_mesh_member(state, tenant.community(), requester_pubkey_hex)
         .await
         .map_err(|_| "restricted: delegated identities cannot initiate mesh in v1".to_string())?;
 
-    require_mesh_member(state, &target_hex)
+    require_mesh_member(state, tenant.community(), &target_hex)
         .await
         .map_err(|_| "restricted: target is not a relay member".to_string())?;
 
@@ -274,9 +274,13 @@ pub async fn handle_connect_request(
 /// `None` auth_tag → ViaOwner is unreachable, so only Member/OpenRelay admit;
 /// everything else (Denied, ViaOwner-if-it-somehow-appeared, or a check error)
 /// FAILS CLOSED. Used symmetrically for requester and target.
-async fn require_mesh_member(state: &Arc<AppState>, pubkey_hex: &str) -> Result<(), ()> {
+async fn require_mesh_member(
+    state: &Arc<AppState>,
+    community: CommunityId,
+    pubkey_hex: &str,
+) -> Result<(), ()> {
     let bytes = hex::decode(pubkey_hex).map_err(|_| ())?;
-    match check_relay_membership(state, &bytes, None).await {
+    match check_relay_membership(state, community, &bytes, None).await {
         Ok(d) if membership_admits_mesh(&d) => Ok(()),
         Ok(_) => Err(()),
         Err(e) => {
@@ -355,7 +359,7 @@ pub async fn handle_status_report(
     // pubkey that the connect path (which denies ViaOwner) then refuses — broken
     // discovery. So gate the reporter the same way: direct members only, fail
     // closed. Keeps all three desktop-facing mesh kinds consistent on delegation.
-    require_mesh_member(state, reporter_pubkey_hex)
+    require_mesh_member(state, tenant.community(), reporter_pubkey_hex)
         .await
         .map_err(|_| {
             "restricted: delegated identities cannot report mesh status in v1".to_string()

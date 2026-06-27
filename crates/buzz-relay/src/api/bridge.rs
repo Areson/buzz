@@ -261,7 +261,13 @@ pub async fn submit_event(
 
     // Enforce relay membership (with NIP-OA fallback via x-auth-tag header).
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
-    super::relay_members::enforce_relay_membership(&state, &pubkey_bytes, auth_tag).await?;
+    super::relay_members::enforce_relay_membership(
+        &state,
+        tenant.community(),
+        &pubkey_bytes,
+        auth_tag,
+    )
+    .await?;
 
     let event: nostr::Event = serde_json::from_slice(&body)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, &format!("invalid event JSON: {e}")))?;
@@ -349,7 +355,13 @@ pub async fn query_events(
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
-    super::relay_members::enforce_relay_membership(&state, &pubkey_bytes, auth_tag).await?;
+    super::relay_members::enforce_relay_membership(
+        &state,
+        tenant.community(),
+        &pubkey_bytes,
+        auth_tag,
+    )
+    .await?;
 
     // Two-pass parse: preserve raw JSON for custom extension fields (before_id,
     // depth_limit, feed_types) that nostr::Filter silently drops.
@@ -624,7 +636,13 @@ pub async fn count_events(
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
-    super::relay_members::enforce_relay_membership(&state, &pubkey_bytes, auth_tag).await?;
+    super::relay_members::enforce_relay_membership(
+        &state,
+        tenant.community(),
+        &pubkey_bytes,
+        auth_tag,
+    )
+    .await?;
 
     let filters: Vec<nostr::Filter> = serde_json::from_slice(&body)
         .map_err(|e| api_error(StatusCode::BAD_REQUEST, &format!("invalid filters: {e}")))?;

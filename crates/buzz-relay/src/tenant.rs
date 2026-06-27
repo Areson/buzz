@@ -111,7 +111,13 @@ pub async fn bind_deployment_community<R: HostResolver>(
 /// Extract the relay URL authority in the same normalized shape as request
 /// `Host` headers and `communities.host`: host plus an explicit non-default
 /// port, if present.
-fn relay_url_authority(relay_url: &str) -> String {
+///
+/// `pub` so startup ([`crate::main`], a separate binary crate) can seed the
+/// deployment's own community under the *same* normalized host that live request
+/// resolution ([`bind_community`]) will derive — the two must agree or the
+/// bootstrapped owner lands in a community no request ever resolves to. Returns
+/// the empty string when `relay_url` has no parseable host.
+pub fn relay_url_authority(relay_url: &str) -> String {
     let Ok(url) = url::Url::parse(relay_url) else {
         return String::new();
     };

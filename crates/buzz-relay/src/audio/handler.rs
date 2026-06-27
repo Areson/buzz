@@ -182,6 +182,7 @@ async fn handle_audio_connection(
 
     if crate::api::relay_members::enforce_relay_membership(
         &state,
+        tenant.community(),
         pubkey.as_bytes(),
         auth_tag_json.as_deref(),
     )

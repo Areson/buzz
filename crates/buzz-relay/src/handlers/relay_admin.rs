@@ -94,7 +94,7 @@ pub async fn handle_relay_admin_event(
 
     let sender_member = state
         .db
-        .get_relay_member(&sender_hex)
+        .get_relay_member(tenant.community(), &sender_hex)
         .await
         .map_err(|e| format!("database error: {e}"))?;
 
@@ -130,7 +130,7 @@ pub async fn handle_relay_admin_event(
             // to change an existing member's role.
             let was_inserted = state
                 .db
-                .add_relay_member(&target_hex, &role, Some(&sender_hex))
+                .add_relay_member(tenant.community(), &target_hex, &role, Some(&sender_hex))
                 .await
                 .map_err(|e| format!("database error: {e}"))?;
 
@@ -174,14 +174,14 @@ pub async fn handle_relay_admin_event(
             let remove_result = if sender_role == "admin" {
                 state
                     .db
-                    .remove_relay_member_if_role(&target_hex, "member")
+                    .remove_relay_member_if_role(tenant.community(), &target_hex, "member")
                     .await
                     .map_err(|e| format!("database error: {e}"))?
             } else {
                 // Owner path — atomic delete that refuses to remove other owners.
                 state
                     .db
-                    .remove_relay_member(&target_hex)
+                    .remove_relay_member(tenant.community(), &target_hex)
                     .await
                     .map_err(|e| format!("database error: {e}"))?
             };
@@ -240,7 +240,7 @@ pub async fn handle_relay_admin_event(
 
             let updated = state
                 .db
-                .update_relay_member_role(&target_hex, &new_role)
+                .update_relay_member_role(tenant.community(), &target_hex, &new_role)
                 .await
                 .map_err(|e| format!("database error: {e}"))?;
 
@@ -248,7 +248,7 @@ pub async fn handle_relay_admin_event(
                 // Distinguish "owner (protected)" from "doesn't exist"
                 let exists = state
                     .db
-                    .get_relay_member(&target_hex)
+                    .get_relay_member(tenant.community(), &target_hex)
                     .await
                     .map_err(|e| format!("database error: {e}"))?;
                 return Err(if exists.is_some() {

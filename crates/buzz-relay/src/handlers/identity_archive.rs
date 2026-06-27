@@ -238,7 +238,7 @@ async fn determine_consent_path(
 
     let actor_member = state
         .db
-        .get_relay_member(actor_hex)
+        .get_relay_member(community_id, actor_hex)
         .await
         .map_err(|e| format!("database error: {e}"))?;
     let actor_role = actor_member.as_ref().map(|m| m.role.as_str()).unwrap_or("");

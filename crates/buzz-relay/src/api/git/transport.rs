@@ -182,9 +182,14 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for GitAuth {
             .headers
             .get("x-auth-tag")
             .and_then(|v| v.to_str().ok());
-        if crate::api::relay_members::enforce_relay_membership(state, pubkey.as_bytes(), auth_tag)
-            .await
-            .is_err()
+        if crate::api::relay_members::enforce_relay_membership(
+            state,
+            tenant.community(),
+            pubkey.as_bytes(),
+            auth_tag,
+        )
+        .await
+        .is_err()
         {
             warn!(pubkey = %pubkey.to_hex(), "git: relay membership denied");
             return Err((StatusCode::FORBIDDEN, "restricted: not a relay member").into_response());
