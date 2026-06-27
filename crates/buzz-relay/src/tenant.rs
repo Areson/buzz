@@ -94,15 +94,29 @@ pub async fn bind_deployment_community<R: HostResolver>(
     resolver: &R,
     relay_url: &str,
 ) -> Result<TenantContext, BindError<R::Error>> {
-    let raw_host = url::Url::parse(
-        &relay_url
-            .replace("ws://", "http://")
-            .replace("wss://", "https://"),
-    )
-    .ok()
-    .and_then(|u| u.host_str().map(|h| h.to_string()))
-    .unwrap_or_default();
-    bind_community(resolver, &raw_host).await
+    bind_community(resolver, &relay_url_authority(relay_url)).await
+}
+
+/// Extract the relay URL authority in the same normalized shape as request
+/// `Host` headers and `communities.host`: host plus an explicit non-default
+/// port, if present.
+fn relay_url_authority(relay_url: &str) -> String {
+    let Ok(url) = url::Url::parse(relay_url) else {
+        return String::new();
+    };
+    let Some(host) = url.host() else {
+        return String::new();
+    };
+    let host = match host {
+        url::Host::Domain(domain) => domain.to_string(),
+        url::Host::Ipv4(addr) => addr.to_string(),
+        url::Host::Ipv6(addr) => format!("[{addr}]"),
+    };
+    let authority = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    };
+    normalize_host(&authority)
 }
 
 /// Production [`HostResolver`]: the relay resolves hosts against the durable
@@ -187,6 +201,40 @@ mod tests {
             );
             assert_eq!(ctx.host(), "relay.example", "variant {variant:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn deployment_url_keeps_nondefault_port_for_lookup() {
+        let r = resolver_with("localhost:3000", 42);
+        let ctx = bind_deployment_community(&r, "ws://localhost:3000")
+            .await
+            .expect("deployment host should bind with non-default port");
+        assert_eq!(ctx.community().as_uuid(), &Uuid::from_u128(42));
+        assert_eq!(ctx.host(), "localhost:3000");
+
+        let wrong = resolver_with("localhost", 42);
+        let err = bind_deployment_community(&wrong, "ws://localhost:3000")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BindError::UnmappedHost));
+    }
+
+    #[tokio::test]
+    async fn deployment_url_normalizes_default_ports() {
+        let r = resolver_with("relay.example", 9);
+        for url in ["ws://relay.example:80", "wss://relay.example:443"] {
+            let ctx = bind_deployment_community(&r, url)
+                .await
+                .unwrap_or_else(|_| panic!("url {url:?} should bind"));
+            assert_eq!(ctx.community().as_uuid(), &Uuid::from_u128(9));
+            assert_eq!(ctx.host(), "relay.example", "url {url:?}");
+        }
+    }
+
+    #[test]
+    fn relay_url_authority_preserves_ipv6_brackets() {
+        assert_eq!(relay_url_authority("ws://[::1]:3000"), "[::1]:3000");
+        assert_eq!(relay_url_authority("wss://[::1]:443"), "[::1]");
     }
 
     #[tokio::test]
