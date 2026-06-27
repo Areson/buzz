@@ -258,6 +258,38 @@ impl Db {
         .transpose()
     }
 
+    /// Returns the normalized host mapped to a community id, if the community
+    /// exists.
+    ///
+    /// The reverse of [`lookup_community_by_host`]: used by side-effect
+    /// producers that already hold a server-resolved `CommunityId` (e.g. the
+    /// workflow action sink running a run owned by some community) and need a
+    /// fully-formed [`buzz_core::tenant::TenantContext`] — host included — to
+    /// fan out under *that* community rather than the deployment default. The
+    /// community is authoritative; the host is read back for labelling only and
+    /// is never used to re-derive the community.
+    pub async fn lookup_community_host(
+        &self,
+        community_id: CommunityId,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            r#"
+            SELECT host
+            FROM communities
+            WHERE id = $1
+            "#,
+        )
+        .bind(community_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|row| {
+            let host: String = row.try_get("host")?;
+            Ok(host)
+        })
+        .transpose()
+    }
+
     /// Ensure a configured community host exists and return its row.
     ///
     /// This is the startup/config seeding path for N=1 deployments. Migrations
@@ -1518,27 +1550,33 @@ impl Db {
         .await
     }
 
-    /// Fetch a single workflow by ID.
-    pub async fn get_workflow(&self, id: Uuid) -> Result<workflow::WorkflowRecord> {
-        workflow::get_workflow(&self.pool, id).await
+    /// Fetch a single workflow by ID, scoped to its community.
+    pub async fn get_workflow(
+        &self,
+        community_id: CommunityId,
+        id: Uuid,
+    ) -> Result<workflow::WorkflowRecord> {
+        workflow::get_workflow(&self.pool, community_id, id).await
     }
 
     /// List workflows for a channel.
     pub async fn list_channel_workflows(
         &self,
+        community_id: CommunityId,
         channel_id: Uuid,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<Vec<workflow::WorkflowRecord>> {
-        workflow::list_channel_workflows(&self.pool, channel_id, limit, offset).await
+        workflow::list_channel_workflows(&self.pool, community_id, channel_id, limit, offset).await
     }
 
     /// List active, enabled workflows for a channel.
     pub async fn list_enabled_channel_workflows(
         &self,
+        community_id: CommunityId,
         channel_id: Uuid,
     ) -> Result<Vec<workflow::WorkflowRecord>> {
-        workflow::list_enabled_channel_workflows(&self.pool, channel_id).await
+        workflow::list_enabled_channel_workflows(&self.pool, community_id, channel_id).await
     }
 
     /// List all active, enabled schedule-triggered workflows.
@@ -1562,20 +1600,23 @@ impl Db {
     /// Fetch the latest claimed schedule instant for interval trigger anchoring.
     pub async fn latest_scheduled_workflow_fire(
         &self,
+        community_id: CommunityId,
         workflow_id: Uuid,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-        workflow::latest_scheduled_workflow_fire(&self.pool, workflow_id).await
+        workflow::latest_scheduled_workflow_fire(&self.pool, community_id, workflow_id).await
     }
 
     /// Attach the workflow run id created from a won scheduled-fire claim.
     pub async fn attach_scheduled_workflow_run(
         &self,
+        community_id: CommunityId,
         workflow_id: Uuid,
         scheduled_for: chrono::DateTime<chrono::Utc>,
         workflow_run_id: Uuid,
     ) -> Result<bool> {
         workflow::attach_scheduled_workflow_run(
             &self.pool,
+            community_id,
             workflow_id,
             scheduled_for,
             workflow_run_id,
@@ -1594,78 +1635,116 @@ impl Db {
     /// Update a workflow's name, definition, and hash.
     pub async fn update_workflow(
         &self,
+        community_id: CommunityId,
         id: Uuid,
         name: &str,
         definition_json: &str,
         definition_hash: &[u8],
     ) -> Result<()> {
-        workflow::update_workflow(&self.pool, id, name, definition_json, definition_hash).await
+        workflow::update_workflow(
+            &self.pool,
+            community_id,
+            id,
+            name,
+            definition_json,
+            definition_hash,
+        )
+        .await
     }
 
     /// Update a workflow's status.
     pub async fn update_workflow_status(
         &self,
+        community_id: CommunityId,
         id: Uuid,
         status: workflow::WorkflowStatus,
     ) -> Result<()> {
-        workflow::update_workflow_status(&self.pool, id, status).await
+        workflow::update_workflow_status(&self.pool, community_id, id, status).await
     }
 
     /// Enable or disable a workflow.
-    pub async fn set_workflow_enabled(&self, id: Uuid, enabled: bool) -> Result<()> {
-        workflow::set_workflow_enabled(&self.pool, id, enabled).await
+    pub async fn set_workflow_enabled(
+        &self,
+        community_id: CommunityId,
+        id: Uuid,
+        enabled: bool,
+    ) -> Result<()> {
+        workflow::set_workflow_enabled(&self.pool, community_id, id, enabled).await
     }
 
     /// Delete a workflow and all its runs/approvals.
-    pub async fn delete_workflow(&self, id: Uuid) -> Result<()> {
-        workflow::delete_workflow(&self.pool, id).await
+    pub async fn delete_workflow(&self, community_id: CommunityId, id: Uuid) -> Result<()> {
+        workflow::delete_workflow(&self.pool, community_id, id).await
     }
 
-    /// Find a workflow by owner pubkey and name. Used for NIP-09 a-tag deletion
-    /// where the d-tag is the workflow name (not UUID).
+    /// Find a workflow by owner pubkey and name within a community. Used for
+    /// NIP-09 a-tag deletion where the d-tag is the workflow name (not UUID).
     pub async fn find_workflow_by_owner_and_name(
         &self,
+        community_id: CommunityId,
         owner_pubkey: &[u8],
         name: &str,
     ) -> Result<Option<workflow::WorkflowRecord>> {
-        workflow::find_by_owner_and_name(&self.pool, owner_pubkey, name).await
+        workflow::find_by_owner_and_name(&self.pool, community_id, owner_pubkey, name).await
     }
 
     /// Create a new workflow run.
     pub async fn create_workflow_run(
         &self,
+        community_id: CommunityId,
         workflow_id: Uuid,
         trigger_event_id: Option<&[u8]>,
         trigger_context: Option<&serde_json::Value>,
     ) -> Result<Uuid> {
-        workflow::create_workflow_run(&self.pool, workflow_id, trigger_event_id, trigger_context)
-            .await
+        workflow::create_workflow_run(
+            &self.pool,
+            community_id,
+            workflow_id,
+            trigger_event_id,
+            trigger_context,
+        )
+        .await
     }
 
-    /// Fetch a single workflow run.
-    pub async fn get_workflow_run(&self, id: Uuid) -> Result<workflow::WorkflowRunRecord> {
-        workflow::get_workflow_run(&self.pool, id).await
+    /// Fetch a single workflow run, scoped to its community.
+    pub async fn get_workflow_run(
+        &self,
+        community_id: CommunityId,
+        id: Uuid,
+    ) -> Result<workflow::WorkflowRunRecord> {
+        workflow::get_workflow_run(&self.pool, community_id, id).await
     }
 
     /// List runs for a workflow.
     pub async fn list_workflow_runs(
         &self,
+        community_id: CommunityId,
         workflow_id: Uuid,
         limit: i64,
     ) -> Result<Vec<workflow::WorkflowRunRecord>> {
-        workflow::list_workflow_runs(&self.pool, workflow_id, limit).await
+        workflow::list_workflow_runs(&self.pool, community_id, workflow_id, limit).await
     }
 
     /// Update a workflow run's status.
     pub async fn update_workflow_run(
         &self,
+        community_id: CommunityId,
         id: Uuid,
         status: workflow::RunStatus,
         current_step: i32,
         trace: &serde_json::Value,
         error: Option<&str>,
     ) -> Result<()> {
-        workflow::update_workflow_run(&self.pool, id, status, current_step, trace, error).await
+        workflow::update_workflow_run(
+            &self.pool,
+            community_id,
+            id,
+            status,
+            current_step,
+            trace,
+            error,
+        )
+        .await
     }
 
     /// Create an approval request.
@@ -1674,41 +1753,50 @@ impl Db {
     }
 
     /// Fetch an approval by raw token.
-    pub async fn get_approval(&self, token: &str) -> Result<workflow::ApprovalRecord> {
-        workflow::get_approval(&self.pool, token).await
+    pub async fn get_approval(
+        &self,
+        community_id: CommunityId,
+        token: &str,
+    ) -> Result<workflow::ApprovalRecord> {
+        workflow::get_approval(&self.pool, community_id, token).await
     }
 
     /// Fetch an approval by its already-hashed token (no re-hashing).
     pub async fn get_approval_by_stored_hash(
         &self,
+        community_id: CommunityId,
         token_hash: &[u8],
     ) -> Result<workflow::ApprovalRecord> {
-        workflow::get_approval_by_stored_hash(&self.pool, token_hash).await
+        workflow::get_approval_by_stored_hash(&self.pool, community_id, token_hash).await
     }
 
     /// Fetch all approvals for a workflow run.
     pub async fn get_run_approvals(
         &self,
+        community_id: CommunityId,
         workflow_id: uuid::Uuid,
         run_id: uuid::Uuid,
     ) -> Result<Vec<workflow::ApprovalRecord>> {
-        workflow::get_run_approvals(&self.pool, workflow_id, run_id).await
+        workflow::get_run_approvals(&self.pool, community_id, workflow_id, run_id).await
     }
 
     /// Update an approval's status.
     pub async fn update_approval(
         &self,
+        community_id: CommunityId,
         token: &str,
         status: workflow::ApprovalStatus,
         approver_pubkey: Option<&[u8]>,
         note: Option<&str>,
     ) -> Result<bool> {
-        workflow::update_approval(&self.pool, token, status, approver_pubkey, note).await
+        workflow::update_approval(&self.pool, community_id, token, status, approver_pubkey, note)
+            .await
     }
 
     /// Update an approval by its already-hashed token (no re-hashing).
     pub async fn update_approval_by_stored_hash(
         &self,
+        community_id: CommunityId,
         token_hash: &[u8],
         status: workflow::ApprovalStatus,
         approver_pubkey: Option<&[u8]>,
@@ -1716,6 +1804,7 @@ impl Db {
     ) -> Result<bool> {
         workflow::update_approval_by_stored_hash(
             &self.pool,
+            community_id,
             token_hash,
             status,
             approver_pubkey,

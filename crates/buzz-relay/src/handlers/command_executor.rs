@@ -18,7 +18,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use buzz_core::kind::*;
-use buzz_core::tenant::TenantContext;
+use buzz_core::tenant::{CommunityId, TenantContext};
 use buzz_db::workflow::{ApprovalStatus, RunStatus};
 use buzz_workflow::executor::TriggerContext;
 
@@ -627,15 +627,21 @@ async fn handle_workflow_def(
         PersistResult::Inserted(tx) => tx,
     };
 
-    // 4. Execute: create_workflow. The workflow's community is resolved from
-    // the server-owned channel row, not from the client-supplied event. The DB
-    // also enforces `(community_id, channel_id)` as a composite FK.
-    let community_id = state
+    // 4. Execute: create_workflow. The workflow's community is the request's
+    // server-bound tenant — never re-derived from the (client-supplied) channel
+    // id. `community_of_channel(channel_id)` is ambiguous when the same channel
+    // UUID exists in two communities and could mint the workflow under the wrong
+    // tenant; `tenant.community()` is the authoritative owner. We then verify the
+    // channel actually exists *inside that community* (scoped `get_channel`),
+    // which fails closed if the client named a channel that belongs to a
+    // different community — the same guarantee the `(community_id, channel_id)`
+    // composite FK enforces on insert, surfaced here as a clean rejection.
+    let community_id = tenant.community();
+    state
         .db
-        .community_of_channel(channel_id)
+        .get_channel(community_id, channel_id)
         .await
-        .map_err(|e| IngestError::Internal(format!("error: db channel community lookup: {e}")))?
-        .ok_or_else(|| IngestError::Rejected("invalid: workflow channel not found".into()))?;
+        .map_err(|_| IngestError::Rejected("invalid: workflow channel not found".into()))?;
 
     let workflow_id = state
         .db
@@ -687,10 +693,14 @@ async fn handle_workflow_trigger(
     let workflow_id = Uuid::parse_str(&workflow_id_str)
         .map_err(|_| IngestError::Rejected("invalid: bad workflow_id format".into()))?;
 
-    // 2. Validate workflow exists
+    // 2. Validate workflow exists — scoped to the caller's community. The same
+    // workflow UUID can exist in another community; a bare-id lookup could load
+    // B's workflow and then satisfy the membership check below against B's
+    // colliding channel, letting B trigger A's workflow.
+    let community_id = tenant.community();
     let workflow = state
         .db
-        .get_workflow(workflow_id)
+        .get_workflow(community_id, workflow_id)
         .await
         .map_err(|_| IngestError::Rejected("invalid: workflow not found".into()))?;
 
@@ -749,6 +759,7 @@ async fn handle_workflow_trigger(
     let run_id = state
         .db
         .create_workflow_run(
+            community_id,
             workflow_id,
             Some(&event_id_bytes),
             trigger_ctx_json.as_ref(),
@@ -773,6 +784,7 @@ async fn handle_workflow_trigger(
                 tracing::error!("workflow_trigger: failed to parse definition: {e}");
                 if let Err(db_err) = db
                     .update_workflow_run(
+                        community_id,
                         run_id,
                         RunStatus::Failed,
                         0,
@@ -789,6 +801,7 @@ async fn handle_workflow_trigger(
 
         let result = buzz_workflow::executor::execute_from_step(
             &engine,
+            community_id,
             run_id,
             &def,
             &trigger_ctx_clone,
@@ -796,7 +809,7 @@ async fn handle_workflow_trigger(
             None,
         )
         .await;
-        engine.finalize_run(run_id, result, None).await;
+        engine.finalize_run(community_id, run_id, result, None).await;
     });
 
     // 6. Return response
@@ -867,7 +880,7 @@ async fn handle_approval_grant(
     // 2. Look up the approval record
     let approval = state
         .db
-        .get_approval_by_stored_hash(&token_hash)
+        .get_approval_by_stored_hash(tenant.community(), &token_hash)
         .await
         .map_err(|_| IngestError::Rejected("invalid: approval not found".into()))?;
 
@@ -909,6 +922,7 @@ async fn handle_approval_grant(
     let updated = state
         .db
         .update_approval_by_stored_hash(
+            tenant.community(),
             &token_hash,
             ApprovalStatus::Granted,
             Some(&self_bytes),
@@ -929,6 +943,7 @@ async fn handle_approval_grant(
         .map_err(|e| IngestError::Internal(format!("error: commit transaction: {e}")))?;
 
     // 6. Resume workflow execution (post-commit, async)
+    let community_id = tenant.community();
     let run_id = approval.run_id;
     let workflow_id = approval.workflow_id;
     let resume_index = approval.step_index as usize + 1;
@@ -936,7 +951,8 @@ async fn handle_approval_grant(
     let db = state.db.clone();
 
     tokio::spawn(async move {
-        resume_workflow_after_approval(engine, db, run_id, workflow_id, resume_index).await;
+        resume_workflow_after_approval(engine, db, community_id, run_id, workflow_id, resume_index)
+            .await;
     });
 
     // 7. Return response
@@ -975,7 +991,7 @@ async fn handle_approval_deny(
     // 2. Look up the approval record
     let approval = state
         .db
-        .get_approval_by_stored_hash(&token_hash)
+        .get_approval_by_stored_hash(tenant.community(), &token_hash)
         .await
         .map_err(|_| IngestError::Rejected("invalid: approval not found".into()))?;
 
@@ -1017,6 +1033,7 @@ async fn handle_approval_deny(
     let updated = state
         .db
         .update_approval_by_stored_hash(
+            tenant.community(),
             &token_hash,
             ApprovalStatus::Denied,
             Some(&self_bytes),
@@ -1037,12 +1054,13 @@ async fn handle_approval_deny(
         .map_err(|e| IngestError::Internal(format!("error: commit transaction: {e}")))?;
 
     // 6. Cancel the workflow run (post-commit, async)
+    let community_id = tenant.community();
     let run_id = approval.run_id;
     let pubkey_hex = self_hex.clone();
     let db = state.db.clone();
 
     tokio::spawn(async move {
-        let run = match db.get_workflow_run(run_id).await {
+        let run = match db.get_workflow_run(community_id, run_id).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("approval_deny: failed to fetch run {run_id}: {e}");
@@ -1061,6 +1079,7 @@ async fn handle_approval_deny(
         let cancel_msg = format!("workflow cancelled: approval denied by {pubkey_hex}");
         if let Err(e) = db
             .update_workflow_run(
+                community_id,
                 run_id,
                 RunStatus::Cancelled,
                 run.current_step,
@@ -1091,11 +1110,12 @@ async fn handle_approval_deny(
 async fn resume_workflow_after_approval(
     engine: Arc<buzz_workflow::WorkflowEngine>,
     db: buzz_db::Db,
+    community_id: CommunityId,
     run_id: Uuid,
     workflow_id: Uuid,
     resume_index: usize,
 ) {
-    let run = match db.get_workflow_run(run_id).await {
+    let run = match db.get_workflow_run(community_id, run_id).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("resume_workflow: failed to fetch run {run_id}: {e}");
@@ -1112,7 +1132,7 @@ async fn resume_workflow_after_approval(
         return;
     }
 
-    let workflow = match db.get_workflow(workflow_id).await {
+    let workflow = match db.get_workflow(community_id, workflow_id).await {
         Ok(w) => w,
         Err(e) => {
             tracing::error!("resume_workflow: failed to fetch workflow {workflow_id}: {e}");
@@ -1127,6 +1147,7 @@ async fn resume_workflow_after_approval(
             tracing::error!("resume_workflow: failed to parse workflow definition: {e}");
             if let Err(db_err) = db
                 .update_workflow_run(
+                    community_id,
                     run_id,
                     RunStatus::Failed,
                     run.current_step,
@@ -1166,6 +1187,7 @@ async fn resume_workflow_after_approval(
     let existing_trace = run.execution_trace.as_array().cloned();
     let result = buzz_workflow::executor::execute_from_step(
         &engine,
+        community_id,
         run_id,
         &def,
         &trigger_ctx,
@@ -1173,5 +1195,7 @@ async fn resume_workflow_after_approval(
         Some(initial_outputs),
     )
     .await;
-    engine.finalize_run(run_id, result, existing_trace).await;
+    engine
+        .finalize_run(community_id, run_id, result, existing_trace)
+        .await;
 }

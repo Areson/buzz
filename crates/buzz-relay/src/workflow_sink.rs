@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
 use buzz_core::kind::KIND_STREAM_MESSAGE;
+use buzz_core::tenant::CommunityId;
 use buzz_workflow::action_sink::{ActionSink, ActionSinkError};
 use chrono::Utc;
 use nostr::{EventBuilder, Kind, Tag};
@@ -42,6 +43,7 @@ impl RelayActionSink {
 impl ActionSink for RelayActionSink {
     fn send_message(
         &self,
+        community_id: CommunityId,
         channel_id: &str,
         text: &str,
         author_pubkey: &str,
@@ -57,18 +59,25 @@ impl ActionSink for RelayActionSink {
                 .upgrade()
                 .ok_or_else(|| ActionSinkError::Database("relay is shutting down".into()))?;
 
-            // Resolve the deployment's own community from the configured relay
-            // host — a workflow execution has no inbound connection to bind. The
-            // relay-signed kind:9 message belongs to that community. Fail closed
-            // if the host isn't mapped (never a default tenant).
-            let tenant =
-                crate::tenant::bind_deployment_community(&state.db, &state.config.relay_url)
-                    .await
-                    .map_err(|e| {
-                        ActionSinkError::Database(format!(
-                            "relay host not mapped to a community: {e:?}"
-                        ))
-                    })?;
+            // The run carries its owning community (`community_id`); the
+            // relay-signed kind:9 message belongs to *that* community, never the
+            // deployment default. Re-deriving the tenant from `config.relay_url`
+            // would post a community-B workflow's output into the deployment/
+            // default community under N>1. Read the community's host back to
+            // form a complete TenantContext (host is for labelling only — the
+            // community is already fixed and is never re-derived from it). Fail
+            // closed if the community no longer maps to a host.
+            let host = state
+                .db
+                .lookup_community_host(community_id)
+                .await
+                .map_err(|e| ActionSinkError::Database(e.to_string()))?
+                .ok_or_else(|| {
+                    ActionSinkError::Database(format!(
+                        "workflow run community {community_id} is not mapped to a host"
+                    ))
+                })?;
+            let tenant = buzz_core::tenant::TenantContext::resolved(community_id, host);
 
             // 1. Validate content is not empty/whitespace-only
             if text.trim().is_empty() {

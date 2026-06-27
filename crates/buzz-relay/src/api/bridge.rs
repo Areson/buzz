@@ -974,9 +974,25 @@ pub async fn workflow_webhook(
     let id = uuid::Uuid::parse_str(&id_str)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid workflow UUID"))?;
 
+    // Row zero: bind this webhook to its community from the request host before
+    // any tenant-scoped lookup or write. The host — not the workflow row —
+    // determines the tenant: a request for community A's host may only reach
+    // community A's workflows, even when the same workflow UUID also exists in
+    // community B. Unmapped host, lookup failure, and a workflow that does not
+    // exist in *this* community all fail closed with the same generic 404, so a
+    // caller cannot probe which hosts or workflow ids exist on other tenants.
+    let raw_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let tenant = crate::tenant::bind_community(&state.db, raw_host)
+        .await
+        .map_err(|_| not_found("workflow not found"))?;
+    let community_id = tenant.community();
+
     let workflow = state
         .db
-        .get_workflow(id)
+        .get_workflow(community_id, id)
         .await
         .map_err(|_| not_found("workflow not found"))?;
 
@@ -1045,7 +1061,7 @@ pub async fn workflow_webhook(
 
     let run_id = state
         .db
-        .create_workflow_run(id, None, trigger_ctx_json.as_ref())
+        .create_workflow_run(community_id, id, None, trigger_ctx_json.as_ref())
         .await
         .map_err(|e| super::internal_error(&format!("db error: {e}")))?;
 
@@ -1061,6 +1077,7 @@ pub async fn workflow_webhook(
                 tracing::error!("webhook: failed to parse definition: {e}");
                 if let Err(db_err) = db
                     .update_workflow_run(
+                        community_id,
                         run_id,
                         buzz_db::workflow::RunStatus::Failed,
                         0,
@@ -1077,6 +1094,7 @@ pub async fn workflow_webhook(
 
         let result = buzz_workflow::executor::execute_from_step(
             &engine,
+            community_id,
             run_id,
             &def,
             &trigger_ctx_clone,
@@ -1084,7 +1102,7 @@ pub async fn workflow_webhook(
             None,
         )
         .await;
-        engine.finalize_run(run_id, result, None).await;
+        engine.finalize_run(community_id, run_id, result, None).await;
     });
 
     Ok((

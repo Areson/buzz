@@ -21,7 +21,10 @@
 //! let (def, json) = WorkflowEngine::parse_yaml(yaml_str)?;
 //!
 //! // React to an incoming event (called from event handler post-store hook).
-//! engine.on_event(&stored_event).await?;
+//! // The community is the event's server-resolved tenant, threaded from the
+//! // relay's bound `TenantContext` — the same workflow UUID can exist in two
+//! // communities, so execution is always scoped to its owner.
+//! engine.on_event(community_id, &stored_event).await?;
 //!
 //! // Run the background scheduler (cron triggers).
 //! tokio::spawn(async move { engine.run().await });
@@ -42,6 +45,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use buzz_core::kind::{event_kind_u32, is_workflow_execution_kind, KIND_REACTION};
+use buzz_core::tenant::CommunityId;
 use buzz_db::workflow::RunStatus;
 use buzz_db::Db;
 use chrono::{DateTime, Utc};
@@ -73,10 +77,13 @@ pub struct WorkflowEngine {
     pub(crate) config: WorkflowConfig,
     /// Semaphore enforcing `config.max_concurrent` simultaneous workflow runs.
     pub(crate) run_semaphore: Arc<Semaphore>,
-    /// Last-fired timestamps for interval-triggered workflows.
+    /// Last-fired timestamps for interval-triggered workflows, keyed by
+    /// `(community_id, workflow_id)`. The same workflow UUID can exist in two
+    /// communities (the PK is `(community_id, id)`); keying by bare id would let
+    /// one community's interval fire suppress the other's for the interval.
     /// In-memory only — lost on restart. Missed fires during downtime are
     /// not replayed (acceptable for MVP).
-    pub(crate) last_fired: DashMap<Uuid, DateTime<Utc>>,
+    pub(crate) last_fired: DashMap<(CommunityId, Uuid), DateTime<Utc>>,
     /// Action sink for executing side-effects (SendMessage, etc.).
     /// Late-initialized via [`set_action_sink`] after `AppState` construction.
     pub(crate) action_sink: OnceLock<Arc<dyn ActionSink>>,
@@ -138,6 +145,7 @@ impl WorkflowEngine {
     /// approval-resume path where pre-approval steps already have trace entries.
     pub async fn finalize_run(
         &self,
+        community_id: CommunityId,
         run_id: uuid::Uuid,
         result: Result<ExecutionResult, (WorkflowError, PartialProgress)>,
         existing_trace: Option<Vec<serde_json::Value>>,
@@ -162,6 +170,7 @@ impl WorkflowEngine {
                     if let Err(e) = self
                         .db
                         .update_workflow_run(
+                            community_id,
                             run_id,
                             RunStatus::Failed,
                             step_count,
@@ -180,6 +189,7 @@ impl WorkflowEngine {
                     if let Err(e) = self
                         .db
                         .update_workflow_run(
+                            community_id,
                             run_id,
                             RunStatus::Completed,
                             step_count,
@@ -203,6 +213,7 @@ impl WorkflowEngine {
                 if let Err(db_err) = self
                     .db
                     .update_workflow_run(
+                        community_id,
                         run_id,
                         RunStatus::Failed,
                         progress.step_index as i32,
@@ -225,10 +236,17 @@ impl WorkflowEngine {
     /// Checks whether any workflow in the event's channel has a matching trigger.
     /// Workflow execution events (kinds 46001–46012) are excluded to prevent loops.
     ///
+    /// `community_id` is the server-resolved community the event was stored
+    /// under — `StoredEvent` does not carry it, and the same channel UUID can
+    /// exist in two communities, so the workflow lookup/run-creation must be
+    /// scoped to the caller's tenant or community B could trigger community A's
+    /// workflow on a colliding channel id.
+    ///
     /// The method takes `self: &Arc<Self>` so that the spawned task can hold a
     /// clone of the `Arc` without requiring `'static` on `&self`.
     pub async fn on_event(
         self: &Arc<Self>,
+        community_id: CommunityId,
         event: &buzz_core::StoredEvent,
     ) -> Result<(), WorkflowError> {
         let Some(channel_id) = event.channel_id else {
@@ -249,7 +267,7 @@ impl WorkflowEngine {
 
         let workflows = self
             .db
-            .list_enabled_channel_workflows(channel_id)
+            .list_enabled_channel_workflows(community_id, channel_id)
             .await
             .map_err(WorkflowError::from)?;
 
@@ -288,6 +306,7 @@ impl WorkflowEngine {
             let run_id = match self
                 .db
                 .create_workflow_run(
+                    community_id,
                     workflow.id,
                     Some(&trigger_event_id_bytes),
                     Some(&trigger_ctx_json),
@@ -312,8 +331,10 @@ impl WorkflowEngine {
             let ctx_clone = trigger_ctx.clone();
 
             tokio::spawn(async move {
-                let result = executor::execute_run(&engine, run_id, &def_clone, &ctx_clone).await;
-                engine.finalize_run(run_id, result, None).await;
+                let result =
+                    executor::execute_run(&engine, community_id, run_id, &def_clone, &ctx_clone)
+                        .await;
+                engine.finalize_run(community_id, run_id, result, None).await;
             });
         }
 
@@ -348,6 +369,10 @@ impl WorkflowEngine {
             };
 
             for workflow in &workflows {
+                // The same workflow UUID may exist in another community; carry
+                // the row's owning community through fire-tracking, run creation,
+                // and execution so a fire/run never crosses tenants.
+                let community_id = workflow.community_id;
                 let def: schema::WorkflowDef =
                     match serde_json::from_value(workflow.definition.clone()) {
                         Ok(d) => d,
@@ -387,7 +412,7 @@ impl WorkflowEngine {
                         interval: Some(dur),
                     } => {
                         // Fix 7: delegate to pure helper for testability.
-                        let last = self.last_fired.get(&workflow.id).map(|t| *t);
+                        let last = self.last_fired.get(&(community_id, workflow.id)).map(|t| *t);
                         (
                             interval_should_fire(dur, last, now, workflow.id),
                             "interval",
@@ -421,6 +446,7 @@ impl WorkflowEngine {
                 let run_id = match self
                     .db
                     .create_workflow_run(
+                        community_id,
                         workflow.id,
                         None, // no trigger event for cron
                         trigger_ctx_json.as_ref(),
@@ -442,7 +468,7 @@ impl WorkflowEngine {
                 // Only needed for interval triggers — cron uses window-based matching
                 // which already prevents double-fire within the same minute.
                 if trigger_type == "interval" {
-                    self.last_fired.insert(workflow.id, now);
+                    self.last_fired.insert((community_id, workflow.id), now);
                 }
 
                 // Fix 6: log the specific trigger type (cron vs interval).
@@ -458,17 +484,19 @@ impl WorkflowEngine {
                 let ctx_clone = trigger_ctx.clone();
                 tokio::spawn(async move {
                     let result =
-                        executor::execute_run(&engine, run_id, &def_clone, &ctx_clone).await;
-                    engine.finalize_run(run_id, result, None).await;
+                        executor::execute_run(&engine, community_id, run_id, &def_clone, &ctx_clone)
+                            .await;
+                    engine.finalize_run(community_id, run_id, result, None).await;
                 });
             }
 
             // Fix 1: prune stale last_fired entries for workflows that are no longer
             // active/enabled. Without this the DashMap grows monotonically as
-            // workflows are deleted or disabled.
-            let active_ids: std::collections::HashSet<Uuid> =
-                workflows.iter().map(|w| w.id).collect();
-            self.last_fired.retain(|id, _| active_ids.contains(id));
+            // workflows are deleted or disabled. Keyed by `(community_id, id)` so
+            // entries are matched to the same scope they were inserted under.
+            let active_ids: std::collections::HashSet<(CommunityId, Uuid)> =
+                workflows.iter().map(|w| (w.community_id, w.id)).collect();
+            self.last_fired.retain(|key, _| active_ids.contains(key));
         }
     }
 }

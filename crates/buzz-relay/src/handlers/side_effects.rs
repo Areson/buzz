@@ -1747,7 +1747,7 @@ async fn handle_a_tag_deletion(
             if let Ok(wf_id) = uuid::Uuid::parse_str(d_tag) {
                 state
                     .db
-                    .delete_workflow(wf_id)
+                    .delete_workflow(tenant.community(), wf_id)
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to delete workflow {wf_id}: {e}"))?;
                 tracing::info!(workflow_id = %wf_id, "Workflow deleted via NIP-09 a-tag (UUID)");
@@ -1756,13 +1756,17 @@ async fn handle_a_tag_deletion(
                 let owner_bytes = hex::decode(pubkey_hex).unwrap_or_default();
                 match state
                     .db
-                    .find_workflow_by_owner_and_name(&owner_bytes, d_tag)
+                    .find_workflow_by_owner_and_name(tenant.community(), &owner_bytes, d_tag)
                     .await
                 {
                     Ok(Some(wf)) => {
-                        state.db.delete_workflow(wf.id).await.map_err(|e| {
-                            anyhow::anyhow!("failed to delete workflow {}: {e}", wf.id)
-                        })?;
+                        state
+                            .db
+                            .delete_workflow(tenant.community(), wf.id)
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!("failed to delete workflow {}: {e}", wf.id)
+                            })?;
                         tracing::info!(workflow_id = %wf.id, name = d_tag, "Workflow deleted via NIP-09 a-tag (name)");
                     }
                     Ok(None) => {

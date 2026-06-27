@@ -375,8 +375,17 @@ pub(crate) async fn dispatch_persistent_event(
         let workflow_engine = Arc::clone(&state.workflow_engine);
         let workflow_event = stored_event.clone();
         let trigger_kind = kind_u32.to_string();
+        // The event was stored under `tenant.community()`; `StoredEvent` does
+        // not carry the community, so pass it explicitly. The same channel UUID
+        // can exist in another community — scoping the workflow lookup to this
+        // community keeps a colliding channel id in B from triggering A's
+        // workflows.
+        let workflow_community = tenant.community();
         tokio::spawn(async move {
-            if let Err(e) = workflow_engine.on_event(&workflow_event).await {
+            if let Err(e) = workflow_engine
+                .on_event(workflow_community, &workflow_event)
+                .await
+            {
                 tracing::error!(event_id = ?workflow_event.event.id, "Workflow trigger failed: {e}");
             } else {
                 metrics::counter!("buzz_workflow_runs_total", "trigger" => trigger_kind)
