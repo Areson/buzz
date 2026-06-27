@@ -80,6 +80,23 @@ pub struct Config {
     /// are permitted regardless of auth method (API token, NIP-42).
     pub require_relay_membership: bool,
 
+    /// Whether this deployment can serve huddle (voice) audio.
+    ///
+    /// Huddle audio frames are relayed peer-to-peer *within a single pod*
+    /// (`AudioRoomManager` is an in-process map; only huddle lifecycle events
+    /// cross pods via Redis). Under horizontal scaling (any-pod-any-connection,
+    /// plan §4 fork B) two peers in the same huddle can land on different pods
+    /// and never hear each other. Rather than sticky-route huddles or ship a
+    /// silent split-room (plan §5b, decided by Tyler), a horizontally-scaled
+    /// deployment sets this `false` and the relay surfaces a clear, client-
+    /// handleable "huddle audio unavailable" signal on join.
+    ///
+    /// Defaults to `true` so single-pod deployments (the N=1 case) keep today's
+    /// behavior unchanged. Operators running multiple relay pods MUST set
+    /// `BUZZ_HUDDLE_AUDIO_AVAILABLE=false` until the out-of-relay media/SFU
+    /// service lands.
+    pub huddle_audio_available: bool,
+
     /// Optional hex-encoded pubkey of the relay owner.
     /// When set, this pubkey is automatically bootstrapped into `relay_members`
     /// with the `owner` role on first startup.
@@ -189,6 +206,12 @@ impl Config {
         let require_relay_membership = std::env::var("BUZZ_REQUIRE_RELAY_MEMBERSHIP")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
+
+        // Defaults true → single-pod (N=1) keeps today's huddle behavior. A
+        // horizontally-scaled deployment sets this false; see the field doc.
+        let huddle_audio_available = std::env::var("BUZZ_HUDDLE_AUDIO_AVAILABLE")
+            .map(|v| !(v == "false" || v == "0"))
+            .unwrap_or(true);
 
         let allow_nip_oa_auth = std::env::var("BUZZ_ALLOW_NIP_OA_AUTH")
             .map(|v| v == "true" || v == "1")
@@ -390,6 +413,7 @@ impl Config {
             metrics_port,
             pubkey_allowlist_enabled,
             require_relay_membership,
+            huddle_audio_available,
             relay_owner_pubkey,
             allow_nip_oa_auth,
             media,
@@ -439,6 +463,22 @@ mod tests {
         assert!(
             !config.allow_nip_oa_auth,
             "allow_nip_oa_auth should default to false"
+        );
+        assert!(
+            config.huddle_audio_available,
+            "huddle_audio_available should default to true so single-pod (N=1) keeps today's huddle behavior"
+        );
+    }
+
+    #[test]
+    fn huddle_audio_available_can_be_disabled_for_horizontal_scaling() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("BUZZ_HUDDLE_AUDIO_AVAILABLE", "false");
+        let config = Config::from_env().expect("config");
+        std::env::remove_var("BUZZ_HUDDLE_AUDIO_AVAILABLE");
+        assert!(
+            !config.huddle_audio_available,
+            "BUZZ_HUDDLE_AUDIO_AVAILABLE=false must disable huddle audio (multi-pod deployments)"
         );
     }
 
