@@ -4,6 +4,7 @@ import type {
   AgentConversationMarker,
   OpenAgentConversationInput,
 } from "@/features/agents/agentConversations";
+import { collectMessageMentionPubkeys } from "@/features/messages/lib/formatTimelineMessages";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { Channel } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -80,11 +81,18 @@ export function useAgentConversationRouteTarget({
     const sourceAuthorIsAgent = sourceMessage.pubkey
       ? agentPubkeys.has(normalizePubkey(sourceMessage.pubkey))
       : false;
+    const mentionedAgentPubkey =
+      collectMessageMentionPubkeys([sourceMessage]).find((pubkey) =>
+        agentPubkeys.has(normalizePubkey(pubkey)),
+      ) ?? "";
     const taskAgentPubkey =
       marker?.agentPubkey ||
-      (sourceAuthorIsAgent ? (sourceMessage.pubkey ?? "") : "");
+      (sourceAuthorIsAgent ? (sourceMessage.pubkey ?? "") : "") ||
+      mentionedAgentPubkey;
     const taskAgentName =
-      marker?.agentName || (taskAgentPubkey ? sourceMessage.author : "");
+      marker?.agentName ||
+      (sourceAuthorIsAgent && taskAgentPubkey ? sourceMessage.author : "") ||
+      taskAgentPubkey;
     const rootId =
       sourceMessage.rootId ?? sourceMessage.parentId ?? sourceMessage.id;
     const contextMessages = timelineMessages.filter(
