@@ -18,6 +18,21 @@ CREATE TYPE subscription_status AS ENUM ('active', 'paused', 'deleted');
 CREATE TYPE pause_reason AS ENUM ('user', 'system', 'rate_limit');
 CREATE TYPE channel_add_policy AS ENUM ('anyone', 'owner_only', 'nobody');
 
+-- ── Communities ───────────────────────────────────────────────────────────────
+-- Host normalization: `host` is stored already-normalized — ASCII-lowercased,
+-- trailing dot stripped, default port omitted. The UNIQUE is on `lower(host)` so
+-- resolution and storage agree even if a writer forgets to normalize first.
+
+CREATE TABLE communities (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    host            VARCHAR(255) NOT NULL,
+    signing_key     BYTEA,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_communities_id_not_nil CHECK (id <> '00000000-0000-0000-0000-000000000000'::uuid)
+);
+
+CREATE UNIQUE INDEX idx_communities_host ON communities (lower(host));
+
 -- ── Channels ──────────────────────────────────────────────────────────────────
 
 CREATE TABLE channels (
