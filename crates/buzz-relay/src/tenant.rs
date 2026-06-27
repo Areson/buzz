@@ -285,7 +285,7 @@ mod tests {
         /// Delete this `#[ignore]` when the fix lands; verified RED with
         /// `cargo test -p buzz-relay --include-ignored
         ///   tenant::tests::redteam_attack2::empty_raw_host_fails_closed_even_if_db_has_empty_host_row`
-        
+
         #[tokio::test]
         async fn empty_raw_host_fails_closed_even_if_db_has_empty_host_row() {
             // Simulate operator misconfig / buggy migration: an empty-host row
@@ -311,7 +311,7 @@ mod tests {
         /// so this is the same fence collapse via a different raw input.
         ///
         /// Delete `#[ignore]` when the fix lands.
-        
+
         #[tokio::test]
         async fn whitespace_only_raw_host_fails_closed_even_if_db_has_empty_host_row() {
             let r = resolver_with("", 0xdeadbeef);
@@ -338,5 +338,4 @@ mod tests {
             assert!(matches!(err, BindError::UnmappedHost));
         }
     }
-
 }

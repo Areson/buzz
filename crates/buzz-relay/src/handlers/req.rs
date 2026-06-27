@@ -993,6 +993,13 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
     })
 }
 
+fn topic_for_subscription(channel_id: Option<uuid::Uuid>) -> EventTopic {
+    match channel_id {
+        Some(channel_id) => EventTopic::Channel(channel_id),
+        None => EventTopic::Global,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1439,12 +1446,5 @@ mod tests {
             ))
             .search("x");
         assert!(!p_gated_filters_authorized(&[f], &agent));
-    }
-}
-
-fn topic_for_subscription(channel_id: Option<uuid::Uuid>) -> EventTopic {
-    match channel_id {
-        Some(channel_id) => EventTopic::Channel(channel_id),
-        None => EventTopic::Global,
     }
 }
