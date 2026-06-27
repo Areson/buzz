@@ -65,7 +65,7 @@ pub(crate) fn connect_request_rate_limited(state: &AppState, pubkey: &nostr::Pub
 /// path in `handlers::event`. Since the desktop's Rust coordinator publishes
 /// them via `POST /events` (NIP-98), the bridge routes them here instead.
 /// Mirrors the WS door's checks in the same order: signature, pubkey-match
-/// (strict — mesh kinds are never proxy-submittable), rate limit, then the
+/// (strict — mesh kinds must come from the member's own session), rate limit, then the
 /// shared handlers. Membership is enforced both at the bridge and inside the
 /// handlers (fail-closed `require_mesh_member`).
 ///

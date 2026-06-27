@@ -434,9 +434,8 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
     // Must run before both ephemeral and persistent branches. Persistent
     // events get a second check inside ingest_event() (step 3), but
     // ephemeral events bypass the pipeline entirely.
-    let has_proxy_scope = scopes.contains(&buzz_auth::Scope::ProxySubmit);
     let is_gift_wrap = kind_u32 == KIND_GIFT_WRAP;
-    if event.pubkey != auth_pubkey && !has_proxy_scope && !is_gift_wrap {
+    if event.pubkey != auth_pubkey && !is_gift_wrap {
         reject("invalid");
         conn.send(RelayMessage::ok(
             &event_id_hex,
@@ -457,10 +456,7 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
     }
 
     if kind_u32 == KIND_AGENT_OBSERVER_FRAME {
-        if !scopes.is_empty()
-            && !scopes.contains(&buzz_auth::Scope::MessagesWrite)
-            && !has_proxy_scope
-        {
+        if !scopes.is_empty() && !scopes.contains(&buzz_auth::Scope::MessagesWrite) {
             reject("scope");
             conn.send(RelayMessage::ok(
                 &event_id_hex,
@@ -473,36 +469,17 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
         return;
     }
 
-    // Scope enforcement for ephemeral kinds: require MessagesWrite or
-    // ProxySubmit. Persistent events skip this gate and rely on
+    // Scope enforcement for ephemeral kinds: require MessagesWrite.
+    // Persistent events skip this gate and rely on
     // ingest_event()'s per-kind scope allowlist instead, so a token with
     // only ChannelsWrite can still submit kind:9002 via WS.
     if is_ephemeral(kind_u32) {
-        if !scopes.is_empty()
-            && !scopes.contains(&buzz_auth::Scope::MessagesWrite)
-            && !has_proxy_scope
-        {
+        if !scopes.is_empty() && !scopes.contains(&buzz_auth::Scope::MessagesWrite) {
             reject("scope");
             conn.send(RelayMessage::ok(
                 &event_id_hex,
                 false,
                 "restricted: insufficient scope for ephemeral events",
-            ));
-            return;
-        }
-        // Mesh signaling kinds are direct desktop-user actions: the resulting
-        // call-me-now routes to the *authenticated connection's* pubkey, so a
-        // proxy-submitted mesh request would point the dial at the proxy, not the
-        // user's desktop. Reject mesh kinds under proxy scope — they must come
-        // from the member's own session.
-        if has_proxy_scope
-            && (kind_u32 == KIND_MESH_CONNECT_REQUEST || kind_u32 == KIND_MESH_STATUS_REPORT)
-        {
-            reject("scope");
-            conn.send(RelayMessage::ok(
-                &event_id_hex,
-                false,
-                "restricted: mesh signaling cannot be proxy-submitted",
             ));
             return;
         }

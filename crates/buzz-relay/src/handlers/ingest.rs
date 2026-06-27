@@ -1,6 +1,6 @@
 //! Transport-neutral event ingestion pipeline.
 //!
-//! Both WebSocket `["EVENT", ...]` and `POST /api/events` feed into
+//! Both WebSocket `["EVENT", ...]` and HTTP `POST /events` feed into
 //! [`ingest_event`] — two doors, one room.
 
 use std::sync::Arc;
@@ -95,11 +95,6 @@ impl IngestAuth {
         match self {
             Self::Nip42 { scopes, .. } | Self::Http { scopes, .. } => scopes,
         }
-    }
-
-    /// Whether this auth context includes the `ProxySubmit` scope.
-    pub fn has_proxy_scope(&self) -> bool {
-        self.scopes().contains(&Scope::ProxySubmit)
     }
 
     /// WebSocket connection ID (Nip42 only).
@@ -1235,17 +1230,13 @@ async fn ingest_event_inner(
         }
     }
 
-    // Skip for proxy:submit — proxy-translated events preserve upstream
-    // created_at timestamps which may be historical (backfill/replay).
-    if !auth.has_proxy_scope() {
-        const MAX_TIMESTAMP_DRIFT_SECS: i64 = 900; // ±15 minutes
-        let now = chrono::Utc::now().timestamp();
-        let event_ts = event.created_at.as_secs() as i64;
-        if (event_ts - now).abs() > MAX_TIMESTAMP_DRIFT_SECS {
-            return Err(IngestError::Rejected(
-                "invalid: event timestamp too far from server time".into(),
-            ));
-        }
+    const MAX_TIMESTAMP_DRIFT_SECS: i64 = 900; // ±15 minutes
+    let now = chrono::Utc::now().timestamp();
+    let event_ts = event.created_at.as_secs() as i64;
+    if (event_ts - now).abs() > MAX_TIMESTAMP_DRIFT_SECS {
+        return Err(IngestError::Rejected(
+            "invalid: event timestamp too far from server time".into(),
+        ));
     }
 
     const MAX_EVENT_CONTENT_BYTES: usize = 256 * 1024; // 256 KB
@@ -1258,7 +1249,7 @@ async fn ingest_event_inner(
     }
 
     let is_gift_wrap = kind_u32 == KIND_GIFT_WRAP;
-    if event.pubkey != *auth.pubkey() && !auth.has_proxy_scope() && !is_gift_wrap {
+    if event.pubkey != *auth.pubkey() && !is_gift_wrap {
         return Err(IngestError::AuthFailed(
             "invalid: event pubkey does not match authenticated identity".into(),
         ));
@@ -1268,13 +1259,6 @@ async fn ingest_event_inner(
         Ok(scope) => scope,
         Err(msg) => return Err(IngestError::Rejected(msg.into())),
     };
-    // NIP-43: relay admin commands must NOT be submitted via proxy — they require
-    // the actual admin's signed event for authorization.
-    if auth.has_proxy_scope() && is_relay_admin_kind(event.kind.as_u16() as u32) {
-        return Err(IngestError::Rejected(
-            "invalid: relay admin commands cannot be submitted via proxy".into(),
-        ));
-    }
     // NIP-43: relay admin commands are global — channel-scoped tokens cannot
     // issue them even if the event has no `h` tag (is_global_only_kind strips
     // channel_id, but we still need to reject the token itself).
@@ -1291,7 +1275,7 @@ async fn ingest_event_inner(
             "restricted: leave requests require a global token".into(),
         ));
     }
-    if !auth.has_proxy_scope() && !auth.scopes().contains(&required) {
+    if !auth.scopes().contains(&required) {
         return Err(IngestError::AuthFailed(format!(
             "restricted: insufficient scope (need {})",
             required
@@ -1395,9 +1379,8 @@ async fn ingest_event_inner(
     if let Some(ch_id) = channel_id {
         // kind:9021 (join) doesn't require prior membership.
         // kind:9007 (create) — channel doesn't exist yet; creator becomes owner in step 16.
-        let skip_membership = kind_u32 == KIND_NIP29_JOIN_REQUEST
-            || kind_u32 == KIND_NIP29_CREATE_GROUP
-            || auth.has_proxy_scope();
+        let skip_membership =
+            kind_u32 == KIND_NIP29_JOIN_REQUEST || kind_u32 == KIND_NIP29_CREATE_GROUP;
         if !skip_membership {
             // Spec AuthCheck (line 794): emit the verdict at the actual
             // call site. claimed_community comes from the event's h tag

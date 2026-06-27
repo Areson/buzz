@@ -992,34 +992,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "buzz-proxy"
-version = "0.1.0"
-dependencies = [
- "axum",
- "buzz-core",
- "chrono",
- "dashmap",
- "futures-util",
- "hex",
- "hmac 0.13.0",
- "moka",
- "nostr",
- "rand 0.10.1",
- "reqwest 0.13.3",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite 0.29.0",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "buzz-pubsub"
 version = "0.1.0"
 dependencies = [

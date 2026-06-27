@@ -285,13 +285,6 @@ relay-web: bootstrap _ensure-migrations
 relay-release: _ensure-migrations
     cargo run -p buzz-relay --release
 
-# Start buzz-proxy (dev mode)
-proxy:
-    cargo run -p buzz-proxy
-
-# Start buzz-proxy (release mode)
-proxy-release:
-    cargo run -p buzz-proxy --release
 
 # Run the desktop Tauri app in dev mode with a local relay (ports and identity derived from worktree)
 dev *ARGS: bootstrap _ensure-sidecar-stubs _ensure-migrations

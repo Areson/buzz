@@ -7,7 +7,7 @@
 //!
 //!   1. **N=1 parity** — with one configured host → one default community, every
 //!      existing client observes byte-identical behavior. This is asserted by the
-//!      *existing* e2e suites (`e2e_relay`, `e2e_rest_api`, `e2e_media`, …) run
+//!      *existing* e2e suites (`e2e_relay`, `e2e_media`, `e2e_git`, …) run
 //!      with `RELAY_URL` pointed at the new relay; no new test is needed here,
 //!      only the documented obligation that those suites stay green unchanged.
 //!
@@ -833,8 +833,7 @@ mod api_tokens_nip98_replay {
 
     /// Build a `Authorization: Nostr <base64>` header value for NIP-98 HTTP
     /// auth (kind 27235 `HttpAuth` with `u`/`method`/`payload` tags). Mirrors
-    /// the pattern in `crates/buzz-auth/src/nip98.rs` and the helper in
-    /// `crates/buzz-test-client/tests/e2e_tokens.rs:52` — kept local to this
+    /// the pattern in `crates/buzz-auth/src/nip98.rs`; kept local to this
     /// row so the conformance file's rows stay self-contained.
     fn build_nip98_header(keys: &Keys, url: &str, method: &str, body: &[u8]) -> String {
         let payload_hash = hex::encode(Sha256::digest(body));

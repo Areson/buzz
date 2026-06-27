@@ -43,7 +43,7 @@ fn credential_helper() -> PathBuf {
     p
 }
 
-/// Submit a signed event to the relay's REST bridge (`POST /api/events`).
+/// Submit a signed event to the relay's HTTP bridge (`POST /events`).
 async fn post_event(event: &nostr::Event) {
     let client = reqwest::Client::new();
     let resp = client
