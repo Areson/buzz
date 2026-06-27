@@ -34,6 +34,11 @@ pub mod tenant;
 pub mod webhook_secret;
 /// Workflow action sink — relay-side implementation of [`buzz_workflow::ActionSink`].
 pub mod workflow_sink;
+/// Runtime conformance harness — abstract trace emission at the
+/// ingest/read accept-reject boundary, replayed against
+/// `docs/spec/MultiTenantRelay.tla` by the independent `buzz-conformance`
+/// checker.
+pub mod conformance;
 
 pub use config::Config;
 pub use error::{RelayError, Result};
