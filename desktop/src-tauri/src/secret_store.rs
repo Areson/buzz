@@ -99,7 +99,7 @@ fn keyring_entry(service: &str, key: &str) -> Result<keyring::Entry, keyring::Er
 use security_framework::base::Error as SFError;
 #[cfg(all(feature = "system-keyring", target_os = "macos"))]
 use security_framework::passwords::{
-    delete_generic_password_options, generic_password, PasswordOptions,
+    delete_generic_password_options, generic_password, set_generic_password, PasswordOptions,
 };
 
 /// Returns true when the security-framework error is "item not found" (-25300).
@@ -233,10 +233,12 @@ impl SecretStore {
         Ok(())
     }
 
-    /// Always uses the legacy keyring crate on macOS — see `read_blob_raw`.
+    /// macOS writes through Security.framework so the existing legacy blob is
+    /// updated instead of duplicate-failing through the `keyring` crate path.
     #[cfg(all(feature = "system-keyring", target_os = "macos"))]
     fn write_blob_raw(&self, bytes: &[u8]) -> Result<(), String> {
-        self.write_blob_raw_keyring(bytes)
+        set_generic_password(&self.service, BLOB_KEY, bytes)
+            .map_err(|e| format!("keyring write: {e}"))
     }
 
     #[cfg(all(feature = "system-keyring", not(target_os = "macos")))]
@@ -244,7 +246,7 @@ impl SecretStore {
         self.write_blob_raw_keyring(bytes)
     }
 
-    #[cfg(feature = "system-keyring")]
+    #[cfg(all(feature = "system-keyring", not(target_os = "macos")))]
     fn write_blob_raw_keyring(&self, bytes: &[u8]) -> Result<(), String> {
         let value = std::str::from_utf8(bytes).map_err(|e| format!("blob utf8 encode: {e}"))?;
         let entry =
