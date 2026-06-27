@@ -51,6 +51,15 @@ fn url_b() -> String {
     std::env::var("RELAY_URL_B").unwrap_or_else(|_| "http://b.localhost:3000".to_string())
 }
 
+/// An unmapped/unknown host on the same relay process. No community row maps to
+/// it, so the relay must fail closed (404) rather than fall through to a default
+/// tenant. `*.localhost` resolves to 127.0.0.1, so this addresses the same relay
+/// as `url_a`/`url_b` but presents a `Host` no community is bound to.
+fn url_unknown() -> String {
+    std::env::var("RELAY_URL_UNKNOWN")
+        .unwrap_or_else(|_| "http://unknown.localhost:3000".to_string())
+}
+
 /// Marker for a conformance obligation whose lane has not yet landed on the
 /// integration branch. Centralizes the "not yet wired" panic so the harvest of
 /// remaining work is one grep: `rg pending_lane conformance_multitenant.rs`.
@@ -94,15 +103,113 @@ mod row_zero_host_binding {
 mod nip11_relay_info {
     use super::*;
 
+    /// Fetch the NIP-11 relay information document from `base_url`'s root with
+    /// `Accept: application/nostr+json`. Returns `(status, body)`; `body` is the
+    /// raw response text (parsed by callers as needed).
+    ///
+    /// The `Host` header is implied by `base_url` — `a.localhost`/`b.localhost`
+    /// both resolve to 127.0.0.1, so reqwest addresses the same relay process
+    /// and the relay derives the community from the host. That host-derivation
+    /// is exactly what this row exercises; nothing here is caller-supplied.
+    async fn fetch_nip11(base_url: &str) -> (reqwest::StatusCode, String) {
+        let client = reqwest::Client::builder()
+            .build()
+            .expect("build reqwest client");
+        let resp = client
+            .get(base_url)
+            .header(reqwest::header::ACCEPT, "application/nostr+json")
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("NIP-11 GET {base_url} failed: {e}"));
+        let status = resp.status();
+        let body = resp.text().await.expect("read NIP-11 body");
+        (status, body)
+    }
+
     /// Obligation: unauthenticated NIP-11 reads must not become an enumeration
     /// oracle for other communities; `RelayInfo::build` takes only static +
     /// host-scoped inputs (the static-input lint backs this at compile/CI time).
+    ///
+    /// This is the *black-box* complement to that compile-time fence
+    /// (`crates/buzz-relay/src/nip11.rs::_RELAY_INFO_BUILD_STATIC_INPUT_FENCE`):
+    /// the fence proves `RelayInfo::build` *cannot* take an unscoped DB/search
+    /// input; this test proves the *observable wire behavior* — that the served
+    /// document carries nothing that distinguishes one community from another.
+    ///
+    /// Because `RelayInfo::build` is genuinely static-input today, host A's and
+    /// host B's NIP-11 bodies are byte-identical, and that identity *is* the
+    /// proof: no field varies by community, so an unauthenticated reader cannot
+    /// use the document to probe whether (or how) community B is configured.
+    /// The moment a per-community value leaks into the doc, the two bodies
+    /// diverge and this assertion fails — that is the mutate-bite this row
+    /// guards (seed a community-distinguishing field into the served doc → the
+    /// A≡B assertion goes red).
     #[tokio::test]
     #[ignore]
     async fn nip11_is_not_a_cross_community_enumeration_oracle() {
-        pending_lane(
-            "relay-wiring",
-            "NIP-11 from host A reveals nothing about community B's existence/config",
+        let (status_a, body_a) = fetch_nip11(&url_a()).await;
+        let (status_b, body_b) = fetch_nip11(&url_b()).await;
+
+        assert_eq!(
+            status_a,
+            reqwest::StatusCode::OK,
+            "host A must serve its NIP-11 document"
+        );
+        assert_eq!(
+            status_b,
+            reqwest::StatusCode::OK,
+            "host B must serve its NIP-11 document"
+        );
+
+        // Both bodies must be valid NIP-11 JSON — a relay-info object, not an
+        // error page or a host echo.
+        let json_a: serde_json::Value =
+            serde_json::from_str(&body_a).expect("host A NIP-11 is valid JSON");
+        let json_b: serde_json::Value =
+            serde_json::from_str(&body_b).expect("host B NIP-11 is valid JSON");
+        assert!(
+            json_a.get("supported_nips").is_some(),
+            "host A NIP-11 must be a relay-info document (has supported_nips)"
+        );
+        assert!(
+            json_b.get("supported_nips").is_some(),
+            "host B NIP-11 must be a relay-info document (has supported_nips)"
+        );
+
+        // The enumeration-oracle obligation: no field of the served document
+        // varies by community. Identical bodies are the proof that the doc
+        // cannot be used to distinguish or probe another tenant.
+        assert_eq!(
+            json_a, json_b,
+            "NIP-11 from host A and host B must be identical: any community-\
+             distinguishing field would make the unauthenticated relay-info \
+             document an enumeration oracle for other tenants"
+        );
+
+        // An *unmapped* host must get the SAME document too — not a 404. NIP-11
+        // is intentionally host-agnostic (served from static facts BEFORE host
+        // binding; see `router.rs::nip11_or_ws_handler`). If an unknown host
+        // 404'd here while a mapped host returned 200, that status difference
+        // would itself be the enumeration oracle — a caller could probe which
+        // hosts are configured by watching for 404-vs-200. Serving the identical
+        // static doc to every host, mapped or not, is precisely what denies that
+        // oracle. (Fail-closed host binding lives on the WS-upgrade / non-
+        // `nostr+json` path and is asserted by `row_zero_host_binding`.)
+        let (status_unknown, body_unknown) = fetch_nip11(&url_unknown()).await;
+        assert_eq!(
+            status_unknown,
+            reqwest::StatusCode::OK,
+            "an unmapped host must still receive the static NIP-11 document, not \
+             a 404 — a status difference between mapped and unmapped hosts would \
+             itself be a community-enumeration oracle"
+        );
+        let json_unknown: serde_json::Value = serde_json::from_str(&body_unknown)
+            .expect("unmapped-host NIP-11 is valid JSON");
+        assert_eq!(
+            json_a, json_unknown,
+            "NIP-11 served to an unmapped host must be byte-identical to a mapped \
+             host's document: the relay-info doc carries no host-derived field, \
+             so it cannot reveal whether a given host is configured"
         );
     }
 }
