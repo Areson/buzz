@@ -38,6 +38,7 @@ type UseLoadOlderOnScrollOptions = {
   virtualizer?: {
     getVirtualizer: () => ListVirtualizer | null;
     indexByMessageId: Map<string, number>;
+    /** Current rendered item count (timeline rows + day/unread dividers). */
     itemCount: number;
     /** Live (non-deferred) message count for growth detection during load-older. */
     liveMessageCount?: number;
@@ -248,7 +249,7 @@ export function useLoadOlderOnScroll({
                 const target = resolveTarget({
                   instance: grew ? instance : null,
                   abandonedToBottom,
-                  lastIndex: (after?.liveMessageCount ?? previousCount) - 1,
+                  lastIndex: (after?.itemCount ?? virt.itemCount) - 1,
                   newIndex,
                   anchorTop,
                 });
