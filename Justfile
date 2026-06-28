@@ -169,9 +169,10 @@ _ensure-services:
     echo " timed out"
     exit 1
 
-# Apply database migrations if the dev database is running
+# Apply database migrations and seed the local dev community if the dev database is running
 _ensure-migrations: _ensure-services
     cargo run -p buzz-admin -- migrate
+    ./scripts/seed-local-community.sh
 
 # Run clippy on the desktop Tauri Rust crate
 desktop-tauri-clippy: _ensure-sidecar-stubs

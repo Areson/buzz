@@ -129,6 +129,7 @@ until postgres_accepting_connections; do
 done
 
 "${REPO_ROOT}/bin/cargo" run -p buzz-admin -- migrate
+"${REPO_ROOT}/scripts/seed-local-community.sh"
 success "Database migrations complete"
 
 # ---- Install desktop dependencies -------------------------------------------
