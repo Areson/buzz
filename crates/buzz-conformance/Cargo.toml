@@ -26,3 +26,10 @@ serde       = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }
 uuid        = { workspace = true }
+
+# Independence rule still holds for dev-deps: proptest is a test-only
+# generator harness, not a production crate, and the property tests call
+# only the crate's public `check_trace` API — never the production reducer
+# and never `transitions::check_step` as a parallel oracle.
+[dev-dependencies]
+proptest = { workspace = true }
