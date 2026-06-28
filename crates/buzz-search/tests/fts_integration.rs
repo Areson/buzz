@@ -676,6 +676,119 @@ async fn channel_less_only_excludes_per_channel_events() {
     teardown(pool, &schema).await;
 }
 
+/// Search-input hardening: NUL bytes are not valid Postgres text-search input.
+/// Sanitize before calling `websearch_to_tsquery` so the bridge does not turn
+/// adversarial search text into HTTP 500s.
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn nul_bytes_in_query_are_sanitized() {
+    let (pool, schema) = setup().await;
+
+    let c = mk_community(&pool, "nul.example").await;
+    let evt_id = rand_bytes32();
+    insert_event(
+        &pool,
+        c,
+        evt_id,
+        rand_bytes32(),
+        9,
+        "foo bar search text",
+        None,
+        1_700_000_000,
+    )
+    .await;
+
+    let svc = SearchService::new(pool.clone());
+    let result = svc
+        .search(&SearchQuery {
+            community: c,
+            q: "foo\0bar".into(),
+            channel_scope: ChannelScope::Any,
+            kinds: None,
+            authors: None,
+            since: None,
+            until: None,
+            page: 1,
+            per_page: 10,
+        })
+        .await
+        .expect("NUL-containing search query should not bubble a Postgres error");
+
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].event_id, evt_id);
+
+    teardown(pool, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn enormous_page_number_is_clamped() {
+    let (pool, schema) = setup().await;
+
+    let c = mk_community(&pool, "page-clamp.example").await;
+    for i in 0..5 {
+        insert_event(
+            &pool,
+            c,
+            rand_bytes32(),
+            rand_bytes32(),
+            9,
+            "clamp-token",
+            None,
+            1_700_000_000 + i,
+        )
+        .await;
+    }
+
+    let svc = SearchService::new(pool.clone());
+    let result = svc
+        .search(&SearchQuery {
+            community: c,
+            q: "clamp-token".into(),
+            channel_scope: ChannelScope::Any,
+            kinds: None,
+            authors: None,
+            since: None,
+            until: None,
+            page: u32::MAX,
+            per_page: 10,
+        })
+        .await
+        .expect("huge page number should be bounded, not error");
+
+    assert_eq!(result.page, 1000);
+    assert!(result.hits.is_empty());
+
+    teardown(pool, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn very_long_query_is_bounded_before_pg_parse() {
+    let (pool, schema) = setup().await;
+
+    let c = mk_community(&pool, "long-query.example").await;
+    let svc = SearchService::new(pool.clone());
+    let result = svc
+        .search(&SearchQuery {
+            community: c,
+            q: "x".repeat(10_000),
+            channel_scope: ChannelScope::Any,
+            kinds: None,
+            authors: None,
+            since: None,
+            until: None,
+            page: 1,
+            per_page: 10,
+        })
+        .await
+        .expect("long search query should be capped before Postgres parses it");
+
+    assert!(result.hits.is_empty());
+
+    teardown(pool, &schema).await;
+}
+
 /// Privacy regression gate: the storage layer MUST NOT make these kinds
 /// searchable. The migration's `search_tsv` generated column emits NULL
 /// for excluded kinds, so a `search_tsv @@ query` probe never matches.

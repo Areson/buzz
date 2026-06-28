@@ -402,6 +402,12 @@ pub async fn query_events(
         .map_err(|e| internal_error(&format!("channel access lookup: {e}")))?;
 
     if filters.iter().any(|f| f.search.is_some()) {
+        if has_mixed_search_filters(&filters) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "mixed search and non-search filters not supported",
+            ));
+        }
         return handle_bridge_search(
             &state,
             &filters,
@@ -798,6 +804,10 @@ pub async fn count_events(
     }
 
     Ok(Json(serde_json::json!({ "count": total })))
+}
+
+fn has_mixed_search_filters(filters: &[nostr::Filter]) -> bool {
+    filters.iter().any(|f| f.search.is_some()) && filters.iter().any(|f| f.search.is_none())
 }
 
 /// Decide whether a search hit should be returned to the caller.
@@ -1226,6 +1236,36 @@ mod tests {
             .expect("sign auth event")
             .id
             .to_bytes()
+    }
+
+    #[test]
+    fn bridge_detects_mixed_search_and_non_search_filters() {
+        let filters = vec![
+            nostr::Filter::new().search("hello"),
+            nostr::Filter::new().kind(Kind::TextNote),
+        ];
+
+        assert!(has_mixed_search_filters(&filters));
+    }
+
+    #[test]
+    fn bridge_accepts_all_search_filters() {
+        let filters = vec![
+            nostr::Filter::new().search("hello"),
+            nostr::Filter::new().search("world"),
+        ];
+
+        assert!(!has_mixed_search_filters(&filters));
+    }
+
+    #[test]
+    fn bridge_accepts_all_non_search_filters() {
+        let filters = vec![
+            nostr::Filter::new().kind(Kind::TextNote),
+            nostr::Filter::new().kind(Kind::Metadata),
+        ];
+
+        assert!(!has_mixed_search_filters(&filters));
     }
 
     /// Attack 3 proof: two stateless relay pods sharing Redis must share one

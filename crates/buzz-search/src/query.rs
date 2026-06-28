@@ -113,6 +113,33 @@ pub struct SearchResult {
 
 const PER_PAGE_MAX: u32 = 500;
 const PER_PAGE_DEFAULT: u32 = 100;
+/// Hard cap on search text handed to `websearch_to_tsquery`. This keeps a
+/// single request from spending unbounded parser CPU/memory while still allowing
+/// far longer queries than the desktop UI normally emits.
+const SEARCH_TEXT_MAX_CHARS: usize = 4096;
+/// Search pages are currently server-generated (WS uses 1..=MAX_SEARCH_PAGES,
+/// bridge uses page 1), but clamp here too so a future caller cannot accidentally
+/// wire untrusted input into a multi-trillion-row OFFSET.
+const PAGE_MAX: u32 = 1000;
+
+fn normalized_search_text(q: &str) -> Option<String> {
+    let trimmed = q.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut cleaned = String::with_capacity(trimmed.len().min(SEARCH_TEXT_MAX_CHARS));
+    for ch in trimmed.chars().take(SEARCH_TEXT_MAX_CHARS) {
+        cleaned.push(if ch == '\0' { ' ' } else { ch });
+    }
+
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned.to_string())
+    }
+}
 
 /// Execute a community-scoped FTS query.
 ///
@@ -133,13 +160,12 @@ const PER_PAGE_DEFAULT: u32 = 100;
 /// `community_id = $ctx` is the first predicate and is non-negotiable. There
 /// is no code path through this function that omits it.
 pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, SearchError> {
-    let trimmed = query.q.trim();
-    if trimmed.is_empty() {
+    let Some(search_text) = normalized_search_text(&query.q) else {
         return Ok(SearchResult {
             hits: Vec::new(),
-            page: query.page.max(1),
+            page: query.page.max(1).min(PAGE_MAX),
         });
-    }
+    };
 
     let per_page = query.per_page.clamp(1, PER_PAGE_MAX);
     let per_page_actual = if query.per_page == 0 {
@@ -147,7 +173,7 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     } else {
         per_page
     };
-    let page = query.page.max(1);
+    let page = query.page.max(1).min(PAGE_MAX);
     let offset = ((page - 1) as i64) * (per_page_actual as i64);
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
@@ -156,7 +182,7 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
          ts_rank_cd(search_tsv, query) AS rank \
          FROM events, websearch_to_tsquery('simple', ",
     );
-    qb.push_bind(trimmed);
+    qb.push_bind(&search_text);
     qb.push(") AS query WHERE community_id = ");
     qb.push_bind(*query.community.as_uuid());
     qb.push(" AND deleted_at IS NULL AND search_tsv @@ query");
@@ -240,4 +266,33 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     }
 
     Ok(SearchResult { hits, page })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalized_search_text_trims_and_rejects_empty() {
+        assert_eq!(
+            normalized_search_text("  hello  ").as_deref(),
+            Some("hello")
+        );
+        assert!(normalized_search_text("   ").is_none());
+    }
+
+    #[test]
+    fn normalized_search_text_replaces_nul_bytes() {
+        assert_eq!(
+            normalized_search_text("foo\0bar").as_deref(),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn normalized_search_text_caps_length() {
+        let long = "x".repeat(SEARCH_TEXT_MAX_CHARS + 10);
+        let cleaned = normalized_search_text(&long).expect("non-empty");
+        assert_eq!(cleaned.chars().count(), SEARCH_TEXT_MAX_CHARS);
+    }
 }
