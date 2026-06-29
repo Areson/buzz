@@ -16,10 +16,7 @@ import {
   type AgentConversationMarker,
 } from "@/features/agents/agentConversations";
 import { buildDirectMessageIntro } from "@/features/channels/lib/dmParticipantDisplay";
-import {
-  getDmHuddleMemberPubkeys,
-  hasOtherDmParticipant,
-} from "@/features/channels/lib/dmHuddleMembers";
+import { getDmHuddleMemberPubkeys } from "@/features/channels/lib/dmHuddleMembers";
 import {
   buildVideoReviewCommentsByRootId,
   buildVideoReviewContextForMessage,
@@ -176,8 +173,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     () => getDmHuddleMemberPubkeys(activeChannel, agentPubkeys, currentPubkey),
     [activeChannel, agentPubkeys, currentPubkey],
   );
-  const huddleMemberPubkeysPending =
-    agentPubkeysPending && hasOtherDmParticipant(activeChannel, currentPubkey);
+  const huddleMemberPubkeysPending = agentPubkeysPending;
   const isActiveWelcomeChannel =
     activeChannel !== null && isWelcomeChannel(activeChannel);
   React.useEffect(() => {

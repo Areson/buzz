@@ -56,11 +56,11 @@ export function WaveMessageAttachment({
   const targetAgentLookupPending =
     targetIsAgent &&
     normalizedTargetPubkey !== null &&
-    (huddleMemberPubkeysPending ||
-      (targetAgentPubkey === null &&
-        !resolvedHuddleMemberPubkeys.some(
-          (pubkey) => normalizePubkey(pubkey) === normalizedTargetPubkey,
-        )));
+    huddleMemberPubkeysPending &&
+    targetAgentPubkey === null &&
+    !resolvedHuddleMemberPubkeys.some(
+      (pubkey) => normalizePubkey(pubkey) === normalizedTargetPubkey,
+    );
   const startHuddleDisabled =
     !channelId || isStarting || targetAgentLookupPending;
 

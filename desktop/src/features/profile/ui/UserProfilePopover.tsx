@@ -212,8 +212,7 @@ export function UserProfilePopover({
   const isAgentByProfile = Boolean(
     usersBatchQuery.data?.profiles[normalizePubkey(pubkey)]?.isAgent,
   );
-  const isAgentTarget =
-    isBotProfile || isAgentByProfile || isAgentClassificationPending;
+  const isAgentTarget = isBotProfile || isAgentByProfile;
   const displayName = profile?.displayName ?? truncatePubkey(pubkey);
   // Owner signal mirrors UserProfilePanel: a declared NIP-OA owner whose agent
   // runs elsewhere holds no local seckey, so key custody (`isOwner`) alone
@@ -368,7 +367,13 @@ export function UserProfilePopover({
   ]);
 
   const handleWave = React.useCallback(async () => {
-    if (!showProfileActions || pendingAction !== null) return;
+    if (
+      !showProfileActions ||
+      pendingAction !== null ||
+      isAgentClassificationPending
+    ) {
+      return;
+    }
 
     clearHoverTimer();
     setPendingAction("wave");
@@ -453,6 +458,7 @@ export function UserProfilePopover({
     currentPubkey,
     goChannel,
     identityQuery.data,
+    isAgentClassificationPending,
     isAgentTarget,
     openDmMutation,
     pendingAction,
@@ -614,7 +620,9 @@ export function UserProfilePopover({
                     className="buzz-wave-hover-trigger shrink-0 px-3"
                     data-testid={`user-profile-popover-wave-${pubkey}`}
                     disabled={
-                      pendingAction !== null || openDmMutation.isPending
+                      pendingAction !== null ||
+                      openDmMutation.isPending ||
+                      isAgentClassificationPending
                     }
                     onClick={() => {
                       void handleWave();

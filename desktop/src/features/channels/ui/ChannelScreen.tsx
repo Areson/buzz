@@ -375,8 +375,7 @@ export function ChannelScreen({
       (messageProfilesQuery.isPending ||
         messageProfilesQuery.isFetching ||
         messageProfilesQuery.isPlaceholderData));
-  const agentPubkeysPending =
-    activeChannel?.channelType === "dm" && agentLookupPending;
+  const agentPubkeysPending = agentLookupPending;
   const {
     agentSessionCandidates,
     botTypingEntries,

@@ -57,3 +57,18 @@ export function parseWaveMessageContent(
     targetIsAgent,
   };
 }
+
+export function collectWaveTargetPubkeys(
+  events: Array<{ content?: string }>,
+): string[] {
+  const pubkeys = new Set<string>();
+
+  for (const event of events) {
+    const waveMessage = parseWaveMessageContent(event.content ?? "");
+    if (waveMessage?.targetPubkey) {
+      pubkeys.add(waveMessage.targetPubkey);
+    }
+  }
+
+  return [...pubkeys];
+}
