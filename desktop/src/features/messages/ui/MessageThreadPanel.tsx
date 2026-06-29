@@ -300,7 +300,7 @@ export function MessageThreadPanelSkeleton({
 
   const threadBody = (
     <AuxiliaryPanelBody
-      className="overflow-y-auto overflow-x-hidden overscroll-contain pb-40 [overflow-anchor:none]"
+      className="overflow-y-auto overflow-x-hidden overscroll-contain pb-40"
       data-testid="message-thread-loading"
     >
       <div
@@ -492,7 +492,7 @@ export function MessageThreadPanel({
 
   const threadScrollRegion = (
     <AuxiliaryPanelBody
-      className="overflow-y-auto overflow-x-hidden overscroll-contain pb-40 [overflow-anchor:none]"
+      className="overflow-y-auto overflow-x-hidden overscroll-contain pb-40"
       data-testid="message-thread-body"
       onScroll={onScroll}
       ref={threadBodyRef}
