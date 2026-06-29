@@ -172,6 +172,8 @@ export function ChannelTasksView({
       !isTimelineLoading &&
       (messages.length > 0 || channelTaskMarkers.length > 0),
   );
+  const canAutoLoadOlderTasks =
+    canLoadOlderTasks && channelTaskMarkers.length > 0;
   const handleLoadOlderTasks = React.useCallback(() => {
     if (!fetchOlder || isFetchingOlder) {
       return;
@@ -181,7 +183,7 @@ export function ChannelTasksView({
   }, [fetchOlder, isFetchingOlder]);
 
   React.useEffect(() => {
-    if (!canLoadOlderTasks || isFetchingOlder) {
+    if (!canAutoLoadOlderTasks || isFetchingOlder) {
       return;
     }
 
@@ -202,7 +204,7 @@ export function ChannelTasksView({
     observer.observe(target);
     return () => observer.disconnect();
   }, [
-    canLoadOlderTasks,
+    canAutoLoadOlderTasks,
     handleLoadOlderTasks,
     isFetchingOlder,
     scrollContainerRef,
