@@ -22,6 +22,7 @@ import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
 import { parseImetaTags } from "@/features/messages/lib/parseImeta";
 import { useMessageEmoji } from "@/features/messages/lib/useMessageEmoji";
+import { parseWaveMessageContent } from "@/features/messages/lib/waveMessage";
 import {
   resolveMentionNames,
   resolveMentionPubkeysByName,
@@ -31,6 +32,7 @@ import type { VideoReviewContext } from "@/shared/ui/VideoPlayer";
 import { MessageActionBar } from "./MessageActionBar";
 import { MessageAuthorText, MessageHeaderRow } from "./MessageHeader";
 import { MessageTimestamp } from "./MessageTimestamp";
+import { WaveMessageAttachment } from "./WaveMessageAttachment";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 const DiffMessage = React.lazy(() => import("./DiffMessage"));
@@ -275,6 +277,18 @@ export const MessageRow = React.memo(
             </React.Suspense>
           );
         default:
+          {
+            const waveMessage = parseWaveMessageContent(message.body);
+            if (waveMessage) {
+              return (
+                <WaveMessageAttachment
+                  channelId={channelId}
+                  fallbackText={waveMessage.fallbackText}
+                />
+              );
+            }
+          }
+
           return (
             <Markdown
               channelNames={channelNames}

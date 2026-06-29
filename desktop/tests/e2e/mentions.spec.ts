@@ -1208,9 +1208,14 @@ test("profile popover wave sends a direct message", async ({ page }) => {
 
   await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
   await waitForTimelineSettled(page);
-  await expect(page.getByTestId("message-row").last()).toContainText(
-    "npub1mock... waved at you.",
-  );
+  const waveAttachment = page.getByTestId("message-wave-attachment");
+  await expect(waveAttachment).toBeVisible();
+  await expect(waveAttachment).toContainText("👋");
+  await expect(waveAttachment).toContainText("npub1mock... waved at you.");
+  await expect(waveAttachment).toContainText("Start a huddle to talk to them.");
+  await expect(
+    waveAttachment.getByRole("button", { name: "Start huddle" }),
+  ).toBeVisible();
 
   const commandLog = await readCommandPayloadLog(page);
   expect(commandLog).toEqual(
@@ -1218,7 +1223,17 @@ test("profile popover wave sends a direct message", async ({ page }) => {
       expect.objectContaining({
         command: "send_channel_message",
         payload: expect.objectContaining({
-          content: "npub1mock... waved at you.",
+          content: expect.stringContaining("npub1mock... waved at you."),
+        }),
+      }),
+    ]),
+  );
+  expect(commandLog).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        command: "send_channel_message",
+        payload: expect.objectContaining({
+          content: expect.stringContaining("<!-- buzz:wave:v1 -->"),
         }),
       }),
     ]),

@@ -25,6 +25,7 @@ import { usePresenceQuery } from "@/features/presence/hooks";
 import { useUserStatusQuery } from "@/features/user-status/hooks";
 import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import { ProfileAvatarWithStatus } from "@/features/profile/ui/ProfileAvatarWithStatus";
+import { buildWaveMessageContent } from "@/features/messages/lib/waveMessage";
 import { useAgentSession } from "@/shared/context/AgentSessionContext";
 import { useProfilePanel } from "@/shared/context/ProfilePanelContext";
 import { sendChannelMessage } from "@/shared/api/tauri";
@@ -309,7 +310,7 @@ export function UserProfilePopover({
       const senderName =
         selfProfileQuery.data?.displayName?.trim() ||
         (currentPubkey ? truncatePubkey(currentPubkey) : "Someone");
-      await sendChannelMessage(dm.id, `${senderName} waved at you.`);
+      await sendChannelMessage(dm.id, buildWaveMessageContent(senderName));
       await queryClient.invalidateQueries({
         queryKey: channelMessagesKey(dm.id),
       });
@@ -486,6 +487,31 @@ export function UserProfilePopover({
               {showProfileActions ? (
                 <div className="flex gap-2">
                   <Button
+                    aria-label="Wave"
+                    className="shrink-0 px-3"
+                    data-testid={`user-profile-popover-wave-${pubkey}`}
+                    disabled={
+                      pendingAction !== null || openDmMutation.isPending
+                    }
+                    onClick={() => {
+                      void handleWave();
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {pendingAction === "wave" ? (
+                      <Spinner
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5 border-2"
+                      />
+                    ) : (
+                      <span aria-hidden="true" className="text-sm leading-none">
+                        👋
+                      </span>
+                    )}
+                  </Button>
+                  <Button
                     className="min-w-0 flex-1"
                     data-testid={`user-profile-popover-message-${pubkey}`}
                     disabled={
@@ -532,31 +558,6 @@ export function UserProfilePopover({
                       <Headphones />
                     )}
                     Huddle
-                  </Button>
-                  <Button
-                    className="shrink-0 px-3"
-                    data-testid={`user-profile-popover-wave-${pubkey}`}
-                    disabled={
-                      pendingAction !== null || openDmMutation.isPending
-                    }
-                    onClick={() => {
-                      void handleWave();
-                    }}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    {pendingAction === "wave" ? (
-                      <Spinner
-                        aria-hidden="true"
-                        className="h-3.5 w-3.5 border-2"
-                      />
-                    ) : (
-                      <span aria-hidden="true" className="text-sm leading-none">
-                        👋
-                      </span>
-                    )}
-                    Wave
                   </Button>
                 </div>
               ) : null}
