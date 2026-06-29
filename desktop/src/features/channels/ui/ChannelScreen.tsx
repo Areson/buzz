@@ -740,6 +740,7 @@ export function ChannelScreen({
     agentConversationMarkers,
     agentLookupReady,
     agentPubkeys: routingAgentPubkeys,
+    currentPubkey,
     enabled: isChannelTasksEnabled,
     goChannel,
     messageProfilesReady,

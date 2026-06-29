@@ -8,6 +8,7 @@ import { collectMessageMentionPubkeys } from "@/features/messages/lib/formatTime
 import type { TimelineMessage } from "@/features/messages/types";
 import type { Channel } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+import { getDmTaskAgentPubkeys } from "./ChannelPane.helpers";
 
 type GoChannel = (
   channelId: string,
@@ -24,6 +25,7 @@ type UseAgentConversationRouteTargetInput = {
   agentConversationMarkers: readonly AgentConversationMarker[];
   agentPubkeys: ReadonlySet<string>;
   agentLookupReady: boolean;
+  currentPubkey?: string;
   enabled: boolean;
   goChannel: GoChannel;
   messageProfilesReady: boolean;
@@ -36,30 +38,12 @@ type UseAgentConversationRouteTargetInput = {
   timelineMessages: readonly TimelineMessage[];
 };
 
-function getSingleDmAgentPubkey(
-  channel: Channel,
-  agentPubkeys: ReadonlySet<string>,
-) {
-  if (channel.channelType !== "dm") {
-    return "";
-  }
-
-  const dmAgentPubkeys = new Map<string, string>();
-  for (const pubkey of channel.participantPubkeys) {
-    const normalized = normalizePubkey(pubkey);
-    if (agentPubkeys.has(normalized)) {
-      dmAgentPubkeys.set(normalized, pubkey);
-    }
-  }
-
-  return dmAgentPubkeys.size === 1 ? [...dmAgentPubkeys.values()][0] : "";
-}
-
 export function useAgentConversationRouteTarget({
   activeChannel,
   agentConversationMarkers,
   agentLookupReady,
   agentPubkeys,
+  currentPubkey,
   enabled,
   goChannel,
   messageProfilesReady,
@@ -114,7 +98,11 @@ export function useAgentConversationRouteTarget({
       collectMessageMentionPubkeys([sourceMessage]).find((pubkey) =>
         agentPubkeys.has(normalizePubkey(pubkey)),
       ) ?? "";
-    const dmAgentPubkey = getSingleDmAgentPubkey(activeChannel, agentPubkeys);
+    const [dmAgentPubkey = ""] = getDmTaskAgentPubkeys({
+      channel: activeChannel,
+      currentPubkey,
+      knownAgentPubkeys: agentPubkeys,
+    });
     const taskAgentPubkey =
       marker?.agentPubkey ||
       (sourceAuthorIsAgent ? (sourceMessage.pubkey ?? "") : "") ||
@@ -161,6 +149,7 @@ export function useAgentConversationRouteTarget({
     agentConversationMarkers,
     agentLookupReady,
     agentPubkeys,
+    currentPubkey,
     enabled,
     goChannel,
     messageProfilesReady,
