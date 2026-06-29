@@ -76,7 +76,10 @@ async function fetchRouteTargetEvents(
   }
 
   const targetThreadRef = getThreadReference(targetEvent.tags);
-  const threadRootId = targetThreadRootId ?? targetThreadRef.rootId ?? null;
+  const threadRootId =
+    targetThreadRootId ??
+    targetThreadRef.rootId ??
+    (targetAgentConversationReplyId ? targetEvent.id : null);
   if (threadRootId && !eventsById.has(threadRootId)) {
     addEvent(await fetchRouteEvent(threadRootId));
   }

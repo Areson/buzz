@@ -6,6 +6,7 @@ import {
   formatDayHeading,
   formatTime,
 } from "@/features/messages/lib/dateFormatters";
+import { isBroadcastReply } from "@/features/messages/lib/threading";
 import type { TimelineMessage } from "@/features/messages/types";
 import {
   resolveUserLabel,
@@ -209,9 +210,14 @@ export function ChannelTasksView({
           messageById.get(marker.threadRootId) ??
           messageById.get(marker.parentMessageId ?? "") ??
           null;
+        const isBroadcastTaskSource = message
+          ? isBroadcastReply(message.tags ?? [])
+          : false;
         const threadMessage =
           resolvedThreadMessage ??
-          (marker.threadRootId === marker.agentReplyId ? message : null);
+          (marker.threadRootId === marker.agentReplyId || isBroadcastTaskSource
+            ? message
+            : null);
         return {
           marker,
           message,
