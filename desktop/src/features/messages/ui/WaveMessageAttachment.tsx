@@ -64,6 +64,7 @@ export function WaveMessageAttachment({
       </AttachmentContent>
       <AttachmentActions>
         <AttachmentAction
+          className="opacity-0 transition-opacity group-hover/attachment:opacity-100 group-focus-within/attachment:opacity-100"
           disabled={!channelId || isStarting}
           onClick={handleStartHuddle}
           size="xs"
