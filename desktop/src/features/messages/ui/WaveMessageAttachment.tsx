@@ -53,11 +53,7 @@ export function WaveMessageAttachment({
       data-testid="message-wave-attachment"
       size="default"
     >
-      <AttachmentMedia
-        aria-hidden="true"
-        className="bg-primary/10 text-2xl text-foreground"
-        variant="image"
-      >
+      <AttachmentMedia aria-hidden="true" className="text-lg">
         <span className="buzz-wave-hand">👋</span>
       </AttachmentMedia>
       <AttachmentContent>

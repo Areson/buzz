@@ -48,7 +48,7 @@
 
 @media (hover: hover) and (pointer: fine) {
   .buzz-wave-hover-trigger:hover .buzz-wave-hand {
-    animation: buzz-wave-hand 720ms ease-in-out both;
+    animation: buzz-wave-hand 960ms ease-in-out both;
   }
 }
 
@@ -73,11 +73,7 @@
   25%,
   51%,
   77% {
-    transform: rotate(-30deg);
-  }
-
-  88% {
-    transform: rotate(8deg);
+    transform: rotate(-15deg);
   }
 }
 
