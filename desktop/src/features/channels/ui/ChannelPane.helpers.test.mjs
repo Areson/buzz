@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canOpenAgentConversationInChannel,
+  getDmTaskAgentPubkeys,
   mergeAutoRouteMentionPubkeys,
 } from "./ChannelPane.helpers.ts";
 
@@ -72,5 +73,44 @@ test("auto-routed mentions merge with explicit mentions without duplicates", () 
       mentionPubkeys: ["agent-one", "agent-two"],
     }),
     ["AGENT-ONE", "agent-two"],
+  );
+});
+
+test("DM task agent inference requires exactly one other known agent", () => {
+  const knownAgentPubkeys = new Set(["agent-one", "agent-two"]);
+
+  assert.deepEqual(
+    getDmTaskAgentPubkeys({
+      channel: channel({
+        channelType: "dm",
+        participantPubkeys: ["human", "agent-one"],
+      }),
+      currentPubkey: "human",
+      knownAgentPubkeys,
+    }),
+    ["agent-one"],
+  );
+
+  assert.deepEqual(
+    getDmTaskAgentPubkeys({
+      channel: channel({
+        channelType: "dm",
+        participantPubkeys: ["human", "agent-one", "agent-two"],
+      }),
+      currentPubkey: "human",
+      knownAgentPubkeys,
+    }),
+    [],
+  );
+
+  assert.deepEqual(
+    getDmTaskAgentPubkeys({
+      channel: channel({
+        participantPubkeys: ["human", "agent-one"],
+      }),
+      currentPubkey: "human",
+      knownAgentPubkeys,
+    }),
+    [],
   );
 });

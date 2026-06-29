@@ -1,5 +1,4 @@
 import { isEphemeralChannel } from "@/features/channels/lib/ephemeralChannel";
-import { collectMessageMentionPubkeys } from "@/features/messages/lib/formatTimelineMessages";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { Channel } from "@/shared/api/types";
 import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
@@ -69,6 +68,55 @@ export function mentionsKnownAgent(
 ) {
   return mentionPubkeys.some((pubkey) =>
     knownAgentPubkeys.has(pubkey.toLowerCase()),
+  );
+}
+
+function singleKnownAgentPubkey(
+  pubkeys: Iterable<string | null | undefined>,
+  knownAgentPubkeys: ReadonlySet<string>,
+) {
+  const agentPubkeys = new Map<string, string>();
+
+  for (const pubkey of pubkeys) {
+    if (!pubkey) {
+      continue;
+    }
+
+    const normalized = normalizePubkey(pubkey);
+    if (!knownAgentPubkeys.has(normalized)) {
+      continue;
+    }
+
+    agentPubkeys.set(normalized, pubkey);
+  }
+
+  return agentPubkeys.size === 1 ? [...agentPubkeys.values()] : [];
+}
+
+export function getDmTaskAgentPubkeys({
+  channel,
+  currentPubkey,
+  knownAgentPubkeys,
+}: {
+  channel: Channel | null;
+  currentPubkey?: string;
+  knownAgentPubkeys: ReadonlySet<string>;
+}) {
+  if (channel?.channelType !== "dm") {
+    return [];
+  }
+
+  const normalizedCurrentPubkey = currentPubkey
+    ? normalizePubkey(currentPubkey)
+    : null;
+
+  return singleKnownAgentPubkey(
+    channel.participantPubkeys.filter(
+      (pubkey) =>
+        !normalizedCurrentPubkey ||
+        normalizePubkey(pubkey) !== normalizedCurrentPubkey,
+    ),
+    knownAgentPubkeys,
   );
 }
 

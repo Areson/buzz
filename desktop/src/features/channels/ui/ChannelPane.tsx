@@ -41,9 +41,9 @@ import {
 } from "@/features/channels/ui/WelcomeComposerBanner";
 import {
   canOpenAgentConversationInChannel,
-  getDmAutoRouteAgentPubkeys,
   getChannelIntroDescription,
   getChannelIntroKind,
+  getDmTaskAgentPubkeys,
   isWelcomeSetupSystemMessage,
   mentionsKnownAgent,
 } from "@/features/channels/ui/ChannelPane.helpers";
@@ -290,9 +290,9 @@ export const ChannelPane = React.memo(function ChannelPane({
 
     return pubkeys;
   }, [activityAgents, agentPubkeys, agentSessionAgents]);
-  const dmAutoRouteAgentPubkeys = React.useMemo(
+  const dmTaskAgentPubkeys = React.useMemo(
     () =>
-      getDmAutoRouteAgentPubkeys({
+      getDmTaskAgentPubkeys({
         channel: activeChannel,
         currentPubkey,
         knownAgentPubkeys,
@@ -374,7 +374,7 @@ export const ChannelPane = React.memo(function ChannelPane({
         }
       }
 
-      for (const pubkey of dmAutoRouteAgentPubkeys) {
+      for (const pubkey of dmTaskAgentPubkeys) {
         const dmAgent = knownAgentByPubkey.get(normalizePubkey(pubkey));
         if (dmAgent) {
           return dmAgent;
@@ -386,7 +386,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     [
       activeAgentConversationMarkers,
       activeChannelId,
-      dmAutoRouteAgentPubkeys,
+      dmTaskAgentPubkeys,
       knownAgentByPubkey,
     ],
   );

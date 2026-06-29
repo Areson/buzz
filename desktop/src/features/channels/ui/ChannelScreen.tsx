@@ -344,7 +344,7 @@ export function ChannelScreen({
   const agentLookupReady =
     !channelMembersQuery.isLoading &&
     !managedAgentsQuery.isLoading &&
-    !messageProfilesQuery.isLoading &&
+    messageProfilesReady &&
     !relayAgentsQuery.isLoading;
   const agentPubkeys = React.useMemo(() => {
     const pubkeys = new Set<string>();
