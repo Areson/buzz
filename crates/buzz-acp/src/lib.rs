@@ -16,8 +16,8 @@ use std::time::Duration;
 use acp::{AcpClient, EnvVar, McpServer};
 use anyhow::Result;
 use buzz_core::kind::{
-    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
-    KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
+    KIND_DREAM_DUE, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_STREAM_MESSAGE, KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
 };
 use buzz_core::observer::{
     decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY,
@@ -1310,6 +1310,7 @@ async fn tokio_main() -> Result<()> {
             .as_deref()
             .and_then(|hex| nostr::PublicKey::from_hex(hex).ok()),
         memory_enabled: config.memory_enabled,
+        dream_prompt: load_dream_prompt(),
     });
 
     if !config.memory_enabled {
@@ -1329,6 +1330,9 @@ async fn tokio_main() -> Result<()> {
         None
     };
     let mut heartbeat_in_flight = false;
+    let mut dream_in_flight = false;
+    // Whether a dream-due signal has been received and is pending dispatch.
+    let mut dream_pending = false;
 
     let mut presence_heartbeat = if config.presence_enabled {
         let interval = Duration::from_secs(60);
@@ -1687,6 +1691,16 @@ async fn tokio_main() -> Result<()> {
                                 continue;
                             }
 
+                            // Dream-due signal: relay tells us memory thresholds
+                            // are exceeded and the agent is idle enough to consolidate.
+                            // Set the pending flag — actual dispatch happens in the
+                            // heartbeat tick arm (lowest priority).
+                            if kind_u32 == KIND_DREAM_DUE {
+                                tracing::info!(target: "dream", "received dream-due signal from relay");
+                                dream_pending = true;
+                                continue;
+                            }
+
                             if config.ignore_self && buzz_event.event.pubkey.to_hex() == pubkey_hex {
                                 tracing::debug!(channel_id = %buzz_event.channel_id, "dropping self-authored event");
                                 continue;
@@ -1868,6 +1882,12 @@ async fn tokio_main() -> Result<()> {
                                 tokio::spawn(async move {
                                     pool::reaction_add(&rc, &eid, "👀").await;
                                 });
+                                // Preempt in-flight dream: any real inbound event
+                                // takes priority. Cancel the dream task so the agent
+                                // returns to the pool and can service this event.
+                                if dream_in_flight {
+                                    cancel_in_flight_dream(&mut pool);
+                                }
                             }
                             // Event is already queued. If mode requires it AND
                             // the channel has an in-flight task, fire cancel —
@@ -1944,8 +1964,10 @@ async fn tokio_main() -> Result<()> {
                         {
                             typing_channels.insert(channel_id, thread_tags);
                         }
-                    } else if pool.any_idle() {
+                    } else if pool.any_idle() && !heartbeat_in_flight {
                         dispatch_heartbeat(&mut pool, &ctx, &mut heartbeat_in_flight);
+                    } else if pool.any_idle() && dream_pending && !dream_in_flight {
+                        dispatch_dream(&mut pool, &ctx, &mut dream_in_flight, &mut dream_pending);
                     } else {
                         tracing::debug!("heartbeat_skipped_busy");
                     }
@@ -2013,6 +2035,7 @@ async fn tokio_main() -> Result<()> {
                     &config,
                     *result,
                     &mut heartbeat_in_flight,
+                    &mut dream_in_flight,
                     &removed_channels,
                     &mut crash_history,
                     &respawn_tx,
@@ -2027,6 +2050,7 @@ async fn tokio_main() -> Result<()> {
                     &mut queue,
                     &config,
                     &mut heartbeat_in_flight,
+                    &mut dream_in_flight,
                     &removed_channels,
                     &mut typing_channels,
                     &mut crash_history,
@@ -2049,6 +2073,7 @@ async fn tokio_main() -> Result<()> {
                     &config,
                     join_error,
                     &mut heartbeat_in_flight,
+                    &mut dream_in_flight,
                     &removed_channels,
                     &mut typing_channels,
                     &mut crash_history,
@@ -2359,6 +2384,25 @@ fn signal_in_flight_task(
     false
 }
 
+/// Cancel an in-flight dream task so the agent can service real work.
+///
+/// Finds the dream task in the pool's task map (identified by `is_dream`)
+/// and fires `ControlSignal::Cancel`. The cancel path returns the agent to
+/// the pool and clears `dream_in_flight` when the result arrives.
+fn cancel_in_flight_dream(pool: &mut AgentPool) {
+    let entry = pool
+        .task_map_mut()
+        .values_mut()
+        .find(|m| m.is_dream);
+
+    if let Some(meta) = entry {
+        if let Some(tx) = meta.control_tx.take() {
+            let _ = tx.send(ControlSignal::Cancel);
+            tracing::info!(target: "dream", "cancelled in-flight dream (preempted by inbound event)");
+        }
+    }
+}
+
 /// Attempt the non-cancelling (ACP) steer for a freshly-queued event.
 ///
 /// Caller invariants:
@@ -2533,6 +2577,7 @@ fn dispatch_pending(
                 ctx_clone,
                 result_tx,
                 Some(control_rx),
+                None,
             )
             .await;
         });
@@ -2545,6 +2590,7 @@ fn dispatch_pending(
                 recoverable_batch,
                 control_tx: Some(control_tx),
                 steer_tx,
+                is_dream: false,
             },
         );
         dispatched_channels.push((channel_id, typing_scope));
@@ -2564,6 +2610,7 @@ fn handle_prompt_result(
     config: &Config,
     mut result: PromptResult,
     heartbeat_in_flight: &mut bool,
+    dream_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
     crash_history: &mut [SlotCircuit],
     respawn_tx: &mpsc::Sender<RespawnResult>,
@@ -2611,6 +2658,7 @@ fn handle_prompt_result(
     match &result.source {
         PromptSource::Channel(ch) => queue.mark_complete(*ch),
         PromptSource::Heartbeat => *heartbeat_in_flight = false,
+        PromptSource::Dream => *dream_in_flight = false,
     }
 
     // Strip sessions for channels the agent was removed from while this
@@ -2631,7 +2679,7 @@ fn handle_prompt_result(
 
     let channel_id = match &result.source {
         PromptSource::Channel(ch) => Some(*ch),
-        PromptSource::Heartbeat => None,
+        PromptSource::Heartbeat | PromptSource::Dream => None,
     };
     let emit_turn_error = |error_msg: &str| {
         if let Some(ref observer) = observer {
@@ -2764,6 +2812,7 @@ fn recover_panicked_agent(
     config: &Config,
     join_error: tokio::task::JoinError,
     heartbeat_in_flight: &mut bool,
+    dream_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
     typing_channels: &mut HashMap<Uuid, ThreadTags>,
     crash_history: &mut [SlotCircuit],
@@ -2797,6 +2846,9 @@ fn recover_panicked_agent(
         queue.mark_complete(ch);
         typing_channels.remove(&ch);
         tracing::warn!("cleared wedged in-flight channel {ch} from panicked agent {i}");
+    } else if meta.is_dream {
+        *dream_in_flight = false;
+        tracing::warn!("cleared wedged dream_in_flight from panicked agent {i}");
     } else {
         *heartbeat_in_flight = false;
         tracing::warn!("cleared wedged heartbeat_in_flight from panicked agent {i}");
@@ -2859,6 +2911,7 @@ fn drain_ready_join_results(
     queue: &mut EventQueue,
     config: &Config,
     heartbeat_in_flight: &mut bool,
+    dream_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
     typing_channels: &mut HashMap<Uuid, ThreadTags>,
     crash_history: &mut [SlotCircuit],
@@ -2875,6 +2928,7 @@ fn drain_ready_join_results(
                 config,
                 join_error,
                 heartbeat_in_flight,
+                dream_in_flight,
                 removed_channels,
                 typing_channels,
                 crash_history,
@@ -2916,7 +2970,7 @@ fn dispatch_heartbeat(
     let agent_index = agent.index;
 
     let abort_handle = pool.join_set.spawn(async move {
-        pool::run_prompt_task(agent, None, Some(prompt_text), ctx_clone, result_tx, None).await;
+        pool::run_prompt_task(agent, None, Some(prompt_text), ctx_clone, result_tx, None, None).await;
     });
 
     pool.task_map_mut().insert(
@@ -2927,6 +2981,7 @@ fn dispatch_heartbeat(
             recoverable_batch: None,
             control_tx: None,
             steer_tx: None,
+            is_dream: false,
         },
     );
     *heartbeat_in_flight = true;
@@ -2950,6 +3005,96 @@ fn default_heartbeat_prompt() -> String {
          Do not run `buzz channels list` or `buzz messages search` unless you have a specific reason.\n\
          Do not invent work — only act on items surfaced by the feed commands."
     )
+}
+
+/// Load the dream consolidation prompt from the skill file.
+///
+/// Looks for `.agents/skills/dream/SKILL.md` relative to the current working
+/// directory (which is `~/.buzz` when the harness runs under the desktop app).
+/// Returns `None` if the file doesn't exist — dream dispatch becomes a no-op.
+fn load_dream_prompt() -> Option<String> {
+    let path = std::path::Path::new(".agents/skills/dream/SKILL.md");
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            tracing::info!(
+                target: "dream",
+                bytes = content.len(),
+                "loaded dream skill prompt"
+            );
+            Some(content)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(target: "dream", "dream skill not found at {}, dream disabled", path.display());
+            None
+        }
+        Err(e) => {
+            tracing::warn!(target: "dream", "failed to read dream skill at {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Dispatch a dream consolidation turn on an idle agent.
+///
+/// Dream is lowest priority — only fires when no pending work AND no heartbeat
+/// in flight. Preemptible via `control_tx` (any inbound event cancels it).
+fn dispatch_dream(
+    pool: &mut AgentPool,
+    ctx: &Arc<PromptContext>,
+    dream_in_flight: &mut bool,
+    dream_pending: &mut bool,
+) {
+    if *dream_in_flight {
+        return;
+    }
+    let agent = match pool.try_claim(None) {
+        Some(a) => a,
+        None => return,
+    };
+
+    let prompt_text = match ctx.dream_prompt.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            // No dream prompt configured — return agent and clear pending.
+            pool.return_agent(agent);
+            *dream_pending = false;
+            return;
+        }
+    };
+
+    let result_tx = pool.result_tx();
+    let ctx_clone = Arc::clone(ctx);
+    let agent_index = agent.index;
+
+    let (control_tx, control_rx) = tokio::sync::oneshot::channel::<pool::ControlSignal>();
+
+    let abort_handle = pool.join_set.spawn(async move {
+        pool::run_prompt_task(
+            agent,
+            None,
+            Some(prompt_text),
+            ctx_clone,
+            result_tx,
+            Some(control_rx),
+            Some(pool::PromptSource::Dream),
+        )
+        .await;
+    });
+
+    pool.task_map_mut().insert(
+        abort_handle.id(),
+        pool::TaskMeta {
+            agent_index,
+            channel_id: None,
+            recoverable_batch: None,
+            control_tx: Some(control_tx),
+            steer_tx: None,
+            is_dream: true,
+        },
+    );
+    *dream_in_flight = true;
+    *dream_pending = false;
+    tracing::info!(agent = agent_index, "dream_fired");
 }
 
 /// Spawn a background respawn task for a crashed agent slot.
@@ -3370,6 +3515,7 @@ mod owner_control_command_tests {
                 recoverable_batch: None,
                 control_tx: Some(control_tx),
                 steer_tx: None,
+                is_dream: false,
             },
         );
 
@@ -3892,12 +4038,14 @@ mod error_outcome_emission_tests {
                 recoverable_batch: None,
                 control_tx: None,
                 steer_tx: None,
+                is_dream: false,
             },
         );
 
         let mut queue = EventQueue::new(config::DedupMode::Queue);
         let config = test_config();
         let mut heartbeat_in_flight = false;
+        let mut dream_in_flight = false;
         let removed_channels = HashSet::new();
         let mut crash_history = vec![SlotCircuit {
             crash_times: Vec::new(),
@@ -3921,6 +4069,7 @@ mod error_outcome_emission_tests {
             &config,
             result,
             &mut heartbeat_in_flight,
+            &mut dream_in_flight,
             &removed_channels,
             &mut crash_history,
             &respawn_tx,

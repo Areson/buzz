@@ -275,6 +275,11 @@ pub const KIND_MESH_CONNECT_REQUEST: u32 = 24621;
 /// so both ends dial near-simultaneously. Tagged `["p", <recipient_pubkey>]`.
 /// Never stored; seconds expiry.
 pub const KIND_MESH_CALL_ME_NOW: u32 = 24622;
+/// Ephemeral: dream-due signal (relay → harness). The relay emits this when
+/// an agent's memory exceeds configured thresholds and the agent has been idle
+/// long enough. The harness dispatches a dream consolidation turn in response.
+/// Never stored; single-delivery to the authenticated agent.
+pub const KIND_DREAM_DUE: u32 = 24300;
 
 // Stream messaging
 /// NIP-29 group chat message kind. V1 used kind:10001 (replaceable range — wrong), then 40001.
