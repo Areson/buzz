@@ -83,6 +83,11 @@ export type AgentConversationRecapInput = {
   messages: readonly TimelineMessage[];
 };
 
+export type AgentConversationRouteableParticipant = {
+  canMessage: boolean;
+  pubkey: string;
+};
+
 function normalizeAgentConversationStorageScope(
   workspaceScope: string | null | undefined,
 ): string {
