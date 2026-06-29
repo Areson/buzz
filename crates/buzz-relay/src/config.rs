@@ -303,26 +303,6 @@ impl Config {
                 .unwrap_or(100 * 1024 * 1024),
             public_base_url: std::env::var("BUZZ_MEDIA_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:3000/media".to_string()),
-            server_domain: std::env::var("BUZZ_MEDIA_SERVER_DOMAIN")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| {
-                    // Auto-derive from RELAY_URL so desktop uploads work out-of-the-box
-                    // without requiring an extra env var in dev mode.
-                    url::Url::parse(
-                        &relay_url
-                            .replace("ws://", "http://")
-                            .replace("wss://", "https://"),
-                    )
-                    .ok()
-                    .and_then(|u| {
-                        let host = u.host_str()?.to_string();
-                        match u.port() {
-                            Some(p) => Some(format!("{host}:{p}")),
-                            None => Some(host),
-                        }
-                    })
-                }),
         };
 
         let ephemeral_ttl_override = std::env::var("BUZZ_EPHEMERAL_TTL_OVERRIDE")
@@ -492,33 +472,6 @@ mod tests {
     }
 
     #[test]
-    fn server_domain_auto_derived_from_relay_url() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        // Clear explicit override so auto-derive kicks in
-        std::env::remove_var("BUZZ_MEDIA_SERVER_DOMAIN");
-        std::env::set_var("RELAY_URL", "ws://localhost:3000");
-        let config = Config::from_env().expect("config");
-        std::env::remove_var("RELAY_URL");
-        assert_eq!(
-            config.media.server_domain.as_deref(),
-            Some("localhost:3000")
-        );
-    }
-
-    #[test]
-    fn server_domain_auto_derived_default_port() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        std::env::remove_var("BUZZ_MEDIA_SERVER_DOMAIN");
-        std::env::set_var("RELAY_URL", "wss://relay.example.com");
-        let config = Config::from_env().expect("config");
-        std::env::remove_var("RELAY_URL");
-        assert_eq!(
-            config.media.server_domain.as_deref(),
-            Some("relay.example.com")
-        );
-    }
-
-    #[test]
     fn git_repo_path_is_created_if_missing() {
         let _guard = ENV_MUTEX.lock().unwrap();
         // Pick a path under temp_dir that definitely doesn't exist yet.
@@ -558,20 +511,6 @@ mod tests {
         assert!(
             matches!(result, Err(ConfigError::InvalidValue(ref msg)) if msg.contains("BUZZ_GIT_REPO_PATH")),
             "expected InvalidValue mentioning BUZZ_GIT_REPO_PATH, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn server_domain_explicit_override_wins() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("BUZZ_MEDIA_SERVER_DOMAIN", "custom.example.com");
-        std::env::set_var("RELAY_URL", "ws://localhost:3000");
-        let config = Config::from_env().expect("config");
-        std::env::remove_var("BUZZ_MEDIA_SERVER_DOMAIN");
-        std::env::remove_var("RELAY_URL");
-        assert_eq!(
-            config.media.server_domain.as_deref(),
-            Some("custom.example.com")
         );
     }
 }

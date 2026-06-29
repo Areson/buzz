@@ -48,19 +48,41 @@ impl FromRequestParts<Arc<AppState>> for AuthenticatedUpload {
     ) -> Result<Self, Self::Rejection> {
         let headers = &parts.headers;
 
-        // 1. Extract and validate Blossom auth event
+        // 1. Row zero: bind this upload to its community from the request host,
+        // identical to the WS door in `router.rs` and the bridge door in
+        // `bridge.rs`. Fail-closed: an unmapped host or lookup failure is a
+        // generic `NotFound` (404) — never a default tenant, never echoing the
+        // host, so an unauthenticated caller cannot probe which communities
+        // exist on this deployment.
+        //
+        // This MUST run before scope resolution so the API-token lookup is
+        // keyed on (community_id, token_hash) — see Gap 2 / row-44 conformance
+        // obligation. Resolving scopes without a tenant in hand would query
+        // api_tokens by hash alone, defeating the cross-community fence.
+        //
+        // It also runs before Blossom auth verification (step 2) so the
+        // `server`-tag check validates against the *bound tenant host*, not a
+        // process-global domain — a relay process serves many tenant hosts, and
+        // the stock CLI tags its own configured relay host (conformance row 52).
+        // Binding only reads the Host header — no request body is buffered — so
+        // doing it first preserves the pre-body auth-rejection guarantee.
+        let raw_host = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let tenant = crate::tenant::bind_community(&state.db, raw_host)
+            .await
+            .map_err(|_| MediaError::NotFound)?;
+
+        // 2. Extract and validate Blossom auth event against the bound host.
         let auth_event = extract_blossom_auth(headers)?;
         // Use the permissive window (3600s) here because we don't know the
         // content type yet.  The upload functions re-verify with the correct
         // per-type window (600s for images, 3600s for video) after the body
         // has been consumed and the SHA-256 computed.
-        buzz_media::auth::verify_blossom_auth_event(
-            &auth_event,
-            state.config.media.server_domain.as_deref(),
-            3600,
-        )?;
+        buzz_media::auth::verify_blossom_auth_event(&auth_event, Some(tenant.host()), 3600)?;
 
-        // 2. Require X-SHA-256 header (BUD-11: mandatory for PUT /upload)
+        // 3. Require X-SHA-256 header (BUD-11: mandatory for PUT /upload)
         let claimed_hash = headers
             .get("x-sha-256")
             .and_then(|v| v.to_str().ok())
@@ -75,7 +97,7 @@ impl FromRequestParts<Arc<AppState>> for AuthenticatedUpload {
             return Err(MediaError::HashMismatch);
         }
 
-        // 3. Validate X-SHA-256 matches at least one x tag in the auth event
+        // 4. Validate X-SHA-256 matches at least one x tag in the auth event
         let has_matching_x = auth_event
             .tags
             .iter()
@@ -83,25 +105,6 @@ impl FromRequestParts<Arc<AppState>> for AuthenticatedUpload {
         if !has_matching_x {
             return Err(MediaError::HashMismatch);
         }
-
-        // 4. Row zero: bind this upload to its community from the request host,
-        // identical to the WS door in `router.rs` and the bridge door in
-        // `bridge.rs`. Fail-closed: an unmapped host or lookup failure is a
-        // generic `NotFound` (404) — never a default tenant, never echoing the
-        // host, so an unauthenticated caller cannot probe which communities
-        // exist on this deployment.
-        //
-        // This MUST run before scope resolution so the API-token lookup is
-        // keyed on (community_id, token_hash) — see Gap 2 / row-44 conformance
-        // obligation. Resolving scopes without a tenant in hand would query
-        // api_tokens by hash alone, defeating the cross-community fence.
-        let raw_host = headers
-            .get(header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let tenant = crate::tenant::bind_community(&state.db, raw_host)
-            .await
-            .map_err(|_| MediaError::NotFound)?;
 
         // 5. Resolve scopes (API token or dev mode), scoped to the bound tenant.
         let scopes = resolve_upload_scopes(headers, state, &tenant, &auth_event.pubkey).await?;

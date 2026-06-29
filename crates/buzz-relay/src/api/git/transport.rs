@@ -790,6 +790,15 @@ pub async fn receive_pack(
 /// [`finalize_push`] has decided to build a `Response` from these bytes.
 pub(crate) struct PackOutput {
     pub stdout: Vec<u8>,
+    /// Whether the `git receive-pack`/`upload-pack` subprocess exited 0.
+    ///
+    /// A non-zero exit on `receive-pack` means git aborted the ref updates —
+    /// most importantly a **pre-receive hook decline** (authorization denied).
+    /// `finalize_push` must treat `false` as "push did not happen": skip the
+    /// CAS publish and the derived kind:30618 so a rejected push leaves **no
+    /// published state**. The buffered stdout still carries git's in-band
+    /// report-status so the client prints the rejection.
+    pub ok: bool,
 }
 
 /// Spawn a `git --stateless-rpc <service>` subprocess against the given
@@ -867,10 +876,13 @@ async fn run_git_at(
         let stderr = String::from_utf8_lossy(&output.stderr);
         warn!(stderr = %stderr, service = %service, "git subprocess exited with error");
         // Still return output — git protocol errors are communicated in-band.
+        // The non-zero exit is carried on `PackOutput.ok` so the push fence in
+        // `finalize_push` can refuse to publish on a hook decline (see below).
     }
 
     Ok(PackOutput {
         stdout: output.stdout,
+        ok: output.status.success(),
     })
 }
 
@@ -1052,6 +1064,32 @@ pub(crate) struct PushContext {
 /// constructor of a push 2xx, so the seam is structural (not by
 /// convention).
 async fn finalize_push(state: &Arc<AppState>, ctx: PushContext) -> Response {
+    // The push fence, part 0 — **a rejected push publishes nothing.**
+    //
+    // `git receive-pack` exits non-zero when the pre-receive hook declines
+    // (authorization denied) or git itself aborts the ref updates. In that
+    // case the workspace refs were NOT advanced, so there is no committed
+    // state to publish: we must skip the CAS pointer write AND the derived
+    // kind:30618 ref-state event. Otherwise a denied push would emit a
+    // relay-signed, fanned-out 30618 falsely attributing the ref state to the
+    // *denied* pusher (`actor = ctx.pusher`), breaking the invariant
+    // "rejected push → no published state".
+    //
+    // git's in-band report-status (already buffered in `ctx.pack.stdout`)
+    // still streams back so the client prints `! [remote rejected]` / the
+    // hook's decline message; only the publish side effects are suppressed.
+    if !ctx.pack.ok {
+        warn!(
+            owner = %ctx.owner,
+            repo = %ctx.repo_id,
+            "receive-pack exited non-zero (e.g. pre-receive hook decline); \
+             skipping CAS publish and kind:30618 — no state published"
+        );
+        let response = build_git_response("receive-pack", ctx.pack);
+        drop(ctx.repo_handle);
+        return response;
+    }
+
     // Step 7 (CAS). The PushContext binds `parent_state` (observed at
     // hydrate) to the CAS predicate here — no re-reading of the pointer
     // between hydrate and CAS.

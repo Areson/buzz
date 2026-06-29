@@ -70,7 +70,6 @@ spec:
             - { name: BUZZ_METRICS_PORT,  value: {{ .Values.service.metricsPort | quote }} }
             - { name: RELAY_URL,          value: {{ .Values.relayUrl | quote }} }
             - { name: BUZZ_MEDIA_BASE_URL, value: {{ include "buzz.mediaBaseUrl" . | quote }} }
-            - { name: BUZZ_MEDIA_SERVER_DOMAIN, value: {{ include "buzz.relayHost" . | quote }} }
 
             # ── Behavior ─────────────────────────────────────────────
             - { name: BUZZ_MAX_CONNECTIONS,        value: {{ .Values.relay.maxConnections | quote }} }
