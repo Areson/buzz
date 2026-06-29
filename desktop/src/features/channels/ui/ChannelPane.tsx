@@ -285,9 +285,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     [activeChannel, agentPubkeys, currentPubkey],
   );
   const huddleMemberPubkeysPending =
-    agentPubkeysPending &&
-    huddleMemberPubkeys.length === 0 &&
-    hasOtherDmParticipant(activeChannel, currentPubkey);
+    agentPubkeysPending && hasOtherDmParticipant(activeChannel, currentPubkey);
   const isActiveWelcomeChannel =
     activeChannel !== null && isWelcomeChannel(activeChannel);
   useComposerHeightPadding(
