@@ -5,16 +5,32 @@ import {
   useActiveAgentTurnsBridge,
   useActiveAgentTurnsByChannel,
 } from "@/features/agents/activeAgentTurnsStore";
-import { useManagedAgentsQuery } from "@/features/agents/hooks";
+import {
+  useManagedAgentsQuery,
+  useRelayAgentsQuery,
+} from "@/features/agents/hooks";
 import { useManagedAgentObserverBridge } from "@/features/agents/observerRelayStore";
+import { useUsersBatchQuery } from "@/features/profile/hooks";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import type {
+  ManagedAgent,
+  RelayAgent,
+  UserProfileSummary,
+} from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+
+type WorkingAgentName = Pick<ManagedAgent, "pubkey" | "name">;
+type WorkingAgent = Pick<ManagedAgent, "pubkey" | "name" | "status">;
+type OwnedRelayWorkingAgent = Pick<RelayAgent, "pubkey" | "name"> & {
+  status: "deployed";
+};
 
 export function resolveActiveWorkingChannelNames(
   summary: ActiveChannelTurnSummary,
-  managedAgents: readonly { pubkey: string; name: string }[],
+  workingAgents: readonly WorkingAgentName[],
 ): ActiveChannelTurnSummary {
   const namesByPubkey = new Map(
-    managedAgents.map((agent) => [normalizePubkey(agent.pubkey), agent.name]),
+    workingAgents.map((agent) => [normalizePubkey(agent.pubkey), agent.name]),
   );
 
   return {
@@ -26,18 +42,81 @@ export function resolveActiveWorkingChannelNames(
   };
 }
 
+export function getOwnedRelayWorkingAgents(
+  relayAgents: readonly Pick<RelayAgent, "pubkey" | "name">[],
+  profiles: Record<string, UserProfileSummary> | undefined,
+  currentPubkey: string | undefined,
+): OwnedRelayWorkingAgent[] {
+  if (!currentPubkey) return [];
+
+  const normalizedCurrentPubkey = normalizePubkey(currentPubkey);
+  return relayAgents.flatMap((agent) => {
+    const profile = profiles?.[normalizePubkey(agent.pubkey)];
+    if (!profile?.ownerPubkey) return [];
+    if (normalizePubkey(profile.ownerPubkey) !== normalizedCurrentPubkey) {
+      return [];
+    }
+
+    return [{ pubkey: agent.pubkey, name: agent.name, status: "deployed" }];
+  });
+}
+
+export function mergeWorkingAgents(
+  managedAgents: readonly WorkingAgent[],
+  ownedRelayAgents: readonly WorkingAgent[],
+): WorkingAgent[] {
+  const seenPubkeys = new Set<string>();
+  const merged: WorkingAgent[] = [];
+
+  for (const agent of [...managedAgents, ...ownedRelayAgents]) {
+    const pubkey = normalizePubkey(agent.pubkey);
+    if (seenPubkeys.has(pubkey)) continue;
+    seenPubkeys.add(pubkey);
+    merged.push(agent);
+  }
+
+  return merged;
+}
+
 export function useActiveWorkingChannelsById(): ReadonlyMap<
   string,
   ActiveChannelTurnSummary
 > {
+  const identityQuery = useIdentityQuery();
+  const currentPubkey = identityQuery.data?.pubkey;
   const managedAgentsQuery = useManagedAgentsQuery();
   const managedAgents = React.useMemo(
     () => managedAgentsQuery.data ?? [],
     [managedAgentsQuery.data],
   );
+  const relayAgentsQuery = useRelayAgentsQuery();
+  const relayAgents = React.useMemo(
+    () => relayAgentsQuery.data ?? [],
+    [relayAgentsQuery.data],
+  );
+  const relayAgentPubkeys = React.useMemo(
+    () => relayAgents.map((agent) => agent.pubkey),
+    [relayAgents],
+  );
+  const relayAgentProfilesQuery = useUsersBatchQuery(relayAgentPubkeys, {
+    enabled: relayAgentPubkeys.length > 0,
+  });
+  const ownedRelayAgents = React.useMemo(
+    () =>
+      getOwnedRelayWorkingAgents(
+        relayAgents,
+        relayAgentProfilesQuery.data?.profiles,
+        currentPubkey,
+      ),
+    [currentPubkey, relayAgentProfilesQuery.data?.profiles, relayAgents],
+  );
+  const workingAgents = React.useMemo(
+    () => mergeWorkingAgents(managedAgents, ownedRelayAgents),
+    [managedAgents, ownedRelayAgents],
+  );
 
-  useManagedAgentObserverBridge(managedAgents);
-  useActiveAgentTurnsBridge(managedAgents);
+  useManagedAgentObserverBridge(workingAgents);
+  useActiveAgentTurnsBridge(workingAgents);
 
   const activeWorkingChannels = useActiveAgentTurnsByChannel();
   return React.useMemo(
@@ -46,11 +125,11 @@ export function useActiveWorkingChannelsById(): ReadonlyMap<
         activeWorkingChannels.map((summary) => {
           const resolvedSummary = resolveActiveWorkingChannelNames(
             summary,
-            managedAgents,
+            workingAgents,
           );
           return [resolvedSummary.channelId, resolvedSummary];
         }),
       ),
-    [activeWorkingChannels, managedAgents],
+    [activeWorkingChannels, workingAgents],
   );
 }
