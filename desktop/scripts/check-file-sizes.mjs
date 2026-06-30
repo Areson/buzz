@@ -79,7 +79,8 @@ const overrides = new Map([
   // continued-agent-conversations: owner-scoped auth tag refresh is threaded
   // through the runtime env builder and covered by regression tests.
   // latest-main rebase adds the config-bridge and task-review fixes together.
-  ["src-tauri/src/managed_agents/runtime.rs", 2150],
+  // latest main added runtime restore plumbing on top of the task anchor review fixes.
+  ["src-tauri/src/managed_agents/runtime.rs", 2174],
   ["src-tauri/src/managed_agents/personas.rs", 1080],
   // Phase-2 inbound reconcile + review-fix cycle: reconcile_inbound_persona_event
   // dispatches 30175/30176/30177 inbound plus kind:5 tombstone consume
@@ -136,6 +137,9 @@ const overrides = new Map([
   // continued-agent-conversations: marker filtering, thread handoff, and
   // activity handoff props live at the channel surface for now.
   ["src/features/channels/ui/ChannelPane.tsx", 1107],
+  // continued-agent-conversations: channel task/message surface routing is
+  // threaded through the screen while the pane split follow-up is pending.
+  ["src/features/channels/ui/ChannelScreen.tsx", 1027],
   // continued-agent-conversations: composer notice banner for read-only agent
   // conversations.
   ["src/features/messages/ui/MessageComposer.tsx", 1010],
@@ -163,7 +167,8 @@ const overrides = new Map([
   // catalog module; agent_models.rs retains the thin wrapper (~50 lines).
   // File still exceeds 1000 due to OpenAI/Anthropic discovery + subprocess
   // fallback. Queued to split into dedicated discovery modules.
-  ["src-tauri/src/commands/agent_models.rs", 1066],
+  // latest main rebase adds the provider fallback guard.
+  ["src-tauri/src/commands/agent_models.rs", 1068],
 ]);
 
 await runFileSizeCheck({
