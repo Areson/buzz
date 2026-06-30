@@ -448,6 +448,33 @@ test("continued conversation marker with a missing anchor does not hide thread m
   assert.deepEqual([...hiddenIds], []);
 });
 
+test("continued conversation marker hides loaded task replies when anchor is outside the window", () => {
+  const root = message({
+    body: "Can you look into the data model?",
+    createdAt: 1,
+    id: "root",
+  });
+  const taskReply = message({
+    body: "This newer reply belongs in the dedicated conversation.",
+    createdAt: 5,
+    id: "task-reply",
+    pubkey: "agent",
+  });
+  const marker = parseAgentConversationMarker(
+    markerEvent({
+      content: { agentReplyId: "missing-reply", startedAt: 4 },
+      createdAt: 4,
+    }),
+  );
+
+  const hiddenIds = getHiddenAgentConversationMessageIds(
+    [root, taskReply],
+    marker ? [marker] : [],
+  );
+
+  assert.deepEqual([...hiddenIds], ["task-reply"]);
+});
+
 test("continued conversation markers keep later task anchors visible", () => {
   const root = message({
     body: "Can you look into the data model?",

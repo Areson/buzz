@@ -659,7 +659,7 @@ export function getHiddenAgentConversationMessageIds(
   const cutoffByThreadRootId = new Map<
     string,
     {
-      anchorIndex: number;
+      anchorIndex: number | null;
       startedAt: number;
     }
   >();
@@ -667,27 +667,41 @@ export function getHiddenAgentConversationMessageIds(
     const anchorMessage = messageById.get(marker.agentReplyId);
     const anchorIndex = messageIndexById.get(marker.agentReplyId);
     if (!anchorMessage || anchorIndex === undefined) {
-      continue;
-    }
+      const hasLoadedThreadContext = orderedMessages.some(({ message }) => {
+        const messageThreadRootId = message.rootId ?? message.parentId ?? null;
+        return (
+          message.id === marker.threadRootId ||
+          messageThreadRootId === marker.threadRootId
+        );
+      });
+      if (!hasLoadedThreadContext) {
+        continue;
+      }
+    } else {
+      const anchorThreadRootId =
+        anchorMessage.rootId ?? anchorMessage.parentId ?? anchorMessage.id;
+      if (anchorThreadRootId !== marker.threadRootId) {
+        continue;
+      }
 
-    const anchorThreadRootId =
-      anchorMessage.rootId ?? anchorMessage.parentId ?? anchorMessage.id;
-    if (anchorThreadRootId !== marker.threadRootId) {
-      continue;
+      const anchorMessageIds =
+        anchorMessageIdsByThreadRootId.get(marker.threadRootId) ?? new Set();
+      anchorMessageIds.add(marker.agentReplyId);
+      anchorMessageIdsByThreadRootId.set(marker.threadRootId, anchorMessageIds);
     }
-
-    const anchorMessageIds =
-      anchorMessageIdsByThreadRootId.get(marker.threadRootId) ?? new Set();
-    anchorMessageIds.add(marker.agentReplyId);
-    anchorMessageIdsByThreadRootId.set(marker.threadRootId, anchorMessageIds);
 
     const current = cutoffByThreadRootId.get(marker.threadRootId);
     const candidate = {
-      anchorIndex,
+      anchorIndex: anchorIndex ?? null,
       startedAt: marker.startedAt,
     };
     const isEarlier =
-      current === undefined || candidate.anchorIndex < current.anchorIndex;
+      current === undefined ||
+      candidate.startedAt < current.startedAt ||
+      (candidate.startedAt === current.startedAt &&
+        candidate.anchorIndex !== null &&
+        current.anchorIndex !== null &&
+        candidate.anchorIndex < current.anchorIndex);
     if (isEarlier) {
       cutoffByThreadRootId.set(marker.threadRootId, candidate);
     }
@@ -709,14 +723,14 @@ export function getHiddenAgentConversationMessageIds(
     }
 
     const messageIndex = messageIndexById.get(message.id);
-    if (messageIndex !== undefined) {
+    if (messageIndex !== undefined && cutoff.anchorIndex !== null) {
       if (messageIndex > cutoff.anchorIndex) {
         hiddenIds.add(message.id);
       }
       continue;
     }
 
-    if (message.createdAt > cutoff.startedAt) {
+    if (message.createdAt >= cutoff.startedAt) {
       hiddenIds.add(message.id);
     }
   }
