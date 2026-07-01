@@ -368,7 +368,7 @@ export function EditAgentAdvancedFields({
         fileSatisfiedKeys={fileSatisfiedEnvKeys}
         helperText="Per-agent env vars. Override the persona's vars on collision."
         inheritedFrom={inheritedEnvVars}
-        inheritedLabel="persona"
+        inheritedLabel="persona / global defaults"
         onChange={onEnvVarsChange}
         requiredKeys={requiredEnvKeys}
         value={envVars}
