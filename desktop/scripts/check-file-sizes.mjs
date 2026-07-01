@@ -72,8 +72,8 @@ const overrides = new Map([
   ["src-tauri/src/archive/mod_tests.rs", 1208],
   // global-agent-config: build_deploy_payload threads global config fallback
   // for provider/model/env_vars (+4 lines). cargo fmt reflowed 2 more lines.
-  // Queued to split. (#1583 persona-blank-fallback adds +5 more.)
-  ["src-tauri/src/commands/agents.rs", 1460],
+  // deploy-resolver: resolve_effective_model_provider shared fn. Queued to split.
+  ["src-tauri/src/commands/agents.rs", 1462],
   // #1418 read-path fix: get_thread_replies' blocker fix (shared TIMELINE_KINDS
   // const + build_thread_replies_filter helper, mirroring the channel sibling so
   // the two p-gate filters can't drift) plus two guard unit tests. The file was
