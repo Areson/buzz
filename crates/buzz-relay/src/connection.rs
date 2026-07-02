@@ -56,6 +56,8 @@ pub struct ConnectionState {
     pub tenant: TenantContext,
     /// Remote socket address of the client.
     pub remote_addr: SocketAddr,
+    /// Optional corporate identity JWT captured from the WebSocket upgrade request.
+    pub corporate_identity_jwt: Option<String>,
     /// Current NIP-42 authentication state.
     pub auth_state: RwLock<AuthState>,
     /// Active subscriptions keyed by subscription ID.
@@ -117,6 +119,7 @@ pub async fn handle_connection(
     state: Arc<AppState>,
     addr: SocketAddr,
     tenant: TenantContext,
+    corporate_identity_jwt: Option<String>,
 ) {
     let permit = match state.conn_semaphore.clone().try_acquire_owned() {
         Ok(p) => p,
@@ -142,6 +145,7 @@ pub async fn handle_connection(
         conn_id,
         tenant,
         remote_addr: addr,
+        corporate_identity_jwt,
         auth_state: RwLock::new(AuthState::Pending {
             challenge: challenge.clone(),
         }),

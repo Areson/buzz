@@ -62,6 +62,7 @@ nostr = { version = "0.44", features = ["nip44", "nip98"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
 serde_yaml  = "0.9"
+jsonwebtoken = "9"
 evalexpr    = "11"
 cron        = "0.16"
 # Observability

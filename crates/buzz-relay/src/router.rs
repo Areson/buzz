@@ -183,10 +183,16 @@ async fn nip11_or_ws_handler(
                 .into_response();
         }
     };
+    let corporate_identity_jwt = crate::corporate_identity::identity_jwt_from_headers(
+        &headers,
+        &state.config.corporate_identity,
+    );
 
     match WebSocketUpgrade::from_request(req, &state).await {
         Ok(ws) => ws
-            .on_upgrade(move |socket| handle_connection(socket, state, addr, tenant))
+            .on_upgrade(move |socket| {
+                handle_connection(socket, state, addr, tenant, corporate_identity_jwt)
+            })
             .into_response(),
         Err(_) => {
             // Browser requesting HTML and web UI is configured → serve SPA.

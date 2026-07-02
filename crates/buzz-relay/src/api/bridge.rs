@@ -118,6 +118,29 @@ async fn check_nip98_replay_with_guard(
     }
 }
 
+async fn enforce_bridge_corporate_identity(
+    state: &AppState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    pubkey: nostr::PublicKey,
+    auth_tag: Option<&str>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let identity_jwt = crate::corporate_identity::identity_jwt_from_headers(
+        headers,
+        &state.config.corporate_identity,
+    );
+    crate::corporate_identity::enforce_corporate_identity(
+        state,
+        tenant.community(),
+        pubkey,
+        identity_jwt.as_deref(),
+        auth_tag,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| e.into_api_error())
+}
+
 /// Construct the NIP-98 `u`-tag expected URL for a request bound to `tenant`.
 ///
 /// Conformance row 44 obligation: "NIP-98 `u` URL host must match
@@ -331,11 +354,12 @@ pub async fn submit_event(
         Some(&body),
         state.config.require_auth_token,
     )?;
-    check_nip98_replay(&state, &tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
     // Enforce relay membership (with NIP-OA fallback via x-auth-tag header).
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
+    check_nip98_replay(&state, &tenant, event_id_bytes).await?;
+    enforce_bridge_corporate_identity(&state, &tenant, &headers, pubkey, auth_tag).await?;
     super::relay_members::enforce_relay_membership(
         &state,
         tenant.community(),
@@ -426,10 +450,11 @@ pub async fn query_events(
         Some(&body),
         state.config.require_auth_token,
     )?;
-    check_nip98_replay(&state, &tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
+    check_nip98_replay(&state, &tenant, event_id_bytes).await?;
+    enforce_bridge_corporate_identity(&state, &tenant, &headers, pubkey, auth_tag).await?;
     super::relay_members::enforce_relay_membership(
         &state,
         tenant.community(),
@@ -745,10 +770,11 @@ pub async fn count_events(
         Some(&body),
         state.config.require_auth_token,
     )?;
-    check_nip98_replay(&state, &tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
+    check_nip98_replay(&state, &tenant, event_id_bytes).await?;
+    enforce_bridge_corporate_identity(&state, &tenant, &headers, pubkey, auth_tag).await?;
     super::relay_members::enforce_relay_membership(
         &state,
         tenant.community(),

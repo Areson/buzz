@@ -81,7 +81,13 @@ pub async fn ws_audio_handler(
                 .into_response();
         }
     };
-    ws.on_upgrade(move |socket| handle_audio_connection(socket, state, tenant, channel_id))
+    let corporate_identity_jwt = crate::corporate_identity::identity_jwt_from_headers(
+        &headers,
+        &state.config.corporate_identity,
+    );
+    ws.on_upgrade(move |socket| {
+        handle_audio_connection(socket, state, tenant, channel_id, corporate_identity_jwt)
+    })
 }
 
 /// Highest huddle audio protocol version this relay understands. Clients are
@@ -112,6 +118,7 @@ async fn handle_audio_connection(
     state: Arc<AppState>,
     tenant: TenantContext,
     channel_id: Uuid,
+    corporate_identity_jwt: Option<String>,
 ) {
     let (mut ws_send, mut ws_recv) = socket.split();
 
@@ -179,6 +186,26 @@ async fn handle_audio_connection(
     let pubkey_hex = pubkey.to_hex();
     let pubkey_bytes = pubkey.to_bytes().to_vec();
     let parent_channel_id = auth_msg.parent_channel_id;
+
+    if let Err(e) = crate::corporate_identity::enforce_corporate_identity(
+        &state,
+        tenant.community(),
+        pubkey,
+        corporate_identity_jwt.as_deref(),
+        auth_tag_json.as_deref(),
+    )
+    .await
+    {
+        warn!(channel_id = %channel_id, pubkey = %pubkey_hex, error = %e, "audio: corporate identity denied");
+        let _ = ws_send
+            .send(WsMessage::Text(
+                serde_json::json!({"type": "error", "message": e.public_message()})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        return;
+    }
 
     if crate::api::relay_members::enforce_relay_membership(
         &state,

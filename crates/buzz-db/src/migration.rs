@@ -471,7 +471,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 2);
+        assert_eq!(migrations.len(), 3);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -506,6 +506,16 @@ mod tests {
             .as_str()
             .contains("CREATE TABLE git_repo_names"));
         assert!(!migrations[0].sql.as_str().contains("git_repo_names"));
+
+        assert_eq!(migrations[2].version, 3);
+        assert!(migrations[2]
+            .sql
+            .as_str()
+            .contains("CREATE TABLE identity_bindings"));
+        assert!(migrations[2]
+            .sql
+            .as_str()
+            .contains("idx_identity_bindings_active_uid"));
     }
 
     #[test]
@@ -689,13 +699,14 @@ mod tests {
 
         run_migrations(&pool).await.expect("run migrations");
 
-        assert_eq!(applied_versions(&pool).await, vec![1, 2]);
+        assert_eq!(applied_versions(&pool).await, vec![1, 2, 3]);
         let sql = migration_sql();
         let tables = create_tables(sql.as_str());
         for table in [
             "communities",
             "events",
             "channels",
+            "identity_bindings",
             "scheduled_workflow_fires",
             "audit_log",
         ] {
