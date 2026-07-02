@@ -2,10 +2,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { SidebarRelayConnectionCompactCard } from "@/features/sidebar/ui/SidebarRelayConnectionCard";
-import {
-  getRelayConnectivitySuccessSnapshot,
-  subscribeRelayConnectivitySuccess,
-} from "@/features/sidebar/ui/useSidebarRelayConnectionCard";
+import { useRelayConnection } from "@/shared/api/useRelayConnection";
 import { useReconnectRelay } from "@/shared/api/useReconnectRelay";
 import { cn } from "@/shared/lib/cn";
 import { isRelayUnreachableError } from "@/shared/lib/relayError";
@@ -39,6 +36,10 @@ function OnboardingRelayConnectionErrorCard({
     isWaitingOnReconnectHook,
     reconnect,
   } = useReconnectRelay();
+  // Track whether a reconnect attempt was ever initiated from this card so we
+  // don't call markSuccess() on a "connected" state that pre-dates any click.
+  const hadActiveReconnectRef = React.useRef(false);
+  const relayConnectionState = useRelayConnection();
   const [dismissedErrorMessage, setDismissedErrorMessage] = React.useState<
     string | null
   >(null);
@@ -49,16 +50,6 @@ function OnboardingRelayConnectionErrorCard({
   const successTimeoutRef = React.useRef<number | null>(null);
   const wasSavingRef = React.useRef(isSaving);
   const isActionPending = isReconnectActionPending || isReconnectPending;
-
-  // Observe the shared relay-connectivity-success store. When the relay
-  // recovers during phase 3 (controller reconnects without a click return
-  // value), the sidebar and this card share the same success signal so the
-  // onboarding card also flips to success state.
-  const relayConnectivitySuccess = React.useSyncExternalStore(
-    subscribeRelayConnectivitySuccess,
-    () => getRelayConnectivitySuccessSnapshot(undefined),
-    () => false,
-  );
 
   React.useEffect(() => {
     return () => {
@@ -91,15 +82,16 @@ function OnboardingRelayConnectionErrorCard({
     }, ONBOARDING_CONNECTIVITY_SUCCESS_AUTO_DISMISS_MS);
   }, [message]);
 
-  // When the shared relay-connectivity-success store signals success (set by
-  // either the sidebar's handleReconnectRelay or the auto-heal path), mark
-  // this card as successful too. This covers the phase-3 case where
-  // reconnect() returns false but the relay later becomes reachable.
+  // Observe real relay connection state. When this card initiated a reconnect
+  // attempt (phase-3 path: reconnect() returns false) and the relay later
+  // becomes connected, mark success. Guard: only fire when we actually
+  // started a reconnect so a pre-existing connected state doesn't trigger it.
   React.useEffect(() => {
-    if (relayConnectivitySuccess) {
+    if (relayConnectionState === "connected" && hadActiveReconnectRef.current) {
+      hadActiveReconnectRef.current = false;
       markSuccess();
     }
-  }, [relayConnectivitySuccess, markSuccess]);
+  }, [relayConnectionState, markSuccess]);
 
   const runConnectivityAction = React.useCallback(
     (runAction: () => Promise<boolean | undefined>) => {
@@ -107,6 +99,7 @@ function OnboardingRelayConnectionErrorCard({
         return;
       }
 
+      hadActiveReconnectRef.current = true;
       reconnectActionPendingRef.current = true;
       setIsReconnectActionPending(true);
       setHasSuccess(false);
@@ -114,10 +107,18 @@ function OnboardingRelayConnectionErrorCard({
         .then(runAction)
         .then((didReconnect) => {
           if (didReconnect !== false) {
+            // Synchronous success (phase 1) — clear the ref and mark success
+            // immediately. The connection-state effect won't fire because the
+            // ref was just cleared.
+            hadActiveReconnectRef.current = false;
             markSuccess();
           }
+          // didReconnect === false means phase 3 is active; the
+          // connection-state effect will call markSuccess() when the relay
+          // becomes connected.
         })
         .catch((error) => {
+          hadActiveReconnectRef.current = false;
           const detail = error instanceof Error ? error.message : String(error);
           toast.error(`Could not reconnect to the relay. ${detail}`);
         })

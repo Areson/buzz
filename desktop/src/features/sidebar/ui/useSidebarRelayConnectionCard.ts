@@ -14,12 +14,12 @@ function relaySuccessKey(relayUrl: string | null | undefined) {
   return relayUrl ?? DEFAULT_RELAY_SUCCESS_KEY;
 }
 
-export function subscribeRelayConnectivitySuccess(listener: () => void) {
+function subscribeRelayConnectivitySuccess(listener: () => void) {
   relayConnectivitySuccessListeners.add(listener);
   return () => relayConnectivitySuccessListeners.delete(listener);
 }
 
-export function getRelayConnectivitySuccessSnapshot(
+function getRelayConnectivitySuccessSnapshot(
   relayUrl: string | null | undefined,
 ) {
   return relayConnectivitySuccessKey === relaySuccessKey(relayUrl);
