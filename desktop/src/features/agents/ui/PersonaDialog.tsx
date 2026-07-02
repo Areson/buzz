@@ -1027,7 +1027,9 @@ export function PersonaDialog({
                       namePoolText={namePoolText}
                       onEnvVarsChange={handleAdvancedEnvVarsChange}
                       onNamePoolTextChange={setNamePoolText}
-                      requiredEnvKeys={requiredEnvKeys}
+                      requiredEnvKeys={requiredEnvKeys.filter(
+                        (k) => k !== (providerApiKeyConfig?.envVar ?? null),
+                      )}
                     />
                   </motion.div>
                 ) : null}
