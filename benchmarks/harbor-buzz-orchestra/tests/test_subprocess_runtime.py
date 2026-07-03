@@ -1,8 +1,10 @@
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from harbor.environments.base import ExecResult
 
 from harbor_buzz_orchestra.manifest import ExperimentManifest
 from harbor_buzz_orchestra.provisioning import AgentCredential, TrialHandle
@@ -205,6 +207,75 @@ async def test_launch_sets_bounded_agent_rounds(
 def test_runtime_rejects_unbounded_agent_rounds(tmp_path):
     with pytest.raises(ValueError, match="positive"):
         runtime(tmp_path, max_agent_rounds=0)
+    with pytest.raises(ValueError, match="positive"):
+        runtime(tmp_path, readiness_timeout_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_agents_ready_requires_every_channel_subscription(
+    tmp_path, monkeypatch
+):
+    rt = runtime(tmp_path, poll_seconds=0)
+    trial_channel = "trial-channel"
+    processes = []
+    for agent_id in ("orch-1", "worker-1"):
+        stdout_path = tmp_path / f"{agent_id}.stdout"
+        stdout_path.write_text("")
+        processes.append(
+            SimpleNamespace(
+                credential=credential(agent_id, "worker", "worker-model"),
+                process=SimpleNamespace(returncode=None),
+                stdout_path=stdout_path,
+                stderr_path=tmp_path / f"{agent_id}.stderr",
+            )
+        )
+    sleeps = 0
+
+    async def make_ready(_):
+        nonlocal sleeps
+        sleeps += 1
+        target = processes[sleeps - 1].stdout_path
+        target.write_text(f"subscribed to channel {trial_channel}\n")
+
+    monkeypatch.setattr(
+        "harbor_buzz_orchestra.subprocess_runtime.asyncio.sleep", make_ready
+    )
+    await rt._wait_for_agents_ready(processes, trial_channel)
+    assert sleeps == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("condition", "return_code", "raises"),
+    [
+        ("M1-hello-world", 0, False),
+        ("M1-hello-world", 1, True),
+        ("other", 1, False),
+    ],
+)
+async def test_m1_output_probe_is_exact_and_condition_scoped(
+    tmp_path, condition, return_code, raises
+):
+    manifest = write_manifest(tmp_path).model_copy(update={"condition": condition})
+
+    class Environment:
+        commands = []
+
+        async def exec(self, command, **kwargs):
+            self.commands.append(command)
+            return ExecResult(stdout="", stderr="", return_code=return_code)
+
+    environment = Environment()
+    if raises:
+        with pytest.raises(RuntimeLaunchError, match="/app/hello.txt"):
+            await runtime(tmp_path)._verify_m1_output(environment, manifest)
+    else:
+        await runtime(tmp_path)._verify_m1_output(environment, manifest)
+
+    assert bool(environment.commands) == (condition == "M1-hello-world")
+    if environment.commands:
+        assert "wc -c < /app/hello.txt" in environment.commands[0]
+        assert "-eq 14" in environment.commands[0]
 
 
 @pytest.mark.asyncio

@@ -60,11 +60,13 @@ class BuzzSubprocessRuntime:
         buzz_agent_binary: str = "buzz-agent",
         buzz_cli_binary: str = "buzz",
         max_agent_rounds: int = DEFAULT_MAX_AGENT_ROUNDS,
-        startup_seconds: float = 2.0,
+        readiness_timeout_seconds: float = 30.0,
         poll_seconds: float = 1.0,
     ) -> None:
         if max_agent_rounds <= 0:
             raise ValueError("max_agent_rounds must be positive")
+        if readiness_timeout_seconds <= 0:
+            raise ValueError("readiness_timeout_seconds must be positive")
         self.logs_dir = Path(logs_dir)
         self.artifact_root = Path(artifact_root)
         self.endpoints = endpoints
@@ -72,7 +74,7 @@ class BuzzSubprocessRuntime:
         self.buzz_agent_binary = buzz_agent_binary
         self.buzz_cli_binary = buzz_cli_binary
         self.max_agent_rounds = max_agent_rounds
-        self.startup_seconds = startup_seconds
+        self.readiness_timeout_seconds = readiness_timeout_seconds
         self.poll_seconds = poll_seconds
 
     async def run(
@@ -119,8 +121,7 @@ class BuzzSubprocessRuntime:
                             trial_dir=trial_dir,
                         )
                     )
-                await asyncio.sleep(self.startup_seconds)
-                self._raise_for_early_exit(processes)
+                await self._wait_for_agents_ready(processes, trial.channel_id)
                 await self._send(
                     seed_sender,
                     trial,
@@ -130,6 +131,7 @@ class BuzzSubprocessRuntime:
                     self._wait_for_done(orchestrator, trial, processes),
                     timeout=manifest.trial_budget.timeout_seconds,
                 )
+                await self._verify_m1_output(environment, manifest)
             finally:
                 await self._stop_processes(processes)
 
@@ -222,6 +224,56 @@ class BuzzSubprocessRuntime:
         return _AgentProcess(
             credential, process, stdout_path, stderr_path, stdout_stream, stderr_stream
         )
+
+    async def _wait_for_agents_ready(
+        self, processes: list[_AgentProcess], channel_id: str
+    ) -> None:
+        """Wait until every ACP process confirms its trial-channel subscription."""
+        marker = f"subscribed to channel {channel_id}"
+        deadline = asyncio.get_running_loop().time() + self.readiness_timeout_seconds
+        pending = {item.credential.agent_id: item for item in processes}
+        while pending:
+            self._raise_for_early_exit(processes)
+            for agent_id, item in list(pending.items()):
+                try:
+                    output = item.stdout_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError as error:
+                    raise RuntimeLaunchError(
+                        f"cannot read readiness log for agent {agent_id}: {error}"
+                    ) from error
+                if marker in output:
+                    del pending[agent_id]
+            if not pending:
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise RuntimeLaunchError(
+                    "agents did not subscribe to trial channel before readiness "
+                    f"timeout: {sorted(pending)}"
+                )
+            await asyncio.sleep(self.poll_seconds)
+
+    @staticmethod
+    async def _verify_m1_output(
+        environment: BaseEnvironment, manifest: ExperimentManifest
+    ) -> None:
+        """Fail M1 immediately unless the task artifact has the exact expected bytes."""
+        if manifest.condition != "M1-hello-world":
+            return
+        result = await environment.exec(
+            "test -f /app/hello.txt "
+            '&& test "$(wc -c < /app/hello.txt)" -eq 14 '
+            "&& test \"$(cat /app/hello.txt)\" = 'Hello, world!'"
+        )
+        if result.return_code != 0:
+            detail = (
+                result.stderr or result.stdout or "exact-byte check failed"
+            ).strip()
+            raise RuntimeLaunchError(
+                "M1 pre-verifier sanity probe failed: /app/hello.txt must contain "
+                f"exactly b'Hello, world!\\n' ({detail})"
+            )
 
     async def _wait_for_done(
         self,
