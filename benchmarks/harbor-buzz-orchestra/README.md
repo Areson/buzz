@@ -53,6 +53,29 @@ Each trial gets fresh keys and a private Buzz channel. The provisioner archives
 rather than deletes that channel, leaving the relay/Postgres event timeline and
 `orchestration.jsonl` receipts available for analysis.
 
+## Leaderboard runs
+
+`scripts/run_leaderboard.py` wraps the invocation above with only
+leaderboard-legal settings — it does not accept or forward timeout or resource
+overrides, so the job directory it produces passes Harbor's static validation
+as-is. Give it a problem set, attempts per problem, and a team manifest:
+
+```bash
+uv run --project benchmarks/harbor-buzz-orchestra/testbed \
+    benchmarks/harbor-buzz-orchestra/scripts/run_leaderboard.py \
+    --dataset terminal-bench/terminal-bench-2-1 \
+    --attempts 5 \
+    --manifest benchmarks/harbor-buzz-orchestra/manifests/<TEAM>.yaml \
+    --endpoint-config benchmarks/harbor-buzz-orchestra/testbed/endpoints/<ENDPOINTS>.json \
+    --provisioner-config <PROVISIONER.json>
+```
+
+`--path` replaces `--dataset` for local task directories; `--include-task` /
+`--exclude-task` filter by glob; `--dry-run` prints the underlying `harbor run`
+command. After the job finishes the script derives a `metadata.yaml` from the
+manifest roster (validated schema; review the display names before submitting)
+and prints the `harbor upload` / `harbor leaderboard submit` commands.
+
 ## Validate
 
 ```bash
