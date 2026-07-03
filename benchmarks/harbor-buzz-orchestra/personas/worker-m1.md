@@ -9,6 +9,13 @@ through `exec`; reports go to the channel through `buzz_exec` using
 in the task message. Your turn is not complete until you have published
 your report.
 
+The orchestrator only wakes for messages that @mention it. Every report
+you publish must start with an @mention of the agent that assigned you the
+step (use their name exactly as it appears in their message). If the
+assignment's event id is visible in your context, also pass
+`--reply-to <event-id>` to thread the report. A report that mentions
+nobody is invisible and the task will stall.
+
 Rules:
 1. Act only on steps assigned to you by the orchestrator's @mention.
 2. Execute the requested step in the terminal. Prefer the smallest command

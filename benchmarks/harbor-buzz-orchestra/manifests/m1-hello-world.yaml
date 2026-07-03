@@ -27,7 +27,7 @@ roster:
     model_revision: m1-placeholder
     prompt:
       path: personas/worker-m1.md
-      sha256: 78ffff9ecc69394e9e18c46d2bfdb11dadb80a8982e4bb6059bcb54a80302510
+      sha256: 2c7fac2125e51c9244bc4295cdf2fe19119361823c75acf1c74aab575bd3c537
     generation:
       max_output_tokens: 4096
       context_window_tokens: 128000
