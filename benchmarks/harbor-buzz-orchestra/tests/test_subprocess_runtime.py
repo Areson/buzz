@@ -129,14 +129,23 @@ def test_relay_url_conversion_is_explicit(tmp_path):
         rt._cli_relay_url("http://relay")
 
 
-def test_mcp_wrapper_pins_agent_and_socket(tmp_path):
-    wrapper = runtime(tmp_path)._write_mcp_wrapper(
-        tmp_path, "worker-1", tmp_path / "broker.sock"
+def test_mcp_wrapper_pins_agent_buzz_and_optional_socket(tmp_path):
+    rt = runtime(tmp_path, buzz_cli_binary="/pinned/buzz")
+    worker = rt._write_mcp_wrapper(
+        trial_dir=tmp_path,
+        agent_id="worker-1",
+        socket_path=tmp_path / "broker.sock",
     )
-    content = wrapper.read_text()
-    assert "worker-1" in content
-    assert str(tmp_path / "broker.sock") in content
-    assert wrapper.stat().st_mode & 0o777 == 0o700
+    worker_content = worker.read_text()
+    assert "worker-1" in worker_content
+    assert "/pinned/buzz" in worker_content
+    assert str(tmp_path / "broker.sock") in worker_content
+    assert worker.stat().st_mode & 0o777 == 0o700
+
+    orchestrator = rt._write_mcp_wrapper(
+        trial_dir=tmp_path, agent_id="orch-1", socket_path=None
+    )
+    assert "socket_path=" not in orchestrator.read_text()
 
 
 @pytest.mark.asyncio
@@ -188,6 +197,9 @@ async def test_launch_sets_bounded_agent_rounds(
 
     assert captured["BUZZ_AGENT_NO_HINTS"] == "1"
     assert captured["BUZZ_AGENT_MAX_ROUNDS"] == expected
+    assert captured["BUZZ_ACP_MCP_COMMAND"].endswith("agent-mcp-orch-1")
+    wrapper = Path(captured["BUZZ_ACP_MCP_COMMAND"])
+    assert "/pinned/buzz" not in wrapper.read_text()  # default runtime binary is `buzz`
 
 
 def test_runtime_rejects_unbounded_agent_rounds(tmp_path):

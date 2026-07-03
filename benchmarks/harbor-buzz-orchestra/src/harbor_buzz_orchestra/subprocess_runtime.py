@@ -167,10 +167,10 @@ class BuzzSubprocessRuntime:
             )
         prompt_path = self.artifact_root / agent_class.prompt.path
         self._verify_artifact(prompt_path, agent_class.prompt.sha256)
-        wrapper = (
-            self._write_mcp_wrapper(trial_dir, credential.agent_id, socket_path)
-            if credential.role == "worker"
-            else None
+        wrapper = self._write_mcp_wrapper(
+            trial_dir=trial_dir,
+            agent_id=credential.agent_id,
+            socket_path=socket_path if credential.role == "worker" else None,
         )
         stdout_path = trial_dir / f"{credential.agent_id}.stdout.log"
         stderr_path = trial_dir / f"{credential.agent_id}.stderr.log"
@@ -205,8 +205,7 @@ class BuzzSubprocessRuntime:
             ),
             endpoint.api_key_env: credential.llm_api_key,
         }
-        if wrapper is not None:
-            env["BUZZ_ACP_MCP_COMMAND"] = str(wrapper)
+        env["BUZZ_ACP_MCP_COMMAND"] = str(wrapper)
         self._reject_identity_overrides(endpoint)
         try:
             process = await asyncio.create_subprocess_exec(
@@ -331,14 +330,25 @@ class BuzzSubprocessRuntime:
                 f"prompt hash mismatch for {path}: expected {expected_sha256}, got {actual}"
             )
 
-    @staticmethod
-    def _write_mcp_wrapper(trial_dir: Path, agent_id: str, socket_path: Path) -> Path:
-        path = trial_dir / f"terminal-mcp-{agent_id}"
+    def _write_mcp_wrapper(
+        self, *, trial_dir: Path, agent_id: str, socket_path: Path | None
+    ) -> Path:
+        path = trial_dir / f"agent-mcp-{agent_id}"
+        log_path = self.logs_dir / "orchestration.jsonl"
+        socket_argument = (
+            f", socket_path=Path({str(socket_path)!r})"
+            if socket_path is not None
+            else ""
+        )
         command = (
             f"#!{sys.executable}\n"
             "from harbor_buzz_orchestra.terminal_mcp import serve\n"
             "from pathlib import Path\n"
-            f"serve(Path({str(socket_path)!r}), {agent_id!r})\n"
+            "serve("
+            f"agent_id={agent_id!r}, "
+            f"buzz_binary={self.buzz_cli_binary!r}, "
+            f"log_path=Path({str(log_path)!r})"
+            f"{socket_argument})\n"
         )
         path.write_text(command, encoding="utf-8")
         path.chmod(0o700)
