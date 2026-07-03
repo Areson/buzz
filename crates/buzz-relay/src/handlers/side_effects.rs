@@ -169,8 +169,15 @@ pub async fn handle_side_effects(
 
 /// Validate a standard NIP-09 deletion event before it is stored.
 ///
-/// Buzz accepts standard deletions for self-authored events only. Channel
-/// admin deletions continue to use kind 9005.
+/// Buzz accepts standard deletions for:
+/// - **Self-authored events**: actor is the original event author (no membership re-gate —
+///   channel removal revokes future send access, not retroactive delete rights).
+/// - **Owner-of-agent**: actor is the NIP-OA owner of the agent that authored the target.
+///   Channel context is derived from the **stored target row** (not the deletion event's own
+///   h-tag, which the actor controls) and a membership re-gate applies: a removed private-channel
+///   owner cannot delete their agent's channel-scoped events after access is revoked.
+///
+/// Channel admin deletions continue to use kind 9005.
 pub async fn validate_standard_deletion_event(
     tenant: &TenantContext,
     event: &Event,
@@ -203,10 +210,35 @@ pub async fn validate_standard_deletion_event(
             if !is_owner {
                 return Err(anyhow::anyhow!("must be event author"));
             }
-            // Owner confirmed. Re-gate on membership when a channel context is resolvable
-            // (parity with the e-tag owner path below; if no channel context, owner-check alone
-            // is sufficient — the addressable event may be global).
-            if let Some(ch_id) = extract_h_tag_channel(event) {
+            // Owner confirmed. Re-gate on channel membership using the channel_id stored in the
+            // target row — NOT from the deletion event's h-tag (which the actor controls and
+            // could omit to bypass the re-gate). Parse the coordinate from the a-tag and look
+            // up the trusted stored value.
+            let stored_channel_id = if parts.len() >= 3 {
+                let kind_i32 = parts[0]
+                    .parse::<i32>()
+                    .map_err(|_| anyhow::anyhow!("invalid kind in a-tag"))?;
+                let d_tag = parts[2];
+                state
+                    .db
+                    .get_coordinate_channel_id(
+                        tenant.community(),
+                        kind_i32,
+                        &target_pubkey_bytes,
+                        d_tag,
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("db error fetching coordinate channel: {e}"))?
+            } else {
+                // a-tag without d_tag: non-parameterized replaceable — no coordinate row to
+                // look up; treat as global (owner-check alone is sufficient).
+                None
+            };
+            // `stored_channel_id` is:
+            //   None          — no live row (deleted/not found); treat as global, allow owner.
+            //   Some(None)    — live row is global; no channel re-gate needed.
+            //   Some(Some(id))— live row is channel-scoped; apply membership re-gate.
+            if let Some(Some(ch_id)) = stored_channel_id {
                 let is_member = state
                     .is_member_cached(tenant.community(), ch_id, &actor_bytes)
                     .await
@@ -3361,7 +3393,6 @@ mod tests {
         };
         let tenant = seed_community(&pool).await;
         let community_uuid = *tenant.community().as_uuid();
-
         let owner_keys = Keys::generate();
         let agent_keys = Keys::generate();
         let owner_bytes = owner_keys.public_key().to_bytes().to_vec();
@@ -3388,5 +3419,204 @@ mod tests {
         validate_standard_deletion_event(&tenant, &delete, &state)
             .await
             .expect("owner delete in open channel without membership must succeed");
+    }
+
+    // ── a-tag deletion tests ──────────────────────────────────────────────────
+
+    /// Build a signed kind:5 delete event with one a-tag targeting `a_value` (format:
+    /// `kind:pubkey_hex:d_tag`). When `h_tag_channel` is `Some`, an h-tag is added;
+    /// when `None`, no h-tag is present — this is the bypass case the production fix
+    /// must reject.
+    fn delete_event_a_tag(
+        actor_keys: &Keys,
+        a_value: &str,
+        h_tag_channel: Option<Uuid>,
+    ) -> nostr::Event {
+        let mut tags = vec![Tag::parse(["a", a_value]).unwrap()];
+        if let Some(ch_id) = h_tag_channel {
+            tags.push(Tag::parse(["h", &ch_id.to_string()]).unwrap());
+        }
+        EventBuilder::new(Kind::Custom(5), "")
+            .tags(tags)
+            .sign_with_keys(actor_keys)
+            .unwrap()
+    }
+
+    /// Insert a parameterized-replaceable (NIP-33) event authored by `agent_keys` with
+    /// the given `d_tag`, stored in `channel_id`. Returns the a-tag value string for use
+    /// in a kind-5 deletion event.
+    async fn insert_addressable_event(
+        state: &Arc<crate::state::AppState>,
+        tenant: &TenantContext,
+        agent_keys: &Keys,
+        d_tag_val: &str,
+        channel_id: Option<Uuid>,
+    ) -> String {
+        // kind 30023 = NIP-33 parameterized replaceable (long-form article)
+        let kind = 30023u16;
+        let event = EventBuilder::new(Kind::Custom(kind), "addressable content")
+            .tags([Tag::parse(["d", d_tag_val]).unwrap()])
+            .sign_with_keys(agent_keys)
+            .unwrap();
+        state
+            .db
+            .insert_event(tenant.community(), &event, channel_id)
+            .await
+            .expect("insert addressable event");
+        format!(
+            "{}:{}:{}",
+            kind,
+            agent_keys.public_key().to_hex(),
+            d_tag_val
+        )
+    }
+
+    /// Owning human can delete their agent's addressable event (a-tag path) when they are a
+    /// member of the channel the event is stored in.
+    #[tokio::test]
+    async fn delete_owner_agent_addressable_as_member_succeeds() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let Some(state) = test_state(pool.clone()).await else {
+            return;
+        };
+        let tenant = seed_community(&pool).await;
+        let community_uuid = *tenant.community().as_uuid();
+
+        let owner_keys = Keys::generate();
+        let agent_keys = Keys::generate();
+        let owner_bytes = owner_keys.public_key().to_bytes().to_vec();
+        let agent_bytes = agent_keys.public_key().to_bytes().to_vec();
+
+        insert_user(&pool, community_uuid, &owner_bytes).await;
+        insert_agent_with_owner(&pool, community_uuid, &agent_bytes, &owner_bytes).await;
+
+        let ch_id = insert_private_channel(&pool, community_uuid).await;
+        add_member(&pool, community_uuid, ch_id, &owner_bytes).await;
+
+        let a_value =
+            insert_addressable_event(&state, &tenant, &agent_keys, "doc-1", Some(ch_id)).await;
+
+        // No h-tag on the deletion event — channel context comes from the stored row.
+        let delete = delete_event_a_tag(&owner_keys, &a_value, None);
+        validate_standard_deletion_event(&tenant, &delete, &state)
+            .await
+            .expect("owner+member a-tag delete must succeed");
+    }
+
+    /// Owning human who was removed from a private channel CANNOT delete their agent's
+    /// addressable event via a-tag — even without an h-tag on the deletion event.
+    ///
+    /// This is the regression test that proves the bypass is closed: the re-gate reads
+    /// channel context from the stored row (trusted), not the deletion event's h-tag
+    /// (actor-controlled). If the fix regressed to reading the event h-tag, this test
+    /// would pass (no h-tag → no re-gate → allowed) when it should reject.
+    #[tokio::test]
+    async fn delete_owner_agent_addressable_removed_from_private_channel_is_rejected() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let Some(state) = test_state(pool.clone()).await else {
+            return;
+        };
+        let tenant = seed_community(&pool).await;
+        let community_uuid = *tenant.community().as_uuid();
+
+        let owner_keys = Keys::generate();
+        let agent_keys = Keys::generate();
+        let owner_bytes = owner_keys.public_key().to_bytes().to_vec();
+        let agent_bytes = agent_keys.public_key().to_bytes().to_vec();
+
+        insert_user(&pool, community_uuid, &owner_bytes).await;
+        insert_agent_with_owner(&pool, community_uuid, &agent_bytes, &owner_bytes).await;
+        // Owner is intentionally NOT added as a channel member.
+
+        let ch_id = insert_private_channel(&pool, community_uuid).await;
+
+        let a_value =
+            insert_addressable_event(&state, &tenant, &agent_keys, "doc-removed", Some(ch_id))
+                .await;
+
+        // Deletion event carries NO h-tag — this is exactly the bypass attempt.
+        // The fix must derive channel context from the stored row and still reject.
+        let delete = delete_event_a_tag(&owner_keys, &a_value, None);
+        let err = validate_standard_deletion_event(&tenant, &delete, &state)
+            .await
+            .expect_err("removed owner a-tag delete without h-tag must be rejected");
+        assert!(
+            err.to_string().contains("restricted: not a channel member"),
+            "expected 'restricted: not a channel member', got: {err}"
+        );
+    }
+
+    /// Owning human CAN delete their agent's addressable event in an open channel even
+    /// without being a member (open channel relaxes the membership gate).
+    #[tokio::test]
+    async fn delete_owner_agent_addressable_open_channel_without_membership_succeeds() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let Some(state) = test_state(pool.clone()).await else {
+            return;
+        };
+        let tenant = seed_community(&pool).await;
+        let community_uuid = *tenant.community().as_uuid();
+
+        let owner_keys = Keys::generate();
+        let agent_keys = Keys::generate();
+        let owner_bytes = owner_keys.public_key().to_bytes().to_vec();
+        let agent_bytes = agent_keys.public_key().to_bytes().to_vec();
+
+        insert_user(&pool, community_uuid, &owner_bytes).await;
+        insert_agent_with_owner(&pool, community_uuid, &agent_bytes, &owner_bytes).await;
+
+        let ch_id = insert_open_channel(&pool, community_uuid).await;
+
+        let a_value =
+            insert_addressable_event(&state, &tenant, &agent_keys, "doc-open", Some(ch_id)).await;
+
+        let delete = delete_event_a_tag(&owner_keys, &a_value, None);
+        validate_standard_deletion_event(&tenant, &delete, &state)
+            .await
+            .expect("owner a-tag delete in open channel without membership must succeed");
+    }
+
+    /// Non-owner cannot delete an agent's addressable event via a-tag.
+    #[tokio::test]
+    async fn delete_non_owner_agent_addressable_is_rejected() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let Some(state) = test_state(pool.clone()).await else {
+            return;
+        };
+        let tenant = seed_community(&pool).await;
+        let community_uuid = *tenant.community().as_uuid();
+
+        let non_owner_keys = Keys::generate();
+        let agent_keys = Keys::generate();
+        let non_owner_bytes = non_owner_keys.public_key().to_bytes().to_vec();
+        let agent_bytes = agent_keys.public_key().to_bytes().to_vec();
+
+        insert_user(&pool, community_uuid, &non_owner_bytes).await;
+        insert_user(&pool, community_uuid, &agent_bytes).await;
+        // Agent has NO owner_pubkey set — non_owner is not the owner.
+
+        let ch_id = insert_private_channel(&pool, community_uuid).await;
+        add_member(&pool, community_uuid, ch_id, &non_owner_bytes).await;
+
+        let a_value =
+            insert_addressable_event(&state, &tenant, &agent_keys, "doc-nonowner", Some(ch_id))
+                .await;
+
+        let delete = delete_event_a_tag(&non_owner_keys, &a_value, None);
+        let err = validate_standard_deletion_event(&tenant, &delete, &state)
+            .await
+            .expect_err("non-owner a-tag delete must be rejected");
+        assert!(
+            err.to_string().contains("must be event author"),
+            "expected 'must be event author', got: {err}"
+        );
     }
 }
