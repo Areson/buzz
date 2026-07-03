@@ -24,6 +24,7 @@ import {
   usePersonasQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
+import { useActiveAgentTurnsBridge } from "@/features/agents/activeAgentTurnsStore";
 import { useManagedAgentObserverBridge } from "@/features/agents/observerRelayStore";
 import {
   mergeMessages,
@@ -386,6 +387,11 @@ export function ChannelScreen({
     ];
   }, [managedAgents, openAgentSessionPubkey, profilePanelPubkey]);
   useManagedAgentObserverBridge(observerBridgeAgents);
+  // Derive active-turn/liveness state from the same observer events. Without
+  // this, raw observer frames (e.g. turn_completed) reach the activity panel
+  // while the derived active-turns store stays stale, leaving the liveness
+  // indicator spinning after the turn already finished.
+  useActiveAgentTurnsBridge(observerBridgeAgents);
   const messageProfiles = React.useMemo(() => {
     const base =
       mergeCurrentProfileIntoLookup(
