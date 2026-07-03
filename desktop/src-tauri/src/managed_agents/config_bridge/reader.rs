@@ -209,6 +209,7 @@ pub(crate) fn read_config_surface(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_model_field(
     record_model: &Option<String>,
     file_model: &Option<String>,
@@ -516,6 +517,7 @@ fn build_system_prompt_field(
 /// returns `(value, origin, overridden_value, overridden_origin)` where the
 /// overridden pair is the next `Some` tier after the winner. Returns `None`
 /// when no tier has a value.
+#[allow(clippy::type_complexity)]
 fn resolve_with_override(
     tiers: &[(Option<&str>, ConfigOrigin)],
 ) -> Option<(
