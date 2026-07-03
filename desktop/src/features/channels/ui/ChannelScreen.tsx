@@ -210,16 +210,10 @@ export function ChannelScreen({
     // thread itself is read.
     markChannelRead(activeChannelId, activeReadAt, { topLevelOnly: true });
   }, [activeChannel?.isMember, activeChannelId, activeReadAt, markChannelRead]);
-  // Install the NIP-RS parent resolver: every `thread:<root>` or `msg:<id>`
-  // context evaluated while this channel is active belongs to it (both are only
-  // ever read for the active channel's timeline messages), so the parent is
-  // always the active channel. Folding `msg:` to the channel — never to another
-  // message — means reading an ancestor never covers a descendant (LP4 Issue 2
-  // by construction); a channel-read still clears any message older than the
-  // top-level channel frontier. Non-thread/non-message keys (channels) have no
-  // parent → null, which degrades effective() to the own term. Cleared on
-  // channel leave / unmount so a stale channel id never becomes the parent of
-  // another channel's contexts.
+  // Install the NIP-RS parent resolver. Active `thread:` and `msg:` contexts
+  // belong to this channel; folding messages to the channel (never another
+  // message) preserves ancestor/descendant isolation while channel reads still
+  // cover top-level history. Clear on leave so the parent cannot go stale.
   React.useEffect(() => {
     if (!activeChannelId) {
       setContextParentResolver(null);
