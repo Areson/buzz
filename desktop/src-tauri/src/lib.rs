@@ -84,16 +84,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                // The main window should always launch edge-to-edge in the
-                // available desktop area. Do not let stale saved geometry or
-                // fullscreen state override the maximized launch config.
+                // Restore the user's window size/position (and maximized
+                // state) across launches. First launch falls back to the
+                // centered default bounds in tauri.conf.json instead of
+                // opening edge-to-edge. Visibility stays managed by the app
+                // (window is revealed once React mounts) and fullscreen is
+                // never restored — relaunching into fullscreen is jarring.
                 .with_state_flags(
-                    StateFlags::all()
-                        & !(StateFlags::VISIBLE
-                            | StateFlags::POSITION
-                            | StateFlags::SIZE
-                            | StateFlags::MAXIMIZED
-                            | StateFlags::FULLSCREEN),
+                    StateFlags::all() & !(StateFlags::VISIBLE | StateFlags::FULLSCREEN),
                 )
                 .build(),
         )

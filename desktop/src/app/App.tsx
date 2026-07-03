@@ -234,7 +234,11 @@ export function App() {
   useReloadShortcut();
 
   useLayoutEffect(() => {
-    void getCurrentWindow().show();
+    // The window starts hidden (visible: false in tauri.conf.json) so users
+    // never see an unstyled flash. Reveal it once React mounts, and focus it
+    // explicitly — show() alone can leave the window behind others on launch.
+    const appWindow = getCurrentWindow();
+    void appWindow.show().then(() => appWindow.setFocus());
   }, []);
 
   const [sharedIdentity, setSharedIdentity] = useState<boolean | null>(null);
