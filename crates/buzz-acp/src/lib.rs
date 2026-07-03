@@ -87,6 +87,54 @@ fn channel_is_chat(channel_info: &HashMap<Uuid, relay::ChannelInfo>, channel_id:
         .is_some_and(|info| info.channel_type == "chat")
 }
 
+/// Oldest chat backlog the startup replay will deliver. Bounds necro-replies
+/// to abandoned chats while comfortably covering the activation flow (owner
+/// messages a stopped agent, then starts it from the desktop).
+const CHAT_BACKLOG_MAX_AGE_SECS: u64 = 6 * 60 * 60;
+
+/// Replay floor for a chat channel's startup subscription.
+///
+/// A chat's owner often messages while the agent is stopped — the desktop's
+/// "Activate agent" card starts the agent on demand — and a `since: now`
+/// subscription would silently skip that pending message forever. Replay from
+/// just after the agent's own last reply in the channel (it has answered
+/// everything before that), capped to a recent window. Best-effort: on query
+/// failure, fall back to plain live-only subscription.
+async fn chat_backlog_replay_since(
+    rest: &relay::RestClient,
+    channel_id: Uuid,
+    agent_pubkey_hex: &str,
+    startup_watermark: u64,
+) -> Option<u64> {
+    let floor = startup_watermark.saturating_sub(CHAT_BACKLOG_MAX_AGE_SECS);
+    let author = nostr::PublicKey::from_hex(agent_pubkey_hex).ok()?;
+    let h_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::H);
+    let filter = nostr::Filter::new()
+        .kind(nostr::Kind::Custom(9))
+        .author(author)
+        .custom_tags(h_tag, [channel_id.to_string()])
+        .limit(1);
+
+    match rest.query(&[filter]).await {
+        Ok(value) => {
+            let last_reply_ts = value.as_array().and_then(|events| {
+                events
+                    .iter()
+                    .filter_map(|event| event.get("created_at").and_then(|v| v.as_u64()))
+                    .max()
+            });
+            Some(match last_reply_ts {
+                Some(ts) => ts.saturating_add(1).max(floor),
+                None => floor,
+            })
+        }
+        Err(error) => {
+            tracing::debug!("chat backlog query failed for {channel_id}: {error}");
+            None
+        }
+    }
+}
+
 /// Resolve the agent's owner pubkey at startup.
 ///
 /// Priority:
@@ -1392,9 +1440,23 @@ async fn tokio_main() -> Result<()> {
     if channel_filters.is_empty() {
         tracing::warn!("no channel subscriptions resolved — agent will sit idle");
     }
+    let backlog_rest = relay.rest_client();
     for (channel_id, filter) in &channel_filters {
-        if let Err(e) = relay.subscribe_channel(*channel_id, filter.clone()).await {
+        // Chats replay their unanswered backlog; other channel types stay
+        // live-only from the startup watermark.
+        let replay_since = if channel_is_chat(&channel_info_map, *channel_id) {
+            chat_backlog_replay_since(&backlog_rest, *channel_id, &pubkey_hex, startup_watermark)
+                .await
+        } else {
+            None
+        };
+        if let Err(e) = relay
+            .subscribe_channel_from(*channel_id, filter.clone(), replay_since)
+            .await
+        {
             tracing::warn!("failed to subscribe to channel {channel_id}: {e}");
+        } else if let Some(since) = replay_since {
+            tracing::info!("subscribed to channel {channel_id} (chat backlog since {since})");
         } else {
             tracing::info!("subscribed to channel {channel_id}");
         }
@@ -1435,6 +1497,7 @@ async fn tokio_main() -> Result<()> {
             .and_then(|hex| nostr::PublicKey::from_hex(hex).ok()),
         memory_enabled: config.memory_enabled,
         harness_name: crate::config::normalize_agent_command_identity(&config.agent_command),
+        titled_channels: std::sync::Mutex::new(std::collections::HashSet::new()),
     });
 
     if !config.memory_enabled {

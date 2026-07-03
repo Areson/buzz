@@ -399,6 +399,10 @@ pub struct PromptContext {
     /// Harness identity string for NIP-AM `harness` field. Derived from the
     /// configured `agent_command` at startup (e.g. `"goose"`, `"buzz-agent"`).
     pub harness_name: String,
+    /// Chat channels that already produced a `chat_title` observer frame this
+    /// process. Interior mutability because `PromptContext` is `Arc`-shared
+    /// across prompt tasks.
+    pub titled_channels: std::sync::Mutex<HashSet<Uuid>>,
 }
 
 impl AgentPool {
@@ -1780,6 +1784,14 @@ pub async fn run_prompt_task(
             )
             .await;
 
+            // The turn is done — release its completion marker before the
+            // best-effort title side prompt so the desktop's "Working" row
+            // clears while the title generates.
+            drop(_turn_guard);
+            if let PromptSource::Channel(cid) = &source {
+                maybe_emit_chat_title(&mut agent, &ctx, *cid, batch.as_ref()).await;
+            }
+
             send_prompt_result(
                 &result_tx,
                 agent,
@@ -2914,6 +2926,175 @@ async fn run_turn_liveness(
     }
 }
 
+/// Idle/hard timeout for the chat-title side prompt. Titles are one short
+/// completion; anything slower is abandoned rather than holding the agent.
+const CHAT_TITLE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const CHAT_TITLE_HARD_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Character cap for an emitted chat title.
+const CHAT_TITLE_MAX_CHARS: usize = 60;
+
+/// Byte cap for the opening-message excerpt embedded in the title prompt.
+const CHAT_TITLE_REQUEST_EXCERPT_LEN: usize = 1_500;
+
+/// After the first successful turn in a chat channel, generate a succinct
+/// conversation title and emit it as a `chat_title` observer frame. The
+/// desktop applies it to the chat's metadata (never overriding a manual
+/// rename), so this stays fire-and-forget: every failure just logs.
+///
+/// The title runs in a fresh session with NO MCP servers and NO system
+/// prompt — a bare completion. The model has no tools, so it cannot post the
+/// title (or anything else) into the channel. The throwaway session is left
+/// to expire with the agent process; ACP has no portable close-session call.
+async fn maybe_emit_chat_title(
+    agent: &mut OwnedAgent,
+    ctx: &PromptContext,
+    channel_id: Uuid,
+    batch: Option<&FlushBatch>,
+) {
+    let is_chat = ctx
+        .channel_info
+        .get(&channel_id)
+        .is_some_and(|info| info.channel_type == "chat");
+    if !is_chat {
+        return;
+    }
+    {
+        // Once per channel per process — even if generation fails, don't
+        // retry every turn (the desktop has a heuristic fallback).
+        let Ok(mut titled) = ctx.titled_channels.lock() else {
+            return;
+        };
+        if !titled.insert(channel_id) {
+            return;
+        }
+    }
+
+    let Some(request_text) = first_batch_message_excerpt(batch) else {
+        return;
+    };
+
+    // Mute the observer for the side prompt: its raw wire events would carry
+    // the just-completed turn's channel/turn context, and the desktop upserts
+    // `session/prompt` / message chunks by that context — the titling prompt
+    // would overwrite the turn's real prompt and assistant transcript items.
+    let observer = agent.acp.observer_handle();
+    let observer_index = agent.acp.observer_agent_index().unwrap_or(0);
+    agent.acp.set_observer(None, observer_index);
+    let title = generate_chat_title(agent, ctx, &request_text).await;
+    agent.acp.set_observer(observer, observer_index);
+
+    let Some(title) = title else {
+        return;
+    };
+
+    tracing::info!(target: "pool::title", "chat title for {channel_id}: {title}");
+    agent.acp.observe(
+        "chat_title",
+        serde_json::json!({ "type": "chat_title", "title": title }),
+    );
+}
+
+/// Run the tool-less title side prompt and return the sanitized title.
+///
+/// Must be called with the observer muted (see `maybe_emit_chat_title`) so
+/// the side session's wire traffic never reaches transcripts.
+async fn generate_chat_title(
+    agent: &mut OwnedAgent,
+    ctx: &PromptContext,
+    request_text: &str,
+) -> Option<String> {
+    let prompt = format!(
+        "You are titling a chat conversation. Reply with ONLY a short title \
+         (3-6 words, no quotes, no trailing punctuation) that names what the \
+         conversation is trying to accomplish.\n\nOpening message:\n{request_text}"
+    );
+
+    let session_id = match agent.acp.session_new(&ctx.cwd, Vec::new(), None).await {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            if matches!(error, AcpError::AgentExited) {
+                agent.state.invalidate_all();
+            }
+            tracing::warn!(target: "pool::title", "chat title session/new failed: {error}");
+            return None;
+        }
+    };
+
+    agent.acp.begin_message_capture();
+    let prompt_result = agent
+        .acp
+        .session_prompt_with_idle_timeout(
+            &session_id,
+            &prompt,
+            CHAT_TITLE_IDLE_TIMEOUT,
+            CHAT_TITLE_HARD_TIMEOUT,
+        )
+        .await;
+    let captured = agent.acp.take_message_capture().unwrap_or_default();
+
+    if let Err(error) = prompt_result {
+        if matches!(error, AcpError::AgentExited) {
+            agent.state.invalidate_all();
+        }
+        tracing::warn!(target: "pool::title", "chat title prompt failed: {error}");
+        return None;
+    }
+
+    let title = sanitize_chat_title(&captured);
+    if title.is_none() {
+        tracing::debug!(target: "pool::title", "chat title reply unusable: {captured:?}");
+    }
+    title
+}
+
+/// Extract the opening user message from the batch, truncated to a prompt
+/// excerpt on a char boundary.
+fn first_batch_message_excerpt(batch: Option<&FlushBatch>) -> Option<String> {
+    let content = batch?.events.first()?.event.content.trim();
+    if content.is_empty() {
+        return None;
+    }
+    let mut end = CHAT_TITLE_REQUEST_EXCERPT_LEN.min(content.len());
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(content[..end].to_string())
+}
+
+/// Normalize a model's title reply into a clean single-line title, or `None`
+/// when nothing usable survives.
+fn sanitize_chat_title(raw: &str) -> Option<String> {
+    // Models occasionally preface with "Title:" or wrap in quotes/markdown;
+    // take the first non-empty line and strip that framing.
+    let line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let mut title = line.trim_start_matches("Title:").trim();
+    title = title.trim_matches(|c| matches!(c, '"' | '\'' | '“' | '”' | '*' | '`' | '#'));
+    let mut cleaned = title.trim().to_string();
+    if cleaned.chars().count() > CHAT_TITLE_MAX_CHARS {
+        let last_space = cleaned
+            .char_indices()
+            .take(CHAT_TITLE_MAX_CHARS)
+            .filter(|(_, c)| c.is_whitespace())
+            .map(|(i, _)| i)
+            .last();
+        let hard_cut = cleaned
+            .char_indices()
+            .nth(CHAT_TITLE_MAX_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(cleaned.len());
+        cleaned.truncate(last_space.unwrap_or(hard_cut));
+    }
+    let cleaned = cleaned
+        .trim_end_matches(['.', ',', ';', ':', '!', '?', '-'])
+        .trim()
+        .to_string();
+    if cleaned.chars().count() < 3 {
+        return None;
+    }
+    Some(cleaned)
+}
+
 // Emits a `turn_completed` observer event on drop, covering ALL exit paths
 // (success, error, timeout, cancel, panic) from `run_prompt_task`. Captures
 // observer handle and metadata at creation time so it remains valid even after
@@ -3307,6 +3488,39 @@ mod tests {
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Tag};
     use serde_json::json;
+
+    #[test]
+    fn test_sanitize_chat_title_strips_model_framing() {
+        assert_eq!(
+            sanitize_chat_title("Title: \"Fix flaky Playwright tests\"\n"),
+            Some("Fix flaky Playwright tests".to_string())
+        );
+        assert_eq!(
+            sanitize_chat_title("**Debug relay disconnects.**"),
+            Some("Debug relay disconnects".to_string())
+        );
+        assert_eq!(
+            sanitize_chat_title("\n\n  Rename deploy workflow  \nExtra explanation line"),
+            Some("Rename deploy workflow".to_string())
+        );
+    }
+
+    #[test]
+    fn test_sanitize_chat_title_caps_on_word_boundary() {
+        let long =
+            "a very long title that keeps going well past the sixty character cap for titles";
+        let title = sanitize_chat_title(long).expect("title");
+        assert!(title.chars().count() <= CHAT_TITLE_MAX_CHARS, "{title}");
+        assert!(!title.ends_with(' '));
+        assert!(long.starts_with(&title));
+    }
+
+    #[test]
+    fn test_sanitize_chat_title_rejects_empty_and_tiny() {
+        assert_eq!(sanitize_chat_title(""), None);
+        assert_eq!(sanitize_chat_title("  \n \n"), None);
+        assert_eq!(sanitize_chat_title("ok"), None);
+    }
 
     // These pin the initial_message dispatch path (run_prompt_task, ~line 855):
     // a legacy agent WITH a base_prompt must get [Base] prepended to the user
