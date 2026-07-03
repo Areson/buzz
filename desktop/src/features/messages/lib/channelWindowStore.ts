@@ -188,6 +188,18 @@ export function flattenChannelWindowEvents(store: ChannelWindowStore) {
   );
 }
 
+/**
+ * Whether older history remains beyond the retained pages. The authoritative
+ * signal for paging: the tail page's `hasMore` (kept in lockstep with its
+ * `nextCursor` by `assertValidPage`). Empty pages mean no window has loaded
+ * yet — there is no cursor to page with, so report false; the first
+ * `replaceNewestChannelWindow` makes the signal authoritative.
+ */
+export function channelWindowHasMore(store: ChannelWindowStore) {
+  const tail = store.pages[store.pages.length - 1];
+  return tail?.hasMore ?? false;
+}
+
 export function channelWindowThreadSummaries(store: ChannelWindowStore) {
   return new Map(
     store.pages.flatMap((page) =>
