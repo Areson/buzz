@@ -260,6 +260,7 @@ mod tests {
             name: id.to_string(),
             description: None,
             persona_ids: Vec::new(),
+            agent_pubkeys: Vec::new(),
             is_builtin: false,
             source_dir: None,
             is_symlink: false,

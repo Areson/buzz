@@ -26,6 +26,10 @@ pub struct TeamEventContent {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub persona_ids: Vec<String>,
+    /// Managed-agent members by pubkey. Additive field — events published by
+    /// older clients simply omit it and parse to an empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_pubkeys: Vec<String>,
 }
 
 /// Project a `TeamRecord` onto the content fields published in team events.
@@ -36,6 +40,7 @@ pub fn team_event_content(record: &TeamRecord) -> TeamEventContent {
         name: record.name.clone(),
         description: record.description.clone(),
         persona_ids: record.persona_ids.clone(),
+        agent_pubkeys: record.agent_pubkeys.clone(),
     }
 }
 
@@ -87,6 +92,7 @@ mod tests {
             name: "Test Team".to_string(),
             description: Some("A test team".to_string()),
             persona_ids: vec!["p1".to_string(), "p2".to_string()],
+            agent_pubkeys: vec!["a".repeat(64)],
             is_builtin: false,
             source_dir: Some(PathBuf::from("/local/only/path")),
             is_symlink: true,
@@ -143,8 +149,21 @@ mod tests {
     fn content_round_trips() {
         let event_content = team_event_content(&sample_team());
         let json = serde_json::to_string(&event_content).unwrap();
+        assert!(json.contains("\"agent_pubkeys\""));
         let restored: TeamEventContent = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, event_content);
+        assert_eq!(restored.agent_pubkeys, vec!["a".repeat(64)]);
+    }
+
+    #[test]
+    fn content_from_old_clients_without_agent_pubkeys_parses_empty() {
+        // agent_pubkeys is additive: events published before the field existed
+        // must still parse, with membership defaulting to no agent members.
+        let legacy = r#"{"name":"Old Team","persona_ids":["p1"]}"#;
+        let restored: TeamEventContent = serde_json::from_str(legacy).unwrap();
+        assert_eq!(restored.name, "Old Team");
+        assert_eq!(restored.persona_ids, vec!["p1"]);
+        assert!(restored.agent_pubkeys.is_empty());
     }
 
     #[test]

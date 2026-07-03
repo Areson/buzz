@@ -676,12 +676,14 @@ fn apply_inbound_team(teams: &mut Vec<TeamRecord>, d_tag: String, inbound: TeamE
             local.name = inbound.name;
             local.description = inbound.description;
             local.persona_ids = inbound.persona_ids;
+            local.agent_pubkeys = inbound.agent_pubkeys;
         }
         None => teams.push(TeamRecord {
             id: d_tag,
             name: inbound.name,
             description: inbound.description,
             persona_ids: inbound.persona_ids,
+            agent_pubkeys: inbound.agent_pubkeys,
             is_builtin: false,
             source_dir: None,
             is_symlink: false,

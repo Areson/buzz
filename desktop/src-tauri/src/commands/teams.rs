@@ -28,6 +28,14 @@ fn trim_optional(value: Option<String>) -> Option<String> {
     })
 }
 
+/// Validate and normalize team agent members: each entry must be a 64-char hex
+/// pubkey (lowercased, deduped). Existence is NOT checked — a team synced from
+/// another device may reference agents that only exist there.
+fn normalize_team_agent_pubkeys(input: &[String]) -> Result<Vec<String>, String> {
+    crate::managed_agents::validate_respond_to_allowlist(input)
+        .map_err(|e| e.replace("respond-to allowlist", "team members"))
+}
+
 /// Retain a freshly authored team event in the local store, flagged for relay
 /// sync. Called inside a command's `managed_agents_store_lock`-held body after
 /// `save_teams`; the background flush loop publishes it out-of-band.
@@ -160,6 +168,7 @@ pub async fn create_team(input: CreateTeamRequest, app: AppHandle) -> Result<Tea
         let description = trim_optional(input.description);
         let now = now_iso();
 
+        let agent_pubkeys = normalize_team_agent_pubkeys(&input.agent_pubkeys)?;
         let _store_guard = state
             .managed_agents_store_lock
             .lock()
@@ -172,6 +181,7 @@ pub async fn create_team(input: CreateTeamRequest, app: AppHandle) -> Result<Tea
             name,
             description,
             persona_ids: input.persona_ids,
+            agent_pubkeys,
             is_builtin: false,
             source_dir: None,
             is_symlink: false,
@@ -197,6 +207,7 @@ pub async fn update_team(input: UpdateTeamRequest, app: AppHandle) -> Result<Tea
         let state = app.state::<AppState>();
         let name = trim_required(&input.name, "Team name")?;
         let description = trim_optional(input.description);
+        let agent_pubkeys = normalize_team_agent_pubkeys(&input.agent_pubkeys)?;
 
         let _store_guard = state
             .managed_agents_store_lock
@@ -213,6 +224,7 @@ pub async fn update_team(input: UpdateTeamRequest, app: AppHandle) -> Result<Tea
         team.name = name;
         team.description = description;
         team.persona_ids = input.persona_ids;
+        team.agent_pubkeys = agent_pubkeys;
         team.updated_at = now_iso();
 
         let updated = team.clone();
@@ -253,6 +265,25 @@ pub async fn delete_team(id: String, app: AppHandle) -> Result<(), String> {
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
+/// Materialize stopped agents for freshly installed/synced pack personas so
+/// they immediately appear in the agents-only grid. Best-effort: the install
+/// or sync result stands even if materialization fails. Caller MUST hold the
+/// managed-agents store lock.
+fn materialize_pack_agents_locked(app: &AppHandle, state: &AppState) {
+    let owner_keys = match state.keys.lock() {
+        Ok(keys) => keys.clone(),
+        Err(e) => {
+            eprintln!("buzz-desktop: team-materialize: keys lock poisoned: {e}");
+            return;
+        }
+    };
+    if let Err(e) =
+        crate::managed_agents::materialize_agents_for_active_personas_locked(app, &owner_keys)
+    {
+        eprintln!("buzz-desktop: team-materialize: {e}");
+    }
+}
+
 #[tauri::command]
 pub async fn install_team_from_directory(
     app: AppHandle,
@@ -271,6 +302,7 @@ pub async fn install_team_from_directory(
             return Err(format!("team path is not a directory: {path}"));
         }
         let result = do_import_team(&app, &source, symlink.unwrap_or(false))?;
+        materialize_pack_agents_locked(&app, &state);
         try_regenerate_nest(&app);
         Ok(result)
     })
@@ -288,6 +320,7 @@ pub async fn sync_team_directory(app: AppHandle, team_id: String) -> Result<Sync
             .lock()
             .map_err(|e| e.to_string())?;
         let result = do_sync_team(&app, &team_id)?;
+        materialize_pack_agents_locked(&app, &state);
         try_regenerate_nest(&app);
         Ok(result)
     })
@@ -310,8 +343,8 @@ pub async fn export_team_to_json(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    // Load team and personas under lock, then drop lock before dialog.
-    let (team, personas) = {
+    // Load team, personas, and agents under lock, then drop lock before dialog.
+    let (team, personas, agents) = {
         let _store_guard = state
             .managed_agents_store_lock
             .lock()
@@ -322,10 +355,11 @@ pub async fn export_team_to_json(
             .find(|t| t.id == id)
             .ok_or_else(|| format!("team {id} not found"))?;
         let personas = load_personas(&app)?;
-        (team, personas)
+        let agents = crate::managed_agents::load_managed_agents(&app)?;
+        (team, personas, agents)
     };
 
-    let json_bytes = encode_team_json(&team, &personas)?;
+    let json_bytes = encode_team_json(&team, &personas, &agents)?;
 
     let slug = crate::util::slugify(&team.name, "team", 50);
     let filename = format!("{slug}.team.json");

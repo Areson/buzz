@@ -4,7 +4,7 @@
 use super::*;
 use std::collections::BTreeMap;
 
-const UUID: &str = "11111111-2222-3333-4444-555555555555";
+const UUID: &str = "11111111-2222-3333-abcd-555555555555";
 
 /// A local in-app persona: `source_team_persona_slug` is None, so its d-tag
 /// IS its UUID id. Carries env_vars + source_team that must survive a patch.
@@ -295,6 +295,7 @@ fn local_team() -> TeamRecord {
         name: "Local Team".to_string(),
         description: Some("local desc".to_string()),
         persona_ids: vec!["p-local".to_string()],
+        agent_pubkeys: vec!["local-agent-pk".to_string()],
         is_builtin: false,
         source_dir: Some(std::path::PathBuf::from("/local/team/dir")),
         is_symlink: true,
@@ -310,6 +311,7 @@ fn team_content(name: &str) -> TeamEventContent {
         name: name.to_string(),
         description: Some("remote desc".to_string()),
         persona_ids: vec!["p-remote-1".to_string(), "p-remote-2".to_string()],
+        agent_pubkeys: vec!["remote-agent-pk".to_string()],
     }
 }
 

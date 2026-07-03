@@ -327,6 +327,10 @@ pub struct CreateManagedAgentRequest {
     pub system_prompt: Option<String>,
     pub avatar_url: Option<String>,
     pub model: Option<String>,
+    /// LLM inference provider for flat (persona-less) creates. A linked
+    /// persona's snapshot provider wins when both are present.
+    #[serde(default)]
+    pub provider: Option<String>,
     pub mcp_toolsets: Option<String>,
     /// Environment variables for this agent. Layered on top of persona env.
     #[serde(default)]
@@ -555,7 +559,14 @@ pub struct TeamRecord {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// Persona-backed members. Only pack-installed (directory-backed) teams
+    /// still reference personas; ad-hoc teams use `agent_pubkeys`.
+    #[serde(default)]
     pub persona_ids: Vec<String>,
+    /// Managed-agent members, referenced by agent pubkey (hex). The primary
+    /// membership mechanism for user-created teams.
+    #[serde(default)]
+    pub agent_pubkeys: Vec<String>,
     #[serde(default)]
     pub is_builtin: bool,
     /// Absolute path to the team's backing directory (if directory-backed).
@@ -581,6 +592,8 @@ pub struct CreateTeamRequest {
     pub description: Option<String>,
     #[serde(default)]
     pub persona_ids: Vec<String>,
+    #[serde(default)]
+    pub agent_pubkeys: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -591,6 +604,8 @@ pub struct UpdateTeamRequest {
     pub description: Option<String>,
     #[serde(default)]
     pub persona_ids: Vec<String>,
+    #[serde(default)]
+    pub agent_pubkeys: Vec<String>,
 }
 
 /// Result of syncing a directory-backed team with its backing directory.
