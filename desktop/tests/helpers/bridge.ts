@@ -131,7 +131,7 @@ type MockBridgeOptions = {
   sendMessageDelayMs?: number;
   usersBatchDelayMs?: number;
   /** Delay (ms) for older-history fetches; see e2eBridge mock config. */
-  historyDelayMs?: number;
+  channelWindowDelayMs?: number;
   profileReadDelayMs?: number;
   profileReadError?: string;
   profileUpdateError?: string;

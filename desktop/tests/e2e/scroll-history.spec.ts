@@ -93,7 +93,7 @@ test("first channel load paints the first window without waiting for the row-flo
 
     window.__BUZZ_E2E__ = {
       ...window.__BUZZ_E2E__,
-      mock: { ...window.__BUZZ_E2E__?.mock, historyDelayMs: 5_000 },
+      mock: { ...window.__BUZZ_E2E__?.mock, channelWindowDelayMs: 5_000 },
     };
   });
 
@@ -182,22 +182,22 @@ test("preserves user scroll while older channel history loads", async ({
   expect(deepest).toBeLessThan(400);
 
   // PHASE 2 -- now delay the next history page so it stays in flight long
-  // enough to observe the anchor across the landing. historyDelayMs is read
+  // enough to observe the anchor across the landing. channelWindowDelayMs is read
   // live by the bridge, so toggling it here applies to the next fetch only.
   await page.evaluate(() => {
     window.__BUZZ_E2E__ = {
       ...window.__BUZZ_E2E__,
-      mock: { ...window.__BUZZ_E2E__?.mock, historyDelayMs: 1_000 },
+      mock: { ...window.__BUZZ_E2E__?.mock, channelWindowDelayMs: 1_000 },
     };
     (
-      window as unknown as { __HISTORY_INFLIGHT__?: number }
-    ).__HISTORY_INFLIGHT__ = 0;
+      window as unknown as { __CHANNEL_WINDOW_INFLIGHT__?: number }
+    ).__CHANNEL_WINDOW_INFLIGHT__ = 0;
   });
   const inflightCount = () =>
     page.evaluate(
       () =>
-        (window as unknown as { __HISTORY_INFLIGHT__?: number })
-          .__HISTORY_INFLIGHT__ ?? 0,
+        (window as unknown as { __CHANNEL_WINDOW_INFLIGHT__?: number })
+          .__CHANNEL_WINDOW_INFLIGHT__ ?? 0,
     );
 
   // Snapshot the oldest rendered index BEFORE firing the delayed page, so the
@@ -210,6 +210,11 @@ test("preserves user scroll while older channel history loads", async ({
   const oldestBeforeLanding = await oldestRenderedIndex();
   expect(oldestBeforeLanding).not.toBeNull();
 
+  // Move the top sentinel out of its trigger band after the phase-1 climb so
+  // returning to it is a fresh continuation gesture.
+  await page.mouse.wheel(0, 1_500);
+  await page.waitForTimeout(100);
+
   // One wheel tick to fire the delayed older-history page.
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if ((await inflightCount()) > 0) break;
@@ -219,7 +224,7 @@ test("preserves user scroll while older channel history loads", async ({
   expect(await inflightCount()).toBeGreaterThan(0);
 
   // Capture the first-visible row id AFTER the fire wheel but WHILE the page is
-  // still in flight (the prepend lands ~historyDelayMs later). The fire wheel
+  // still in flight (the prepend lands ~channelWindowDelayMs later). The fire wheel
   // moves the viewport, so the anchor must be read at this settled in-flight
   // position -- a row captured before the fire wheel can scroll out of the
   // virtualized window before the prepend lands. This row exists before the
@@ -335,7 +340,7 @@ test("does not teleport upward when user abandons fetch by jumping to bottom", a
       ...window.__BUZZ_E2E__,
       mock: {
         ...window.__BUZZ_E2E__?.mock,
-        historyDelayMs: 5_000,
+        channelWindowDelayMs: 5_000,
       },
     };
   });
@@ -373,6 +378,7 @@ test("does not teleport upward when user abandons fetch by jumping to bottom", a
       break;
     }
     await page.mouse.wheel(0, -2000);
+    await page.waitForTimeout(25);
   }
   await page.waitForTimeout(150);
 
@@ -402,7 +408,7 @@ test("does not teleport upward when user abandons fetch by jumping to bottom", a
   //
   // The button triggers `scrollToBottom("smooth")` which animates the
   // scroll, so we poll for the at-bottom condition rather than waiting
-  // a fixed interval. Cap at 2s; well inside our 5s historyDelayMs
+  // a fixed interval. Cap at 2s; well inside our 5s channelWindowDelayMs
   // window so the prepend is still in flight when this resolves.
   await page.getByTestId("message-scroll-to-latest").click();
   await expect
@@ -425,7 +431,7 @@ test("does not teleport upward when user abandons fetch by jumping to bottom", a
   // at the bottom (no upward teleport to the abandoned anchor).
   //
   // Timeout: 12s. The wheel-up + smooth-abandon path can burn 2-3s of the
-  // 5s historyDelayMs window before this poll begins, so the prepend may not
+  // 5s channelWindowDelayMs window before this poll begins, so the prepend may not
   // land for another 2-3s. On a loaded CI runner that squeezes a tight 6s
   // budget into a timeout (the prepend is a deterministic 5s mock timer, so
   // the only failure mode is waiting too little); 12s leaves comfortable
@@ -1269,7 +1275,7 @@ test("channel intro stays hidden while older history is loading", async ({
       ...window.__BUZZ_E2E__,
       mock: {
         ...window.__BUZZ_E2E__?.mock,
-        historyDelayMs: 5_000,
+        channelWindowDelayMs: 5_000,
       },
     };
   });
@@ -1292,6 +1298,7 @@ test("channel intro stays hidden while older history is loading", async ({
       break;
     }
     await page.mouse.wheel(0, -2000);
+    await page.waitForTimeout(25);
   }
   await page.waitForTimeout(150);
 
@@ -1463,7 +1470,7 @@ test("channel intro stays hidden while paginating past the timeline cap", async 
 
 // Regression for the flood Wes reported: scrolling back while an older-history
 // fetch is already in flight must NOT queue a second concurrent visible page
-// fetch. Aux backfills also use `history-*` subscriptions, so the e2e bridge
+// fetch. Aux backfills also use `get_channel_window` continuation requests, so the e2e bridge
 // probe counts only visible older-page requests (`until` and not `#e`).
 test("older-history fetches never overlap (no concurrent in-flight requests)", async ({
   page,
@@ -1489,11 +1496,11 @@ test("older-history fetches never overlap (no concurrent in-flight requests)", a
       lineCount: 2,
     });
     (
-      window as unknown as { __HISTORY_INFLIGHT_PEAK__?: number }
-    ).__HISTORY_INFLIGHT_PEAK__ = 0;
+      window as unknown as { __CHANNEL_WINDOW_INFLIGHT_PEAK__?: number }
+    ).__CHANNEL_WINDOW_INFLIGHT_PEAK__ = 0;
     window.__BUZZ_E2E__ = {
       ...window.__BUZZ_E2E__,
-      mock: { ...window.__BUZZ_E2E__?.mock, historyDelayMs: 400 },
+      mock: { ...window.__BUZZ_E2E__?.mock, channelWindowDelayMs: 400 },
     };
   });
 
@@ -1520,8 +1527,8 @@ test("older-history fetches never overlap (no concurrent in-flight requests)", a
 
   const peak = await page.evaluate(
     () =>
-      (window as unknown as { __HISTORY_INFLIGHT_PEAK__?: number })
-        .__HISTORY_INFLIGHT_PEAK__ ?? 0,
+      (window as unknown as { __CHANNEL_WINDOW_INFLIGHT_PEAK__?: number })
+        .__CHANNEL_WINDOW_INFLIGHT_PEAK__ ?? 0,
   );
   expect(peak).toBeLessThanOrEqual(1);
 });
@@ -1556,7 +1563,7 @@ test("older-history spinner stays visible in viewport while fetching mid-scroll"
     });
     window.__BUZZ_E2E__ = {
       ...window.__BUZZ_E2E__,
-      mock: { ...window.__BUZZ_E2E__?.mock, historyDelayMs: 2_000 },
+      mock: { ...window.__BUZZ_E2E__?.mock, channelWindowDelayMs: 2_000 },
     };
   });
 
@@ -1566,11 +1573,11 @@ test("older-history spinner stays visible in viewport while fetching mid-scroll"
   await expect(timeline.locator("[data-message-id]").first()).toBeVisible();
 
   await timeline.hover();
-  await timeline.evaluate((element) => {
-    const timelineElement = element as HTMLDivElement;
-    timelineElement.scrollTop = 150;
-    timelineElement.dispatchEvent(new Event("scroll", { bubbles: true }));
-  });
+  await page.mouse.wheel(0, -1_500);
+  await page.waitForTimeout(100);
+  await page.mouse.wheel(0, 1_000);
+  await page.waitForTimeout(100);
+  await page.mouse.wheel(0, -1_000);
 
   const indicator = page.getByTestId("message-timeline-fetching-older");
   await expect(indicator).toBeVisible({ timeout: 2_000 });
@@ -1633,8 +1640,8 @@ test("one scroll-up gesture pages older history once, not to the channel top", a
       lineCount: 2,
     });
     (
-      window as unknown as { __HISTORY_FETCH_COUNT__?: number }
-    ).__HISTORY_FETCH_COUNT__ = 0;
+      window as unknown as { __CHANNEL_WINDOW_FETCH_COUNT__?: number }
+    ).__CHANNEL_WINDOW_FETCH_COUNT__ = 0;
   });
 
   await page.getByTestId("channel-general").click();
@@ -1652,15 +1659,15 @@ test("one scroll-up gesture pages older history once, not to the channel top", a
   // before the user gesture by resetting the counter at the settled bottom.
   await page.evaluate(() => {
     (
-      window as unknown as { __HISTORY_FETCH_COUNT__?: number }
-    ).__HISTORY_FETCH_COUNT__ = 0;
+      window as unknown as { __CHANNEL_WINDOW_FETCH_COUNT__?: number }
+    ).__CHANNEL_WINDOW_FETCH_COUNT__ = 0;
   });
 
   const fetchCount = () =>
     page.evaluate(
       () =>
-        (window as unknown as { __HISTORY_FETCH_COUNT__?: number })
-          .__HISTORY_FETCH_COUNT__ ?? 0,
+        (window as unknown as { __CHANNEL_WINDOW_FETCH_COUNT__?: number })
+          .__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0,
     );
   const oldestRenderedIndex = () =>
     timeline.evaluate((element) => {
@@ -1741,22 +1748,22 @@ test("older-history prepend keeps the reading row fixed (no jump to oldest)", as
 
   // Pace the older fetch BEFORE scrolling up, so the very first older page the
   // top sentinel triggers stays in flight long enough to read the anchor before
-  // and after it lands. No climb loop — the cold load left ~900 older roots
-  // behind the cursor, so one scroll-up to the top band fires a genuine page.
+  // and after it lands. The cold window leaves older roots behind the composite
+  // cursor, so one scroll-up to the top band fires a genuine page.
   await page.evaluate(() => {
     window.__BUZZ_E2E__ = {
       ...window.__BUZZ_E2E__,
-      mock: { ...window.__BUZZ_E2E__?.mock, historyDelayMs: 1_500 },
+      mock: { ...window.__BUZZ_E2E__?.mock, channelWindowDelayMs: 1_500 },
     };
     (
-      window as unknown as { __HISTORY_INFLIGHT__?: number }
-    ).__HISTORY_INFLIGHT__ = 0;
+      window as unknown as { __CHANNEL_WINDOW_INFLIGHT__?: number }
+    ).__CHANNEL_WINDOW_INFLIGHT__ = 0;
   });
   const inflightCount = () =>
     page.evaluate(
       () =>
-        (window as unknown as { __HISTORY_INFLIGHT__?: number })
-          .__HISTORY_INFLIGHT__ ?? 0,
+        (window as unknown as { __CHANNEL_WINDOW_INFLIGHT__?: number })
+          .__CHANNEL_WINDOW_INFLIGHT__ ?? 0,
     );
   const oldestRenderedIndex = () =>
     timeline.evaluate((element) => {
@@ -1775,8 +1782,11 @@ test("older-history prepend keeps the reading row fixed (no jump to oldest)", as
   // landing gate below still requires a real older row to appear after fetch.
   const oldestBeforeLanding = await oldestRenderedIndex();
 
-  // One scroll-up gesture to the top band fires the (delayed) older page.
+  // Re-enter the top band so the persistent observer sees a fresh continuation
+  // gesture even when the cold window initially placed its sentinel there.
   await timeline.hover();
+  await page.mouse.wheel(0, 1_000);
+  await page.waitForTimeout(100);
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if ((await inflightCount()) > 0) break;
     await page.mouse.wheel(0, -3000);
