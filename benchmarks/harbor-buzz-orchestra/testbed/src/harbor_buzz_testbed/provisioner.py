@@ -35,6 +35,11 @@ class TestbedConfig:
     # Databricks attribution is pending the AI Gateway field verification.
 
 
+def provisioner_from_dict(config: dict[str, object]) -> "BuzzTrialProvisioner":
+    """Harbor CLI factory for a JSON-decoded testbed configuration."""
+    return BuzzTrialProvisioner(TestbedConfig(**config))
+
+
 class BuzzTrialProvisioner:
     """Implements the TrialHandle v1.1 contract against a live Buzz relay.
 

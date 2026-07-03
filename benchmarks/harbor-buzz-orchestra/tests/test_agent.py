@@ -108,3 +108,36 @@ async def test_missing_integrations_fail_explicitly(tmp_path, manifest_data):
     agent = BuzzOrchestraAgent(logs_dir=tmp_path, manifest=manifest_data)
     with pytest.raises(RuntimeError, match="M1 wiring is incomplete"):
         await agent.run("solve it", SimpleNamespace(context_id=uuid4()), AgentContext())
+
+
+async def test_cli_runtime_construction_from_json(tmp_path, manifest_data):
+    endpoint_path = tmp_path / "endpoints.json"
+    endpoint_path.write_text(
+        '{"frontier/rev":{"provider":"anthropic",'
+        '"api_key_env":"ANTHROPIC_API_KEY"},'
+        '"worker/rev":{"provider":"openai",'
+        '"api_key_env":"OPENAI_API_KEY"}}'
+    )
+    agent = BuzzOrchestraAgent(
+        logs_dir=tmp_path / "logs",
+        manifest=manifest_data,
+        artifact_root=tmp_path,
+        endpoint_config=endpoint_path,
+    )
+    assert agent.runtime.artifact_root == tmp_path
+    assert agent.runtime.endpoints["frontier/rev"].provider == "anthropic"
+
+
+async def test_cli_construction_requires_complete_pairs(tmp_path, manifest_data):
+    with pytest.raises(ValueError, match="artifact_root"):
+        BuzzOrchestraAgent(
+            logs_dir=tmp_path,
+            manifest=manifest_data,
+            endpoint_config={},
+        )
+    with pytest.raises(ValueError, match="provisioner_factory"):
+        BuzzOrchestraAgent(
+            logs_dir=tmp_path,
+            manifest=manifest_data,
+            provisioner_config={},
+        )

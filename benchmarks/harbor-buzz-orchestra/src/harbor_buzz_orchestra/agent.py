@@ -12,6 +12,7 @@ from harbor.models.agent.context import AgentContext
 from .manifest import ExperimentManifest
 from .provisioning import TrialProvisioner
 from .runtime import OrchestraRuntime
+from .subprocess_runtime import BuzzSubprocessRuntime, EndpointLaunchConfig
 
 
 class BuzzOrchestraAgent(BaseAgent):
@@ -28,13 +29,21 @@ class BuzzOrchestraAgent(BaseAgent):
         manifest: str | Path | dict[str, Any],
         provisioner: TrialProvisioner | None = None,
         runtime: OrchestraRuntime | None = None,
+        provisioner_factory: str | None = None,
+        provisioner_config: str | Path | dict[str, Any] | None = None,
+        artifact_root: str | Path | None = None,
+        endpoint_config: str | Path | dict[str, Any] | None = None,
         run_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
         self.manifest = ExperimentManifest.load(manifest)
-        self.provisioner = provisioner
-        self.runtime = runtime
+        self.provisioner = provisioner or self._build_provisioner(
+            provisioner_factory, provisioner_config
+        )
+        self.runtime = runtime or self._build_runtime(
+            logs_dir, artifact_root, endpoint_config
+        )
         self.run_id = run_id
 
     @staticmethod
@@ -43,6 +52,71 @@ class BuzzOrchestraAgent(BaseAgent):
 
     def version(self) -> str:
         return "0.1.0"
+
+    @staticmethod
+    def _load_mapping(
+        source: str | Path | dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if source is None:
+            return None
+        if isinstance(source, dict):
+            return source
+        import json
+
+        path = Path(source).expanduser()
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"cannot load JSON config {path}: {error}") from error
+        if not isinstance(value, dict):
+            raise ValueError(f"JSON config {path} must contain an object")
+        return value
+
+    @classmethod
+    def _build_provisioner(
+        cls,
+        factory_path: str | None,
+        config_source: str | Path | dict[str, Any] | None,
+    ) -> TrialProvisioner | None:
+        config = cls._load_mapping(config_source)
+        if factory_path is None and config is None:
+            return None
+        if factory_path is None or config is None:
+            raise ValueError(
+                "provisioner_factory and provisioner_config must be provided together"
+            )
+        from harbor.utils.import_path import import_symbol
+
+        factory = import_symbol(factory_path)
+        return factory(config)
+
+    @classmethod
+    def _build_runtime(
+        cls,
+        logs_dir: Path,
+        artifact_root: str | Path | None,
+        endpoint_source: str | Path | dict[str, Any] | None,
+    ) -> OrchestraRuntime | None:
+        endpoint_data = cls._load_mapping(endpoint_source)
+        if endpoint_data is None and artifact_root is None:
+            return None
+        if endpoint_data is None or artifact_root is None:
+            raise ValueError(
+                "artifact_root and endpoint_config must be provided together"
+            )
+        endpoints = {
+            name: EndpointLaunchConfig(
+                provider=value["provider"],
+                api_key_env=value["api_key_env"],
+                env=value.get("env", {}),
+            )
+            for name, value in endpoint_data.items()
+        }
+        return BuzzSubprocessRuntime(
+            logs_dir=logs_dir,
+            artifact_root=Path(artifact_root),
+            endpoints=endpoints,
+        )
 
     async def setup(self, environment: BaseEnvironment) -> None:
         """Fail fast when the provisioner is configured but its stack is unhealthy."""
