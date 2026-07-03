@@ -77,7 +77,7 @@ def credential(agent_id, role, endpoint):
     )
 
 
-def runtime(tmp_path):
+def runtime(tmp_path, **kwargs):
     return BuzzSubprocessRuntime(
         logs_dir=tmp_path / "logs",
         artifact_root=tmp_path,
@@ -85,6 +85,7 @@ def runtime(tmp_path):
             "orch-model": EndpointLaunchConfig("anthropic", "ANTHROPIC_API_KEY"),
             "worker-model": EndpointLaunchConfig("anthropic", "ANTHROPIC_API_KEY"),
         },
+        **kwargs,
     )
 
 
@@ -136,6 +137,62 @@ def test_mcp_wrapper_pins_agent_and_socket(tmp_path):
     assert "worker-1" in content
     assert str(tmp_path / "broker.sock") in content
     assert wrapper.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("configured", "expected"), [(None, "32"), (7, "7")])
+async def test_launch_sets_bounded_agent_rounds(
+    tmp_path, monkeypatch, configured, expected
+):
+    manifest = write_manifest(tmp_path)
+    agent_class = manifest.roster[0]
+    if configured is not None:
+        agent_class = agent_class.model_copy(
+            update={
+                "budget": agent_class.budget.model_copy(
+                    update={"max_calls": configured}
+                )
+            }
+        )
+    orch = credential("orch-1", "orchestrator", "orch-model")
+    trial = TrialHandle(
+        run_id="run",
+        trial_id="trial",
+        manifest_hash="hash",
+        relay_ws_url="ws://relay",
+        channel_id="channel",
+        credentials=(orch,),
+    )
+    captured = {}
+
+    class Process:
+        returncode = None
+
+    async def create_subprocess_exec(*args, **kwargs):
+        captured.update(kwargs["env"])
+        return Process()
+
+    monkeypatch.setattr(
+        "harbor_buzz_orchestra.subprocess_runtime.asyncio.create_subprocess_exec",
+        create_subprocess_exec,
+    )
+    launched = await runtime(tmp_path)._launch_agent(
+        trial=trial,
+        credential=orch,
+        agent_class=agent_class,
+        socket_path=tmp_path / "broker.sock",
+        trial_dir=tmp_path,
+    )
+    launched.stdout_stream.close()
+    launched.stderr_stream.close()
+
+    assert captured["BUZZ_AGENT_NO_HINTS"] == "1"
+    assert captured["BUZZ_AGENT_MAX_ROUNDS"] == expected
+
+
+def test_runtime_rejects_unbounded_agent_rounds(tmp_path):
+    with pytest.raises(ValueError, match="positive"):
+        runtime(tmp_path, max_agent_rounds=0)
 
 
 @pytest.mark.asyncio

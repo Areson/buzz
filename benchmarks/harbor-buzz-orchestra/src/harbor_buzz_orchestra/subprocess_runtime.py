@@ -21,6 +21,9 @@ from .runtime import RuntimeResult
 from .terminal_broker import SerializedTerminalBroker
 
 
+DEFAULT_MAX_AGENT_ROUNDS = 32
+
+
 class RuntimeLaunchError(RuntimeError):
     """Raised when a Buzz agent process cannot be launched or exits early."""
 
@@ -56,15 +59,19 @@ class BuzzSubprocessRuntime:
         buzz_acp_binary: str = "buzz-acp",
         buzz_agent_binary: str = "buzz-agent",
         buzz_cli_binary: str = "buzz",
+        max_agent_rounds: int = DEFAULT_MAX_AGENT_ROUNDS,
         startup_seconds: float = 2.0,
         poll_seconds: float = 1.0,
     ) -> None:
+        if max_agent_rounds <= 0:
+            raise ValueError("max_agent_rounds must be positive")
         self.logs_dir = Path(logs_dir)
         self.artifact_root = Path(artifact_root)
         self.endpoints = endpoints
         self.buzz_acp_binary = buzz_acp_binary
         self.buzz_agent_binary = buzz_agent_binary
         self.buzz_cli_binary = buzz_cli_binary
+        self.max_agent_rounds = max_agent_rounds
         self.startup_seconds = startup_seconds
         self.poll_seconds = poll_seconds
 
@@ -131,6 +138,14 @@ class BuzzSubprocessRuntime:
                 "completion_message_id": final_message["id"],
                 "completion_message": final_message["content"],
                 "terminal_concurrency": "serialized",
+                "agent_hints_enabled": False,
+                "agent_max_rounds": {
+                    credential.agent_id: (
+                        classes[credential.agent_id].budget.max_calls
+                        or self.max_agent_rounds
+                    )
+                    for credential in trial.credentials
+                },
             }
         )
 
@@ -181,6 +196,12 @@ class BuzzSubprocessRuntime:
             ),
             "BUZZ_AGENT_MAX_CONTEXT_TOKENS": str(
                 agent_class.generation.context_window_tokens
+            ),
+            # Benchmark context is manifest-owned. Disable host cwd/home hint and
+            # skill discovery so trials cannot inherit operator-specific tools.
+            "BUZZ_AGENT_NO_HINTS": "1",
+            "BUZZ_AGENT_MAX_ROUNDS": str(
+                agent_class.budget.max_calls or self.max_agent_rounds
             ),
             endpoint.api_key_env: credential.llm_api_key,
         }
