@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import {
+  agentTemplatesQueryKey,
   managedAgentsQueryKey,
   personasQueryKey,
   relayAgentsQueryKey,
@@ -34,6 +35,13 @@ export function useAgentsDataRefresh(): void {
         void queryClient.invalidateQueries({ queryKey: teamsQueryKey });
         void queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey });
         void queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey });
+        // Saved templates are persona records, so an inbound persona
+        // upsert/tombstone from another device changes the New Agent
+        // catalog too. Without this line the catalog query (staleTime:
+        // Infinity) would serve the pre-sync list forever.
+        void queryClient.invalidateQueries({
+          queryKey: agentTemplatesQueryKey,
+        });
       }, COALESCE_MS);
     });
 
