@@ -33,6 +33,9 @@ class BuzzOrchestraAgent(BaseAgent):
         provisioner_config: str | Path | dict[str, Any] | None = None,
         artifact_root: str | Path | None = None,
         endpoint_config: str | Path | dict[str, Any] | None = None,
+        buzz_acp_binary: str = "buzz-acp",
+        buzz_agent_binary: str = "buzz-agent",
+        buzz_cli_binary: str = "buzz",
         run_id: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -42,7 +45,12 @@ class BuzzOrchestraAgent(BaseAgent):
             provisioner_factory, provisioner_config
         )
         self.runtime = runtime or self._build_runtime(
-            logs_dir, artifact_root, endpoint_config
+            logs_dir,
+            artifact_root,
+            endpoint_config,
+            buzz_acp_binary,
+            buzz_agent_binary,
+            buzz_cli_binary,
         )
         self.run_id = run_id
 
@@ -96,6 +104,9 @@ class BuzzOrchestraAgent(BaseAgent):
         logs_dir: Path,
         artifact_root: str | Path | None,
         endpoint_source: str | Path | dict[str, Any] | None,
+        buzz_acp_binary: str,
+        buzz_agent_binary: str,
+        buzz_cli_binary: str,
     ) -> OrchestraRuntime | None:
         endpoint_data = cls._load_mapping(endpoint_source)
         if endpoint_data is None and artifact_root is None:
@@ -116,6 +127,9 @@ class BuzzOrchestraAgent(BaseAgent):
             logs_dir=logs_dir,
             artifact_root=Path(artifact_root),
             endpoints=endpoints,
+            buzz_acp_binary=buzz_acp_binary,
+            buzz_agent_binary=buzz_agent_binary,
+            buzz_cli_binary=buzz_cli_binary,
         )
 
     async def setup(self, environment: BaseEnvironment) -> None:
