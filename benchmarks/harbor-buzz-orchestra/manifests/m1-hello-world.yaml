@@ -15,7 +15,7 @@ roster:
     model_revision: m1-placeholder
     prompt:
       path: personas/orchestrator-m1.md
-      sha256: 8c2639142d2821ec5e33517f8e76e35e8c1662013988da00591e94142a878469
+      sha256: 4c5e26b2f3f7d41fd6edd0c4f23f6ab61e91029607529f69c4065ebde9b79e0f
     generation:
       max_output_tokens: 4096
       context_window_tokens: 128000
@@ -27,7 +27,7 @@ roster:
     model_revision: m1-placeholder
     prompt:
       path: personas/worker-m1.md
-      sha256: 2c7fac2125e51c9244bc4295cdf2fe19119361823c75acf1c74aab575bd3c537
+      sha256: 3624f1c650b7bae1157e9ee595a278de9d8d9817dfc69f65be0bcd1f98e6095b
     generation:
       max_output_tokens: 4096
       context_window_tokens: 128000
