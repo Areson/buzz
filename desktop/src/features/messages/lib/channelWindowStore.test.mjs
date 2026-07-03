@@ -90,6 +90,17 @@ test("newest refresh drops a stale tail when its boundary moves", () => {
   );
 });
 
+test("live rows arriving before page zero enter the overlay", () => {
+  const live = event("n", 110);
+  const store = mergeLiveChannelWindowEvent(emptyChannelWindowStore(), live);
+
+  assert.deepEqual(store.liveOverlay, [live]);
+  assert.deepEqual(
+    flattenChannelWindowEvents(store).map((item) => item.content),
+    ["n"],
+  );
+});
+
 test("live backdated rows stay outside pages and render in order", () => {
   const store = replaceNewestChannelWindow(
     emptyChannelWindowStore(),
