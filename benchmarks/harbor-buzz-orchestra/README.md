@@ -57,11 +57,11 @@ rather than deletes that channel, leaving the relay/Postgres event timeline and
 
 ```bash
 cd benchmarks/harbor-buzz-orchestra
-uv run --frozen --extra dev pytest -q
-uv run --frozen --extra dev ruff check .
+uv run --extra dev pytest -q
+uv run --extra dev ruff check .
 cd testbed
-uv run --frozen --extra dev pytest -q
-uv run --frozen --extra dev ruff check .
+uv run --extra dev pytest -q
+uv run --extra dev ruff check .
 ```
 
 Live provisioner tests require the benchmark compose stack and opt-in
