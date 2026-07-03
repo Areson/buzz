@@ -73,12 +73,22 @@ test("live relay: an ancestor island does not strand the history frontier", asyn
   const timeline = page.getByTestId("message-timeline");
   await expect(timeline.locator("[data-message-id]").first()).toBeVisible();
 
-  // The trigger: wait for useLoadMissingAncestors to fetch the old island root
-  // and merge it into the channel cache. Once "island root" is in the DOM the
-  // cache is poisoned — this is the state that strands the pager on main.
-  await expect(
-    timeline.getByText(`island root ${nonce}`, { exact: false }).first(),
-  ).toBeVisible({ timeout: 30_000 });
+  // Establish the poison precondition on the diseased client: on main,
+  // useLoadMissingAncestors fetches the old root by id and merges it into the
+  // channel cache, and "island root" appears in the timeline — that injected
+  // island is what strands the pager. The overhaul DELETES useLoadMissingAncestors
+  // (the relay-owned window cursor can't be moved by an out-of-band merge), so
+  // the island is never injected and this row never appears. Best-effort, not a
+  // hard gate: on main it settles the poison before we scroll; on the overhaul
+  // it just times out harmlessly and we proceed to the reachability invariant —
+  // which is the assertion that actually flips 0/100 (stranded) → 100/100.
+  await timeline
+    .getByText(`island root ${nonce}`, { exact: false })
+    .first()
+    .waitFor({ state: "visible", timeout: 15_000 })
+    .catch(() => {
+      /* cured client: no ancestor fetch, no island — expected on the overhaul */
+    });
 
   // Union of THIS run's `gap` contents ever rendered. Virtualization only
   // mounts a window, so accumulate across scroll passes rather than snapshot
