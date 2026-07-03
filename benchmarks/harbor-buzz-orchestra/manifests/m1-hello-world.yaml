@@ -15,7 +15,7 @@ roster:
     model_revision: m1-placeholder
     prompt:
       path: personas/orchestrator-m1.md
-      sha256: f02190e64028f87f5dfe6e85fe42ca63a975e054336ed8a285b580a97be4ef59
+      sha256: 332cf75161075b1d153610427faeaf7c6db9b004845fac0af9d6479573984d96
     generation:
       max_output_tokens: 4096
       context_window_tokens: 128000
@@ -27,7 +27,7 @@ roster:
     model_revision: m1-placeholder
     prompt:
       path: personas/worker-m1.md
-      sha256: 3624f1c650b7bae1157e9ee595a278de9d8d9817dfc69f65be0bcd1f98e6095b
+      sha256: 228756b121269e478627a2e40138576196b576b034787b72292b0ff2dddc6046
     generation:
       max_output_tokens: 4096
       context_window_tokens: 128000
@@ -42,9 +42,3 @@ prices:
     output_per_million_usd: 0
 trial_budget:
   timeout_seconds: 1800
-metadata:
-  worker_publish_recovery:
-    enabled: true
-    max_attempts_per_worker: 1
-    timeout_seconds: 120
-    detection: successful-worker-messages-send-receipt-after-terminal-exec

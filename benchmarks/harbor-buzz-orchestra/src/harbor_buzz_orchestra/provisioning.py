@@ -31,6 +31,10 @@ class TrialHandle:
     relay_ws_url: str
     channel_id: str
     credentials: tuple[AgentCredential, ...]
+    # The trial's human-analogue identity: owns the channel, posts the task
+    # as a user prompt, and receives the final report. Never runs an agent
+    # process, so its llm_endpoint and llm_api_key are empty strings.
+    user: AgentCredential
 
 
 @runtime_checkable

@@ -56,6 +56,17 @@ def test_mint_credentials_keys_are_fresh_and_attested(manifest):
         assert owner_pubkey.verify(bytes.fromhex(tag[3]), digest)
 
 
+def test_mint_user_is_attested_and_not_an_agent():
+    provisioner = BuzzTrialProvisioner(config())
+    user = provisioner._mint_user()
+    assert user.agent_id == "user"
+    assert user.role == "user"
+    assert user.llm_endpoint == "" and user.llm_api_key == ""
+    owner_pubkey = coincurve.PrivateKey(bytes.fromhex(OWNER_SECRET)).public_key_xonly
+    tag = json.loads(user.nostr_auth_tag)
+    assert tag[:3] == ["auth", owner_pubkey.format().hex(), ""]
+
+
 def test_mint_credentials_missing_api_key_is_explicit(manifest):
     provisioner = BuzzTrialProvisioner(config(llm_api_keys={}))
     with pytest.raises(ProvisioningError, match="databricks/"):

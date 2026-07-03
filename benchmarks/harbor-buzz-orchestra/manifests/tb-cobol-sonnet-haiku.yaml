@@ -13,7 +13,7 @@ roster:
     model_revision: claude-sonnet-4-6
     prompt:
       path: personas/orchestrator-tb.md
-      sha256: 0cf2e4470606ae17209427d407622d15fe6b523d311114c0767f83cbc71a5a20
+      sha256: f507f1d579b5ac16fdd22ea26ebdced01318e731882a0b6e55e856f31f2f8977
     generation:
       max_output_tokens: 4096
       context_window_tokens: 200000
@@ -25,7 +25,7 @@ roster:
     model_revision: claude-haiku-4-5
     prompt:
       path: personas/worker-tb.md
-      sha256: b01a8cba5c6c1c362c6b5d631104da9c2d89a3767938f26c68e0e54efb2d4feb
+      sha256: a5745b2a7cb01f4e6cba66493b9ca518569e25ec78dfa132a3af407dbd03f8b0
     generation:
       max_output_tokens: 4096
       context_window_tokens: 200000
@@ -40,9 +40,3 @@ prices:
     output_per_million_usd: 5
 trial_budget:
   timeout_seconds: 900
-metadata:
-  worker_publish_recovery:
-    enabled: true
-    max_attempts_per_worker: 1
-    timeout_seconds: 120
-    detection: successful-worker-messages-send-receipt-after-terminal-exec

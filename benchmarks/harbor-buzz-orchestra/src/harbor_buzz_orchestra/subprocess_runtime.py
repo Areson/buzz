@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import os
 import shlex
@@ -11,10 +10,8 @@ import signal
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from harbor.environments.base import BaseEnvironment
 
@@ -64,15 +61,12 @@ class BuzzSubprocessRuntime:
         buzz_cli_binary: str = "buzz",
         max_agent_rounds: int = DEFAULT_MAX_AGENT_ROUNDS,
         readiness_timeout_seconds: float = 30.0,
-        worker_report_timeout_seconds: float = 120.0,
         poll_seconds: float = 1.0,
     ) -> None:
         if max_agent_rounds <= 0:
             raise ValueError("max_agent_rounds must be positive")
         if readiness_timeout_seconds <= 0:
             raise ValueError("readiness_timeout_seconds must be positive")
-        if worker_report_timeout_seconds <= 0:
-            raise ValueError("worker_report_timeout_seconds must be positive")
         self.logs_dir = Path(logs_dir)
         self.artifact_root = Path(artifact_root)
         self.endpoints = endpoints
@@ -81,7 +75,6 @@ class BuzzSubprocessRuntime:
         self.buzz_cli_binary = buzz_cli_binary
         self.max_agent_rounds = max_agent_rounds
         self.readiness_timeout_seconds = readiness_timeout_seconds
-        self.worker_report_timeout_seconds = worker_report_timeout_seconds
         self.poll_seconds = poll_seconds
 
     async def run(
@@ -92,13 +85,11 @@ class BuzzSubprocessRuntime:
         manifest: ExperimentManifest,
         trial: TrialHandle,
     ) -> RuntimeResult:
-        self._verify_recovery_policy(manifest)
         classes = self._classes_by_agent_id(manifest, trial.credentials)
         orchestrator = next(c for c in trial.credentials if c.role == "orchestrator")
         workers = [c for c in trial.credentials if c.agent_id != orchestrator.agent_id]
         if not workers:
             raise RuntimeLaunchError("Buzz orchestration requires at least one worker")
-        seed_sender = workers[0]
         trial_dir = self.logs_dir / "buzz"
         trial_dir.mkdir(parents=True, exist_ok=True)
         socket_path = Path(tempfile.gettempdir()) / f"hb-{trial.trial_id[:12]}.sock"
@@ -111,6 +102,14 @@ class BuzzSubprocessRuntime:
         )
         async with broker:
             try:
+                await self._buzz_json(
+                    trial.user,
+                    trial,
+                    "users",
+                    "set-profile",
+                    "--name",
+                    trial.user.agent_id,
+                )
                 for credential in trial.credentials:
                     await self._buzz_json(
                         credential,
@@ -130,13 +129,16 @@ class BuzzSubprocessRuntime:
                         )
                     )
                 await self._wait_for_agents_ready(processes, trial.channel_id)
+                # The task arrives exactly as it would in production Buzz: a
+                # user prompt @mentioning the orchestrator. The harness never
+                # speaks as any agent.
                 await self._send(
-                    seed_sender,
+                    trial.user,
                     trial,
-                    f"@{orchestrator.agent_id} Benchmark task:\n{instruction}",
+                    f"@{orchestrator.agent_id} {instruction}",
                 )
-                final_message, publish_recoveries = await asyncio.wait_for(
-                    self._wait_for_done(orchestrator, workers, trial, processes),
+                final_message = await asyncio.wait_for(
+                    self._wait_for_done(orchestrator, trial, processes),
                     timeout=manifest.trial_budget.timeout_seconds,
                 )
                 await self._verify_m1_output(environment, manifest)
@@ -149,10 +151,7 @@ class BuzzSubprocessRuntime:
                 "completion_message": final_message["content"],
                 "terminal_concurrency": "serialized",
                 "agent_hints_enabled": False,
-                "worker_publish_recoveries": publish_recoveries,
-                "worker_publish_recovery_policy": manifest.metadata[
-                    "worker_publish_recovery"
-                ],
+                "task_seed": "user-identity-prompt",
                 "agent_max_rounds": {
                     credential.agent_id: (
                         classes[credential.agent_id].budget.max_calls
@@ -181,6 +180,12 @@ class BuzzSubprocessRuntime:
             )
         prompt_path = self.artifact_root / agent_class.prompt.path
         self._verify_artifact(prompt_path, agent_class.prompt.sha256)
+        composed_prompt_path = self._compose_system_prompt(
+            trial_dir=trial_dir,
+            trial=trial,
+            credential=credential,
+            persona_path=prompt_path,
+        )
         wrapper = self._write_mcp_wrapper(
             trial_dir=trial_dir,
             agent_id=credential.agent_id,
@@ -202,7 +207,7 @@ class BuzzSubprocessRuntime:
             "BUZZ_ACP_SUBSCRIBE": "mentions",
             "BUZZ_ACP_RESPOND_TO": "anyone",
             "BUZZ_ACP_NO_MEMORY": "true",
-            "BUZZ_ACP_SYSTEM_PROMPT_FILE": str(prompt_path),
+            "BUZZ_ACP_SYSTEM_PROMPT_FILE": str(composed_prompt_path),
             "BUZZ_AGENT_PROVIDER": endpoint.provider,
             "BUZZ_AGENT_MODEL": credential.llm_endpoint,
             "BUZZ_AGENT_MAX_OUTPUT_TOKENS": str(
@@ -290,16 +295,18 @@ class BuzzSubprocessRuntime:
     async def _wait_for_done(
         self,
         orchestrator: AgentCredential,
-        workers: list[AgentCredential],
         trial: TrialHandle,
         processes: list[_AgentProcess],
-    ) -> tuple[dict[str, Any], list[str]]:
-        publish_recoveries: list[str] = []
-        recovery_started: dict[str, float] = {}
+    ) -> dict[str, Any]:
+        """Observe the channel as the trial user until the orchestrator posts DONE.
+
+        Observation only: the harness never speaks as any agent. If the team
+        stalls, the trial times out and the stall is the measured result.
+        """
         while True:
             self._raise_for_early_exit(processes)
             messages = await self._buzz_json(
-                orchestrator,
+                trial.user,
                 trial,
                 "messages",
                 "get",
@@ -312,123 +319,8 @@ class BuzzSubprocessRuntime:
                 if message.get("pubkey") == orchestrator.nostr_pubkey and str(
                     message.get("content", "")
                 ).startswith("DONE:"):
-                    return message, publish_recoveries
-            for worker in workers:
-                records = self._orchestration_records()
-                terminal_ended_at = self._latest_worker_event(
-                    records, worker.agent_id, event="terminal_exec"
-                )
-                if terminal_ended_at is None:
-                    continue
-                report_ended_at = self._latest_worker_event(
-                    records,
-                    worker.agent_id,
-                    event="buzz_exec",
-                    require_message_send=True,
-                )
-                report_published = (
-                    report_ended_at is not None
-                    and report_ended_at >= terminal_ended_at
-                )
-                if report_published:
-                    continue
-                if worker.agent_id in recovery_started:
-                    if (
-                        asyncio.get_running_loop().time()
-                        - recovery_started[worker.agent_id]
-                        >= self.worker_report_timeout_seconds
-                    ):
-                        raise RuntimeLaunchError(
-                            f"worker {worker.agent_id} did not publish a Buzz report "
-                            "after one bounded recovery prompt"
-                        )
-                    continue
-                overdue = (
-                    datetime.now(UTC) - terminal_ended_at
-                ).total_seconds() >= self.worker_report_timeout_seconds
-                if overdue:
-                    recovery_id = str(uuid4())
-                    await self._send(
-                        orchestrator,
-                        trial,
-                        f"@{worker.agent_id} Your terminal work completed but no Buzz "
-                        "report was published. Publish your result now via buzz_exec, "
-                        f"addressed to @{orchestrator.agent_id} and threaded to the "
-                        "assignment. Do not repeat the terminal work.",
-                    )
-                    self._append_orchestration_record(
-                        {
-                            "schema_version": "1",
-                            "event": "worker_publish_recovery",
-                            "operation_id": recovery_id,
-                            "worker_agent_id": worker.agent_id,
-                            "orchestrator_agent_id": orchestrator.agent_id,
-                            "terminal_ended_at": terminal_ended_at.isoformat(),
-                            "prompt_sent_at": datetime.now(UTC).isoformat(),
-                        }
-                    )
-                    publish_recoveries.append(worker.agent_id)
-                    recovery_started[worker.agent_id] = (
-                        asyncio.get_running_loop().time()
-                    )
+                    return message
             await asyncio.sleep(self.poll_seconds)
-
-    def _orchestration_records(self) -> list[dict[str, Any]]:
-        try:
-            lines = (
-                (self.logs_dir / "orchestration.jsonl")
-                .read_text(encoding="utf-8")
-                .splitlines()
-            )
-        except FileNotFoundError:
-            return []
-        records = []
-        for line in lines:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(record, dict):
-                records.append(record)
-        return records
-
-    @staticmethod
-    def _latest_worker_event(
-        records: list[dict[str, Any]],
-        agent_id: str,
-        *,
-        event: str,
-        require_message_send: bool = False,
-    ) -> datetime | None:
-        latest: datetime | None = None
-        for record in records:
-            if record.get("event") != event or record.get("agent_id") != agent_id:
-                continue
-            if require_message_send and not (
-                record.get("return_code") == 0
-                and record.get("error") is None
-                and record.get("args", [])[:2] == ["messages", "send"]
-            ):
-                continue
-            try:
-                ended_at = datetime.fromisoformat(record["ended_at"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if ended_at.tzinfo is None:
-                ended_at = ended_at.replace(tzinfo=UTC)
-            if latest is None or ended_at > latest:
-                latest = ended_at
-        return latest
-
-    def _append_orchestration_record(self, record: dict[str, Any]) -> None:
-        path = self.logs_dir / "orchestration.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
-        with path.open("a", encoding="utf-8") as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
-            stream.write(line)
-            stream.flush()
-            fcntl.flock(stream, fcntl.LOCK_UN)
 
     async def _send(
         self, credential: AgentCredential, trial: TrialHandle, content: str
@@ -479,19 +371,6 @@ class BuzzSubprocessRuntime:
             return f"https://{relay_ws_url.removeprefix('wss://')}"
         raise RuntimeLaunchError("trial relay_ws_url must use ws:// or wss://")
 
-    def _verify_recovery_policy(self, manifest: ExperimentManifest) -> None:
-        policy = manifest.metadata.get("worker_publish_recovery")
-        expected = {
-            "enabled": True,
-            "max_attempts_per_worker": 1,
-            "timeout_seconds": self.worker_report_timeout_seconds,
-            "detection": "successful-worker-messages-send-receipt-after-terminal-exec",
-        }
-        if policy != expected:
-            raise RuntimeLaunchError(
-                f"manifest worker_publish_recovery policy must equal {expected!r}"
-            )
-
     @staticmethod
     def _classes_by_agent_id(
         manifest: ExperimentManifest, credentials: tuple[AgentCredential, ...]
@@ -524,6 +403,48 @@ class BuzzSubprocessRuntime:
             raise RuntimeLaunchError(
                 f"prompt hash mismatch for {path}: expected {expected_sha256}, got {actual}"
             )
+
+    def _compose_system_prompt(
+        self,
+        *,
+        trial_dir: Path,
+        trial: TrialHandle,
+        credential: AgentCredential,
+        persona_path: Path,
+    ) -> Path:
+        """Append the trial's team roster to the pinned persona.
+
+        The analogue of a production Buzz workspace's team context: each agent
+        knows its own identity, its channel, the user it reports to, and its
+        teammates' names, pubkeys, and roles from its system prompt — it never
+        has to discover them over the relay.
+        """
+        persona = persona_path.read_text(encoding="utf-8")
+        lines = [
+            "",
+            "## Your team",
+            "",
+            f"You are `{credential.agent_id}` (pubkey `{credential.nostr_pubkey}`).",
+            f"The team coordinates in Buzz channel `{trial.channel_id}`.",
+            f"Tasks come from the user `{trial.user.agent_id}` "
+            f"(pubkey `{trial.user.nostr_pubkey}`); address your final report "
+            "to them.",
+            "",
+            "| Name | Role | Pubkey |",
+            "|------|------|--------|",
+        ]
+        for teammate in trial.credentials:
+            if teammate.agent_id == credential.agent_id:
+                continue
+            lines.append(
+                f"| {teammate.agent_id} | {teammate.role} "
+                f"| `{teammate.nostr_pubkey}` |"
+            )
+        composed = persona + "\n".join(lines) + "\n"
+        path = trial_dir / f"{credential.agent_id}.system-prompt.md"
+        path.write_text(composed, encoding="utf-8")
+        path.chmod(0o600)
+        return path
 
     def _write_mcp_wrapper(
         self, *, trial_dir: Path, agent_id: str, socket_path: Path | None

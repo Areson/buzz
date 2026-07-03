@@ -1,6 +1,5 @@
 import hashlib
 import json
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -77,6 +76,30 @@ def credential(agent_id, role, endpoint):
         nostr_auth_tag="[]",
         llm_endpoint=endpoint,
         llm_api_key=f"key-{agent_id}",
+    )
+
+
+def user_credential():
+    return AgentCredential(
+        agent_id="user",
+        role="user",
+        nostr_secret_key="secret-user",
+        nostr_pubkey="pubkey-user",
+        nostr_auth_tag="[]",
+        llm_endpoint="",
+        llm_api_key="",
+    )
+
+
+def trial_handle(credentials):
+    return TrialHandle(
+        run_id="run",
+        trial_id="trial",
+        manifest_hash="hash",
+        relay_ws_url="ws://relay",
+        channel_id="channel",
+        credentials=credentials,
+        user=user_credential(),
     )
 
 
@@ -167,14 +190,7 @@ async def test_launch_sets_bounded_agent_rounds(
             }
         )
     orch = credential("orch-1", "orchestrator", "orch-model")
-    trial = TrialHandle(
-        run_id="run",
-        trial_id="trial",
-        manifest_hash="hash",
-        relay_ws_url="ws://relay",
-        channel_id="channel",
-        credentials=(orch,),
-    )
+    trial = trial_handle((orch,))
     captured = {}
 
     class Process:
@@ -200,6 +216,9 @@ async def test_launch_sets_bounded_agent_rounds(
 
     assert captured["BUZZ_AGENT_NO_HINTS"] == "1"
     assert captured["BUZZ_AGENT_MAX_ROUNDS"] == expected
+    assert captured["BUZZ_ACP_SYSTEM_PROMPT_FILE"].endswith(
+        "orch-1.system-prompt.md"
+    )
     assert captured["BUZZ_ACP_MCP_COMMAND"].endswith("agent-mcp-orch-1")
     wrapper = Path(captured["BUZZ_ACP_MCP_COMMAND"])
     assert "/pinned/buzz" not in wrapper.read_text()  # default runtime binary is `buzz`
@@ -210,8 +229,6 @@ def test_runtime_rejects_unbounded_agent_rounds(tmp_path):
         runtime(tmp_path, max_agent_rounds=0)
     with pytest.raises(ValueError, match="positive"):
         runtime(tmp_path, readiness_timeout_seconds=0)
-    with pytest.raises(ValueError, match="positive"):
-        runtime(tmp_path, worker_report_timeout_seconds=0)
 
 
 @pytest.mark.asyncio
@@ -284,14 +301,7 @@ async def test_m1_output_probe_matches_grader_and_is_condition_scoped(
 async def test_wait_for_done_requires_orchestrator_authorship(tmp_path, monkeypatch):
     rt = runtime(tmp_path)
     orch = credential("orch-1", "orchestrator", "orch-model")
-    trial = TrialHandle(
-        run_id="run",
-        trial_id="trial",
-        manifest_hash="hash",
-        relay_ws_url="ws://relay",
-        channel_id="channel",
-        credentials=(orch,),
-    )
+    trial = trial_handle((orch,))
     rounds = iter(
         [
             [{"id": "1", "pubkey": "someone-else", "content": "DONE: fake"}],
@@ -299,7 +309,10 @@ async def test_wait_for_done_requires_orchestrator_authorship(tmp_path, monkeypa
         ]
     )
 
-    async def buzz_json(*args, **kwargs):
+    observers = []
+
+    async def buzz_json(credential, *args, **kwargs):
+        observers.append(credential.agent_id)
         return next(rounds)
 
     async def no_sleep(_):
@@ -309,128 +322,35 @@ async def test_wait_for_done_requires_orchestrator_authorship(tmp_path, monkeypa
     monkeypatch.setattr(
         "harbor_buzz_orchestra.subprocess_runtime.asyncio.sleep", no_sleep
     )
-    result, recoveries = await rt._wait_for_done(orch, [], trial, [])
+    result = await rt._wait_for_done(orch, trial, [])
     assert json.dumps(result).find("real") > 0
-    assert recoveries == []
+    # observation happens as the trial user, never as an agent identity
+    assert set(observers) == {"user"}
 
 
-@pytest.mark.asyncio
-async def test_wait_for_done_reprompts_worker_once_after_unreported_terminal_work(
-    tmp_path, monkeypatch
-):
-    rt = runtime(tmp_path, worker_report_timeout_seconds=1, poll_seconds=0)
-    orch = credential("orch-1", "orchestrator", "orch-model")
-    worker = credential("worker-1", "worker", "worker-model")
-    trial = TrialHandle(
-        run_id="run",
-        trial_id="trial",
-        manifest_hash="hash",
-        relay_ws_url="ws://relay",
-        channel_id="channel",
-        credentials=(orch, worker),
-    )
-    (tmp_path / "logs").mkdir()
-    (tmp_path / "logs" / "orchestration.jsonl").write_text(
-        json.dumps(
-            {
-                "event": "terminal_exec",
-                "agent_id": worker.agent_id,
-                "ended_at": "2020-01-01T00:00:00+00:00",
-            }
-        )
-        + "\n"
-    )
-    rounds = iter(
-        [
-            [],
-            [{"id": "done", "pubkey": orch.nostr_pubkey, "content": "DONE: real"}],
-        ]
-    )
-    sent = []
-
-    async def buzz_json(*args, **kwargs):
-        return next(rounds)
-
-    async def send(*args):
-        sent.append(args)
-
-    async def no_sleep(_):
-        return None
-
-    monkeypatch.setattr(rt, "_buzz_json", buzz_json)
-    monkeypatch.setattr(rt, "_send", send)
-    monkeypatch.setattr(
-        "harbor_buzz_orchestra.subprocess_runtime.asyncio.sleep", no_sleep
-    )
-
-    result, recoveries = await rt._wait_for_done(orch, [worker], trial, [])
-    assert result["id"] == "done"
-    assert recoveries == [worker.agent_id]
-    assert len(sent) == 1
-    assert sent[0][0] == orch
-    assert "Publish your result now" in sent[0][2]
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "logs" / "orchestration.jsonl")
-        .read_text()
-        .splitlines()
-    ]
-    recovery = records[-1]
-    assert recovery["event"] == "worker_publish_recovery"
-    assert recovery["worker_agent_id"] == worker.agent_id
-    assert recovery["orchestrator_agent_id"] == orch.agent_id
-
-
-def test_latest_worker_event_requires_successful_message_send_receipt(tmp_path):
+def test_composed_system_prompt_carries_persona_and_team_roster(tmp_path):
     rt = runtime(tmp_path)
-    records = [
-        {
-            "event": "buzz_exec",
-            "agent_id": "worker-1",
-            "args": ["messages", "get"],
-            "ended_at": "2026-01-01T00:00:01+00:00",
-            "return_code": 0,
-            "error": None,
-        },
-        {
-            "event": "buzz_exec",
-            "agent_id": "worker-1",
-            "args": ["messages", "send"],
-            "ended_at": "2026-01-01T00:00:02+00:00",
-            "return_code": 1,
-            "error": "buzz exited 1",
-        },
-        {
-            "event": "buzz_exec",
-            "agent_id": "worker-1",
-            "args": ["messages", "send"],
-            "ended_at": "2026-01-01T00:00:03+00:00",
-            "return_code": 0,
-            "error": None,
-        },
-    ]
-    assert rt._latest_worker_event(
-        records, "worker-1", event="buzz_exec", require_message_send=True
-    ) == datetime.fromisoformat("2026-01-01T00:00:03+00:00")
+    orch = credential("orch-1", "orchestrator", "orch-model")
+    worker_1 = credential("worker-1", "worker", "worker-model")
+    worker_2 = credential("worker-2", "worker", "worker-model")
+    trial = trial_handle((orch, worker_1, worker_2))
+    persona = tmp_path / "persona.md"
+    persona.write_text("# Persona body\n", encoding="utf-8")
 
-
-def test_recovery_policy_is_manifested_and_matches_runtime_bound(tmp_path):
-    manifest = write_manifest(tmp_path).model_copy(
-        update={
-            "metadata": {
-                "worker_publish_recovery": {
-                    "enabled": True,
-                    "max_attempts_per_worker": 1,
-                    "timeout_seconds": 120,
-                    "detection": (
-                        "successful-worker-messages-send-receipt-after-terminal-exec"
-                    ),
-                }
-            }
-        }
+    path = rt._compose_system_prompt(
+        trial_dir=tmp_path,
+        trial=trial,
+        credential=orch,
+        persona_path=persona,
     )
-    runtime(tmp_path)._verify_recovery_policy(manifest)
-    with pytest.raises(RuntimeLaunchError, match="worker_publish_recovery"):
-        runtime(tmp_path, worker_report_timeout_seconds=60)._verify_recovery_policy(
-            manifest
-        )
+
+    composed = path.read_text(encoding="utf-8")
+    assert composed.startswith("# Persona body\n")
+    assert "You are `orch-1` (pubkey `pubkey-orch-1`)" in composed
+    assert f"channel `{trial.channel_id}`" in composed
+    assert "user `user` (pubkey `pubkey-user`)" in composed
+    # roster lists teammates, never the agent itself
+    assert "| worker-1 | worker | `pubkey-worker-1` |" in composed
+    assert "| worker-2 | worker | `pubkey-worker-2` |" in composed
+    assert "| orch-1 " not in composed
+    assert path.stat().st_mode & 0o777 == 0o600

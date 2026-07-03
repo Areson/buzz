@@ -122,13 +122,16 @@ class BuzzTrialProvisioner:
         manifest_hash: str,
     ) -> TrialHandle:
         credentials = self._mint_credentials(manifest)
-        creator = credentials[0]  # roster validation guarantees one orchestrator
-        cli = self._cli_for(creator)
+        user = self._mint_user()
+        # The user identity creates the channel and invites the agents —
+        # mirroring production Buzz, where a human owns the channel their
+        # agents work in.
+        cli = self._cli_for(user)
         channel_id = cli.create_private_channel(
             name=f"trial-{trial_id[:8]}-{manifest_hash[:8]}",
             description=f"run={run_id} trial={trial_id} manifest={manifest_hash}",
         )
-        for credential in credentials[1:]:
+        for credential in credentials:
             cli.add_member(channel_id, credential.nostr_pubkey)
         return TrialHandle(
             run_id=run_id,
@@ -137,6 +140,7 @@ class BuzzTrialProvisioner:
             relay_ws_url=self._config.relay_ws_url,
             channel_id=channel_id,
             credentials=credentials,
+            user=user,
         )
 
     def _mint_credentials(
@@ -166,6 +170,21 @@ class BuzzTrialProvisioner:
                     )
                 )
         return tuple(credentials)
+
+    def _mint_user(self) -> AgentCredential:
+        """Mint the trial's user identity — the human analogue, not an agent."""
+        keypair = generate_keypair()
+        return AgentCredential(
+            agent_id="user",
+            role="user",
+            nostr_secret_key=keypair.secret_key,
+            nostr_pubkey=keypair.pubkey,
+            nostr_auth_tag=compute_auth_tag(
+                self._config.owner_secret_key, keypair.pubkey
+            ),
+            llm_endpoint="",
+            llm_api_key="",
+        )
 
     def _cli_for(self, credential: AgentCredential) -> BuzzCli:
         return BuzzCli(
@@ -201,6 +220,7 @@ class BuzzTrialProvisioner:
             credentials=tuple(
                 AgentCredential(**credential) for credential in stored["credentials"]
             ),
+            user=AgentCredential(**stored["user"]),
         )
 
     @staticmethod

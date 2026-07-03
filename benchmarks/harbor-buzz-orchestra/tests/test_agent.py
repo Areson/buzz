@@ -38,7 +38,21 @@ class Provisioner:
     def create_trial(self, run_id, trial_id, manifest):
         self.created = (run_id, trial_id, manifest)
         return TrialHandle(
-            run_id, trial_id, manifest.sha256, "ws://relay", "channel-1", ()
+            run_id,
+            trial_id,
+            manifest.sha256,
+            "ws://relay",
+            "channel-1",
+            (),
+            user=AgentCredential(
+                agent_id="user",
+                role="user",
+                nostr_secret_key="s",
+                nostr_pubkey="p",
+                nostr_auth_tag="[]",
+                llm_endpoint="",
+                llm_api_key="",
+            ),
         )
 
     def teardown(self, handle):
