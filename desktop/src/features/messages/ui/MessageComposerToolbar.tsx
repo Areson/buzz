@@ -322,13 +322,16 @@ export const MessageComposerToolbar = React.memo(
           {onStopAgent && !isSending ? (
             <Button
               aria-label="Stop agent"
-              className="rounded-full"
+              // Icon size set here so it wins the base [&_svg]:size-4 via
+              // class merge — sizing the svg directly leaves both rules
+              // competing and the glyph off-center.
+              className="rounded-full [&_svg]:size-3.5"
               data-testid="stop-agent"
               onClick={onStopAgent}
               size="icon"
               type="button"
             >
-              <Square aria-hidden className="h-3.5 w-3.5 fill-current" />
+              <Square aria-hidden className="fill-current" />
             </Button>
           ) : (
             <Button
