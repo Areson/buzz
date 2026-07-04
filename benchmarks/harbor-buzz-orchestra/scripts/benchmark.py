@@ -426,8 +426,17 @@ def launch_gui(state: dict[str, str]) -> subprocess.Popen:
         f"Opening Buzz GUI as the benchmark user ({state['user_pubkey'][:16]}…).\n"
         "Watch, don't type — a message from you mid-trial would taint the run."
     )
+    # Distinct bundle identifier: the desktop app persists workspaces (incl.
+    # their relay URLs) in per-identifier WebKit localStorage, and a stored
+    # workspace's relay URL overrides BUZZ_RELAY_URL by design. Reusing the
+    # default identifier means any past local-dev session's ws://localhost:3000
+    # workspace silently shadows the benchmark relay. An identifier of our own
+    # keeps that state isolated both ways.
+    tauri_config = json.dumps(
+        {"identifier": "xyz.block.buzz.app.benchmark", "productName": "Buzz Benchmark"}
+    )
     return subprocess.Popen(
-        ["pnpm", "exec", "tauri", "dev"],
+        ["pnpm", "exec", "tauri", "dev", "--config", tauri_config],
         cwd=desktop_dir,
         env={
             **os.environ,
