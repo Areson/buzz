@@ -608,7 +608,9 @@ function LiveTurnMarker({
           <span>Waiting for the first backend event…</span>
         )
       }
-      entrance={hasRecentEntrance(startedAt)}
+      // No entrance animation: this row mounts and unmounts with every gap
+      // between tool executions, and replaying the fade on each reappearance
+      // reads as blinking instead of a steady status.
       icon={icon}
       label="Working"
       loading

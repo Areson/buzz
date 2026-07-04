@@ -108,8 +108,8 @@ export function ChatListItem({
       </button>
       {onArchiveChat ? (
         // Zero-width until hover/focus so the title gets the full row; the
-        // slot expands to make room for the archive button on demand.
-        <div className="relative flex h-6 w-0 shrink-0 items-center justify-center overflow-hidden transition-[width] duration-150 group-focus-within/chat-row:w-6 group-hover/chat-row:w-6">
+        // slot appears instantly to make room for the archive button.
+        <div className="relative flex h-6 w-0 shrink-0 items-center justify-center overflow-hidden group-focus-within/chat-row:w-6 group-hover/chat-row:w-6">
           <Button
             aria-label={`Archive ${name}`}
             className={cn(
