@@ -154,7 +154,12 @@ class BuzzOrchestraAgent(BaseAgent):
             raise RuntimeError("Harbor context_id is required as the trial join key")
         trial_id = str(context_id)
         run_id = self.run_id or trial_id
-        handle = self.provisioner.create_trial(run_id, trial_id, self.manifest)
+        # Human-readable channel label: the task short name, so a spectator
+        # GUI shows one recognisable channel per problem per attempt.
+        channel_label = getattr(environment, "environment_name", None)
+        handle = self.provisioner.create_trial(
+            run_id, trial_id, self.manifest, channel_label=channel_label
+        )
         if handle.trial_id != trial_id:
             raise RuntimeError("provisioner returned a handle for a different trial_id")
         if handle.manifest_hash != self.manifest.sha256:

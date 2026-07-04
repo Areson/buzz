@@ -14,7 +14,7 @@ from harbor_buzz_orchestra.manifest import ExperimentManifest
 from harbor_buzz_orchestra.provisioning import AgentCredential, TrialHandle
 
 from .buzz_cli import BuzzCli
-from .keys import compute_auth_tag, generate_keypair
+from .keys import compute_auth_tag, generate_keypair, keypair_from_secret
 
 
 class ProvisioningError(RuntimeError):
@@ -33,6 +33,15 @@ class TestbedConfig:
     llm_api_keys: dict[str, str] = dataclasses.field(default_factory=dict)
     # endpoint -> API key. v1: per-endpoint resolution; true per-agent
     # Databricks attribution is pending the AI Gateway field verification.
+    # Pinned user identity (hex secret key). When set, every trial's user —
+    # the human analogue that owns the channel and posts the task — is this
+    # one identity instead of a fresh key per trial, so a GUI logged in as
+    # that user sees every trial channel accumulate. None preserves the
+    # fresh-user-per-trial behaviour.
+    user_secret_key: str | None = None
+    # When False, teardown leaves the trial channel unarchived (and its
+    # archived_at stamp NULL) so finished trials stay visible in a GUI.
+    archive_on_teardown: bool = True
 
 
 def provisioner_from_dict(config: dict[str, object]) -> "BuzzTrialProvisioner":
@@ -59,7 +68,11 @@ class BuzzTrialProvisioner:
     # -- contract surface ---------------------------------------------------
 
     def create_trial(
-        self, run_id: str, trial_id: str, manifest: ExperimentManifest
+        self,
+        run_id: str,
+        trial_id: str,
+        manifest: ExperimentManifest,
+        channel_label: str | None = None,
     ) -> TrialHandle:
         manifest_hash = manifest.sha256
         with psycopg.connect(self._config.postgres_dsn) as conn:
@@ -73,12 +86,17 @@ class BuzzTrialProvisioner:
                     )
                 return existing
 
-            handle = self._provision(run_id, trial_id, manifest, manifest_hash)
+            handle = self._provision(
+                run_id, trial_id, manifest, manifest_hash, channel_label
+            )
             self._store_trial(conn, handle)
             conn.commit()
             return handle
 
     def teardown(self, handle: TrialHandle) -> None:
+        if not self._config.archive_on_teardown:
+            # GUI/spectator mode: finished trial channels stay visible.
+            return
         cli = self._cli_for(handle.credentials[0])
         try:
             cli.archive_channel(handle.channel_id)
@@ -120,6 +138,7 @@ class BuzzTrialProvisioner:
         trial_id: str,
         manifest: ExperimentManifest,
         manifest_hash: str,
+        channel_label: str | None,
     ) -> TrialHandle:
         credentials = self._mint_credentials(manifest)
         user = self._mint_user()
@@ -127,8 +146,13 @@ class BuzzTrialProvisioner:
         # mirroring production Buzz, where a human owns the channel their
         # agents work in.
         cli = self._cli_for(user)
+        name = (
+            f"{channel_label}-{trial_id[:8]}"
+            if channel_label
+            else f"trial-{trial_id[:8]}-{manifest_hash[:8]}"
+        )
         channel_id = cli.create_private_channel(
-            name=f"trial-{trial_id[:8]}-{manifest_hash[:8]}",
+            name=name,
             description=f"run={run_id} trial={trial_id} manifest={manifest_hash}",
         )
         for credential in credentials:
@@ -172,8 +196,17 @@ class BuzzTrialProvisioner:
         return tuple(credentials)
 
     def _mint_user(self) -> AgentCredential:
-        """Mint the trial's user identity — the human analogue, not an agent."""
-        keypair = generate_keypair()
+        """Mint the trial's user identity — the human analogue, not an agent.
+
+        With a pinned ``user_secret_key`` the same identity fronts every
+        trial, like one human running many teams; otherwise each trial gets
+        a fresh user key.
+        """
+        keypair = (
+            keypair_from_secret(self._config.user_secret_key)
+            if self._config.user_secret_key
+            else generate_keypair()
+        )
         return AgentCredential(
             agent_id="user",
             role="user",

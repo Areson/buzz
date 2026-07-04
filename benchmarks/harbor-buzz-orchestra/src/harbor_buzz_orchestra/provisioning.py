@@ -46,6 +46,7 @@ class TrialProvisioner(Protocol):
         run_id: str,
         trial_id: str,
         manifest: ExperimentManifest,
+        channel_label: str | None = None,
     ) -> TrialHandle: ...
 
     def teardown(self, handle: TrialHandle) -> None: ...

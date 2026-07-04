@@ -55,7 +55,28 @@ rather than deletes that channel, leaving the relay/Postgres event timeline and
 
 ## Leaderboard runs
 
-`scripts/run_leaderboard.py` wraps the invocation above with only
+`just benchmark` is the one-command path: it stands up a dedicated Docker
+stack (`buzz-benchmark` compose project — relay :3600, Postgres :5633, secrets
+generated once into the gitignored `.benchmark/`), applies the benchmark
+schema, and defaults to leaderboard-eligible settings (Terminal-Bench 2.1,
+5 attempts per problem, the Sonnet+Haiku team). All selectors pass through:
+
+```bash
+just benchmark                                   # full TB 2.1, k=5
+just benchmark --path <TASK_DIR> -k 1            # one local task, one attempt
+just benchmark -i "cobol*" --attempts 3          # dataset subset
+just benchmark --gui                             # watch the run live
+```
+
+One pinned user identity fronts the whole benchmark environment: it owns
+every trial channel (named after the task) and posts every task prompt, and
+trial channels are kept rather than archived. `--gui` adds that user to the
+relay membership list and opens the Buzz desktop app logged in as them, so
+channels fill the sidebar as the run progresses — watch, don't type; a human
+message mid-trial would taint the run. `just benchmark-down` stops the stack.
+
+`scripts/run_leaderboard.py` is the layer underneath, for running against an
+already-provisioned stack. It wraps the invocation above with only
 leaderboard-legal settings — it does not accept or forward timeout or resource
 overrides, so the job directory it produces passes Harbor's static validation
 as-is. Give it a problem set, attempts per problem, and a team manifest:

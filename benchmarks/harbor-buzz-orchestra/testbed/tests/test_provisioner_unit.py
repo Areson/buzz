@@ -67,6 +67,28 @@ def test_mint_user_is_attested_and_not_an_agent():
     assert tag[:3] == ["auth", owner_pubkey.format().hex(), ""]
 
 
+def test_pinned_user_secret_reuses_one_identity():
+    pinned = "7" * 64
+    provisioner = BuzzTrialProvisioner(config(user_secret_key=pinned))
+    first = provisioner._mint_user()
+    second = provisioner._mint_user()
+    assert first.nostr_secret_key == pinned
+    assert first.nostr_pubkey == second.nostr_pubkey
+    expected = coincurve.PrivateKey(bytes.fromhex(pinned)).public_key_xonly
+    assert first.nostr_pubkey == expected.format().hex()
+    # Still a user, still attested by the owner.
+    assert first.role == "user"
+    owner_pubkey = coincurve.PrivateKey(bytes.fromhex(OWNER_SECRET)).public_key_xonly
+    assert json.loads(first.nostr_auth_tag)[1] == owner_pubkey.format().hex()
+
+
+def test_teardown_skips_archiving_when_disabled():
+    provisioner = BuzzTrialProvisioner(config(archive_on_teardown=False))
+    # Any attribute access would fail on this handle — teardown must return
+    # before touching the CLI or Postgres.
+    provisioner.teardown(handle=None)
+
+
 def test_mint_credentials_missing_api_key_is_explicit(manifest):
     provisioner = BuzzTrialProvisioner(config(llm_api_keys={}))
     with pytest.raises(ProvisioningError, match="databricks/"):

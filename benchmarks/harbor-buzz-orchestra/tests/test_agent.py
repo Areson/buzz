@@ -35,8 +35,8 @@ class Provisioner:
     def healthcheck(self):
         self.healthchecked = True
 
-    def create_trial(self, run_id, trial_id, manifest):
-        self.created = (run_id, trial_id, manifest)
+    def create_trial(self, run_id, trial_id, manifest, channel_label=None):
+        self.created = (run_id, trial_id, manifest, channel_label)
         return TrialHandle(
             run_id,
             trial_id,
@@ -73,7 +73,9 @@ class Runtime:
 
 async def test_agent_lifecycle_and_context(tmp_path, manifest_data):
     provisioner, runtime, context_id = Provisioner(), Runtime(), uuid4()
-    environment = SimpleNamespace(context_id=context_id)
+    environment = SimpleNamespace(
+        context_id=context_id, environment_name="hello-world"
+    )
     agent = BuzzOrchestraAgent(
         logs_dir=tmp_path,
         manifest=manifest_data,
@@ -87,6 +89,8 @@ async def test_agent_lifecycle_and_context(tmp_path, manifest_data):
     await agent.run("solve it", environment, context)
     assert provisioner.healthchecked
     assert provisioner.created[:2] == ("run-1", str(context_id))
+    # The task short name labels the trial channel for spectator GUIs.
+    assert provisioner.created[3] == "hello-world"
     assert provisioner.torn_down.channel_id == "channel-1"
     assert runtime.called["instruction"] == "solve it"
     assert (

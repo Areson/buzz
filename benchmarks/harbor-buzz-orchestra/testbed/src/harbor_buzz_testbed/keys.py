@@ -24,6 +24,15 @@ def generate_keypair() -> NostrKeypair:
     )
 
 
+def keypair_from_secret(secret_key: str) -> NostrKeypair:
+    """Rebuild the keypair for an existing hex secret key."""
+    key = coincurve.PrivateKey(bytes.fromhex(secret_key))
+    return NostrKeypair(
+        secret_key=secret_key,
+        pubkey=key.public_key_xonly.format().hex(),
+    )
+
+
 def compute_auth_tag(
     owner_secret_key: str, agent_pubkey: str, conditions: str = ""
 ) -> str:
