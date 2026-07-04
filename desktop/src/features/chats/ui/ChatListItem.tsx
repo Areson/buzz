@@ -141,7 +141,14 @@ export function ChatListItem({
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent className="w-44">
         {onRenameChat && canRename ? (
-          <ContextMenuItem onSelect={() => onRenameChat(chat.id)}>
+          <ContextMenuItem
+            onSelect={() => {
+              // Defer past the menu's close/focus-restore: opening a dialog
+              // in the same tick wrestles Radix's focus management and can
+              // freeze the webview (observed as an app "crash" on rename).
+              window.setTimeout(() => onRenameChat(chat.id), 0);
+            }}
+          >
             <Pencil className="h-3.5 w-3.5" />
             Rename chat
           </ContextMenuItem>
