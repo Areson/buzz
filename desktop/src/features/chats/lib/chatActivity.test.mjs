@@ -92,6 +92,70 @@ test("buildChatActivityPlacement attaches a turn to its source prompt", () => {
   assert.equal(placement.totalBlockCount, 1);
 });
 
+test("buildChatActivityPlacement anchors a multi-message turn to the latest message", () => {
+  // A mid-turn steer (or a merged backlog batch) adds a second user message
+  // to the same turn. The activity must attach to the LATEST message so the
+  // turn's output renders below it — not above, which pins the user's newest
+  // message to the bottom of the conversation.
+  const messages = [
+    message({ id: "user-1", content: "First ask" }),
+    message({ id: "user-2", content: "Follow-up while working" }),
+  ];
+  const placement = buildChatActivityPlacement({
+    agentPubkey: agent,
+    messages,
+    transcript: [
+      {
+        id: "prompt",
+        type: "message",
+        renderClass: "message",
+        role: "user",
+        title: "User",
+        text: "First ask",
+        timestamp: "2026-07-02T07:00:00.000Z",
+        turnId: "turn-1",
+        channelId: "chat-1",
+        sessionId: "session-1",
+        messageId: "user-1",
+        acpSource: "session/prompt:user",
+        authorPubkey: self,
+      },
+      {
+        id: "steer",
+        type: "message",
+        renderClass: "message",
+        role: "user",
+        title: "User",
+        text: "Follow-up while working",
+        timestamp: "2026-07-02T07:00:05.000Z",
+        turnId: "turn-1",
+        channelId: "chat-1",
+        sessionId: "session-1",
+        messageId: "user-2",
+        authorPubkey: self,
+      },
+      {
+        id: "assistant",
+        type: "message",
+        renderClass: "message",
+        role: "assistant",
+        title: "Assistant",
+        text: "Answering both.",
+        timestamp: "2026-07-02T07:00:09.000Z",
+        turnId: "turn-1",
+        channelId: "chat-1",
+        sessionId: "session-1",
+      },
+    ],
+  });
+
+  assert.deepEqual(placement.blocksByMessageId.get("user-1") ?? [], []);
+  const attached = placement.blocksByMessageId.get("user-2") ?? [];
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].attachedMessageId, "user-2");
+  assert.equal(placement.unplacedBlocks.length, 0);
+});
+
 test("shouldHidePersistedAgentMessage hides only transcript-covered agent text", () => {
   const hiddenAgentMessageIds = new Set(["agent-1"]);
 

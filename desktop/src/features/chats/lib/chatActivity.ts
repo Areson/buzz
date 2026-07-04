@@ -223,13 +223,19 @@ function getPromptMessageId(block: TranscriptDisplayBlock) {
     return getItemPromptMessageId(block.item);
   }
 
+  // A turn can span several of the user's messages (a mid-turn steer, or a
+  // batch that merged a replayed backlog message with a fresh one). Attach
+  // the activity to the LATEST of them — anchoring to the first would render
+  // the turn's output above the user's newest message, pinning that message
+  // to the bottom of the conversation.
+  let latestMessageId: string | null = null;
   for (const segment of block.segments) {
     const messageId = getSegmentPromptMessageId(segment);
     if (messageId) {
-      return messageId;
+      latestMessageId = messageId;
     }
   }
-  return null;
+  return latestMessageId;
 }
 
 function getSegmentPromptMessageId(segment: TranscriptTurnSegment) {
