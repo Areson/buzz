@@ -24,10 +24,15 @@ def test_defaults_are_leaderboard_eligible():
     args = benchmark.parse_args([])
     assert args.attempts == 5
     assert args.dataset is None and args.path is None  # dataset default applied later
-    argv = benchmark.leaderboard_argv(args, Path("prov.json"))
+    argv = benchmark.leaderboard_argv(args, Path("prov.json"), Path("linux-bin"))
     assert argv[argv.index("--dataset") + 1] == "terminal-bench/terminal-bench-2-1"
     assert argv[argv.index("--attempts") + 1] == "5"
     assert argv[argv.index("--manifest") + 1].endswith("tb-cobol-sonnet-haiku.yaml")
+    assert argv[argv.index("--agent-bin-dir") + 1] == "linux-bin"
+    # In-container agents reach the host relay through the forwarder gateway.
+    assert argv[argv.index("--relay-gateway") + 1] == (
+        f"host.docker.internal:{benchmark.RELAY_HTTP_PORT}"
+    )
 
 
 def test_selectors_pass_through():
@@ -35,7 +40,7 @@ def test_selectors_pass_through():
         ["--path", "/tmp/task", "-i", "cobol*", "-x", "flaky*", "-k", "1",
          "--job-name", "smoke", "--dry-run"]
     )
-    argv = benchmark.leaderboard_argv(args, Path("p.json"))
+    argv = benchmark.leaderboard_argv(args, Path("p.json"), Path("b"))
     assert argv[argv.index("--path") + 1] == "/tmp/task"
     assert argv[argv.index("--include-task") + 1] == "cobol*"
     assert argv[argv.index("--exclude-task") + 1] == "flaky*"
@@ -67,6 +72,10 @@ def test_provisioner_config_pins_user_and_keeps_channels(state_dir, tmp_path, mo
     assert config["archive_on_teardown"] is False
     assert config["llm_api_keys"] == {"model-a": "sk-test"}
     assert str(benchmark.RELAY_HTTP_PORT) in config["relay_http_url"]
+    # Both views dial the relay's canonical host-bound address; inside the
+    # task container the loopback forwarder bridges it to the host gateway.
+    assert config["relay_ws_url"] == f"ws://localhost:{benchmark.RELAY_HTTP_PORT}"
+    assert config["relay_http_url"].startswith("http://localhost:")
 
 
 def test_provisioner_config_missing_api_key_is_explicit(state_dir, tmp_path, monkeypatch):

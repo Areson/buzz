@@ -40,7 +40,16 @@ def binaries(tmp_path):
 
 
 @pytest.fixture
-def args(tmp_path, binaries):
+def agent_binaries(tmp_path):
+    bin_dir = tmp_path / "linux-bin"
+    bin_dir.mkdir()
+    for name in run_leaderboard.AGENT_BINARIES:
+        (bin_dir / name).write_text("ELF")
+    return run_leaderboard.find_agent_binaries(bin_dir)
+
+
+@pytest.fixture
+def args(tmp_path, binaries, agent_binaries):
     manifest = tmp_path / "team.yaml"
     manifest.write_text(
         yaml.safe_dump(
@@ -69,26 +78,39 @@ def args(tmp_path, binaries):
             str(endpoints),
             "--provisioner-config",
             str(provisioner),
+            "--agent-bin-dir",
+            str(next(iter(agent_binaries.values())).parent),
             "--job-name",
             "unit-test-job",
         ]
     )
 
 
-def test_command_uses_standard_settings_only(args, binaries):
-    command = run_leaderboard.build_command(args, binaries)
+def test_command_uses_standard_settings_only(args, binaries, agent_binaries):
+    command = run_leaderboard.build_command(args, binaries, agent_binaries)
     assert command[:2] == ["harbor", "run"]
     assert command.count("-k") == 1
     assert command[command.index("-k") + 1] == "5"
     for flag in FORBIDDEN_FLAGS:
         assert flag not in command
+    # The full production stack rides in as agent kwargs.
+    kwargs = [command[i + 1] for i, p in enumerate(command) if p == "--agent-kwarg"]
+    assert any(k.startswith("buzz_acp_binary=") for k in kwargs)
+    assert any(k.startswith("buzz_agent_binary=") for k in kwargs)
+    assert any(k.startswith("buzz_dev_mcp_binary=") for k in kwargs)
 
 
-def test_forbidden_flags_are_not_accepted():
+def test_agent_binaries_must_exist(tmp_path):
+    with pytest.raises(SystemExit, match="buzz-dev-mcp"):
+        run_leaderboard.find_agent_binaries(tmp_path)
+
+
+def test_forbidden_flags_are_not_accepted(tmp_path):
     for flag in FORBIDDEN_FLAGS:
         with pytest.raises(SystemExit):
             run_leaderboard.parse_args(
-                ["--dataset", "d", "--attempts", "5", flag, "1"]
+                ["--dataset", "d", "--attempts", "5",
+                 "--agent-bin-dir", str(tmp_path), flag, "1"]
             )
 
 

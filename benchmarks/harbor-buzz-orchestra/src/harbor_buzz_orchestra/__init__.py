@@ -4,8 +4,8 @@ from .agent import BuzzOrchestraAgent
 from .manifest import ExperimentManifest, ManifestError
 from .provisioning import AgentCredential, TrialHandle, TrialProvisioner
 from .runtime import OrchestraRuntime, RuntimeResult
-from .subprocess_runtime import (
-    BuzzSubprocessRuntime,
+from .container_runtime import (
+    BuzzContainerRuntime,
     EndpointLaunchConfig,
     RuntimeLaunchError,
 )
@@ -13,7 +13,7 @@ from .subprocess_runtime import (
 __all__ = [
     "AgentCredential",
     "BuzzOrchestraAgent",
-    "BuzzSubprocessRuntime",
+    "BuzzContainerRuntime",
     "EndpointLaunchConfig",
     "ExperimentManifest",
     "ManifestError",

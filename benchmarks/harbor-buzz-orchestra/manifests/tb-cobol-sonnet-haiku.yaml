@@ -13,7 +13,7 @@ roster:
     model_revision: claude-sonnet-4-6
     prompt:
       path: personas/orchestrator-tb.md
-      sha256: f507f1d579b5ac16fdd22ea26ebdced01318e731882a0b6e55e856f31f2f8977
+      sha256: 206829331cdd85fb277266901b9489e190ba23097600a8bb69142d044b9a42e6
     generation:
       max_output_tokens: 4096
       context_window_tokens: 200000
@@ -25,7 +25,7 @@ roster:
     model_revision: claude-haiku-4-5
     prompt:
       path: personas/worker-tb.md
-      sha256: a5745b2a7cb01f4e6cba66493b9ca518569e25ec78dfa132a3af407dbd03f8b0
+      sha256: 664a994ae3ba93f02ebbb8f61f781f6a59ea3327b21e26e7ffc2d06827ed3e45
     generation:
       max_output_tokens: 4096
       context_window_tokens: 200000

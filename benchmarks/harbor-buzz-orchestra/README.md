@@ -2,9 +2,11 @@
 
 A stock-Harbor custom agent that runs a manifest-defined team through the real
 Buzz stack. Harbor sees one `BuzzOrchestraAgent`; behind that adapter, one
-orchestrator and N workers coordinate over the production relay/Postgres using
-pinned `buzz`, `buzz-acp`, and `buzz-agent` binaries. Workers share serialized
-access to the Harbor task terminal. No Harbor fork or patch is required.
+orchestrator and N workers coordinate over the production relay/Postgres.
+Each agent runs *inside* the Harbor task container as the same
+`buzz-acp` → `buzz-agent` → `buzz-dev-mcp` process tree the desktop app
+launches: the production MCP toolset (shell, file tools, todo) with the
+`buzz` CLI on the shell's PATH. No Harbor fork or patch is required.
 
 ## Define the team
 
@@ -41,8 +43,14 @@ one task (`-p`), a directory of tasks, or replace `-p` with Harbor's dataset and
 task selectors:
 
 ```bash
-uv run --project benchmarks/harbor-buzz-orchestra/testbed harbor run --yes -p <TASK_OR_DIRECTORY> --agent harbor_buzz_orchestra:BuzzOrchestraAgent --agent-kwarg manifest=<CONDITION.yaml> --agent-kwarg provisioner_factory=harbor_buzz_testbed:provisioner_from_dict --agent-kwarg provisioner_config=<PROVISIONER.json> --agent-kwarg endpoint_config=<ENDPOINTS.json> --agent-kwarg artifact_root=benchmarks/harbor-buzz-orchestra --agent-kwarg buzz_acp_binary=target/debug/buzz-acp --agent-kwarg buzz_agent_binary=target/debug/buzz-agent --agent-kwarg buzz_cli_binary=target/debug/buzz --agent-kwarg run_id="bench-$(date -u +%Y%m%dT%H%M%SZ)" --agent-timeout-multiplier 15 --n-concurrent 1
+uv run --project benchmarks/harbor-buzz-orchestra/testbed harbor run --yes -p <TASK_OR_DIRECTORY> --agent harbor_buzz_orchestra:BuzzOrchestraAgent --agent-kwarg manifest=<CONDITION.yaml> --agent-kwarg provisioner_factory=harbor_buzz_testbed:provisioner_from_dict --agent-kwarg provisioner_config=<PROVISIONER.json> --agent-kwarg endpoint_config=<ENDPOINTS.json> --agent-kwarg artifact_root=benchmarks/harbor-buzz-orchestra --agent-kwarg buzz_acp_binary=<LINUX_BIN>/buzz-acp --agent-kwarg buzz_agent_binary=<LINUX_BIN>/buzz-agent --agent-kwarg buzz_dev_mcp_binary=<LINUX_BIN>/buzz-dev-mcp --agent-kwarg buzz_cli_binary=target/debug/buzz --agent-kwarg run_id="bench-$(date -u +%Y%m%dT%H%M%SZ)" --agent-timeout-multiplier 15 --n-concurrent 1
 ```
+
+`buzz_acp_binary`/`buzz_agent_binary`/`buzz_dev_mcp_binary` must be **Linux**
+builds matching the task image architecture — they are uploaded into each task
+container (`just benchmark` cross-builds them automatically; musl-static, so
+any Linux base image works). `buzz_cli_binary` is the **host** CLI the harness
+uses to act as the trial user.
 
 `--n-concurrent 1` is the safe laptop setting for a serialized local model; it
 is not an orchestration requirement. Tasks whose graders install dependencies
@@ -50,8 +58,9 @@ at verification time must first be prepared for offline execution; see
 [VERIFIER_PREPARATION.md](VERIFIER_PREPARATION.md).
 
 Each trial gets fresh keys and a private Buzz channel. The provisioner archives
-rather than deletes that channel, leaving the relay/Postgres event timeline and
-`orchestration.jsonl` receipts available for analysis.
+rather than deletes that channel, leaving the relay/Postgres event timeline
+and the per-agent acp/agent logs (downloaded into the trial's `buzz/`
+artifacts) available for analysis.
 
 ## Leaderboard runs
 
@@ -74,6 +83,14 @@ trial channels are kept rather than archived. `--gui` adds that user to the
 relay membership list and opens the Buzz desktop app logged in as them, so
 channels fill the sidebar as the run progresses — watch, don't type; a human
 message mid-trial would taint the run. `just benchmark-down` stops the stack.
+
+Networking: the relay is host-header tenant-bound, so agents must dial its
+canonical address (`ws://localhost:3600`) even from inside a task container.
+`just benchmark` uploads a tiny std-only loopback forwarder
+([`forwarder/relay_forwarder.rs`](forwarder/relay_forwarder.rs)) with the
+agent stack; it listens on the container's loopback and bridges the byte
+stream to the Docker host gateway (`host.docker.internal`, overridable via
+`BUZZ_BENCHMARK_DOCKER_HOST`).
 
 `scripts/run_leaderboard.py` is the layer underneath, for running against an
 already-provisioned stack. It wraps the invocation above with only

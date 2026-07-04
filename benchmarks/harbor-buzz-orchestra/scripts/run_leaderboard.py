@@ -16,7 +16,8 @@ importable:
         --attempts 5 \
         --manifest benchmarks/harbor-buzz-orchestra/manifests/<TEAM>.yaml \
         --endpoint-config benchmarks/harbor-buzz-orchestra/testbed/endpoints/<ENDPOINTS>.json \
-        --provisioner-config <PROVISIONER.json>
+        --provisioner-config <PROVISIONER.json> \
+        --agent-bin-dir <DIR with Linux buzz-acp/buzz-agent/buzz-dev-mcp>
 """
 
 from __future__ import annotations
@@ -34,7 +35,15 @@ import yaml
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 AGENT_IMPORT = "harbor_buzz_orchestra:BuzzOrchestraAgent"
 PROVISIONER_FACTORY = "harbor_buzz_testbed:provisioner_from_dict"
-BINARIES = ("buzz-acp", "buzz-agent", "buzz")
+# Host-side: the harness speaks to the relay as the trial user via this CLI.
+BINARIES = ("buzz",)
+# Container-side: the production stack uploaded into each task container.
+# These must be Linux builds matching the task image architecture.
+AGENT_BINARIES = ("buzz-acp", "buzz-agent", "buzz-dev-mcp")
+# Uploaded alongside the stack when --relay-gateway is set: bridges the
+# agents' canonical relay address to the host gateway (the relay is
+# host-header tenant-bound, so agents must present its canonical Host).
+FORWARDER_BINARY = "relay-forwarder"
 
 PROVIDER_ORGS = {"anthropic": "Anthropic", "openai": "OpenAI", "databricks": "Databricks"}
 
@@ -73,7 +82,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--buzz-bin-dir", type=Path, default=None,
-        help="Directory with buzz-acp/buzz-agent/buzz (default: repo target/release, then target/debug)",
+        help="Directory with the host buzz CLI (default: repo target/release, then target/debug)",
+    )
+    parser.add_argument(
+        "--agent-bin-dir", type=Path, required=True,
+        help="Directory with Linux builds of buzz-acp/buzz-agent/buzz-dev-mcp "
+        "to upload into each task container",
+    )
+    parser.add_argument(
+        "--relay-gateway", default="",
+        help="host:port of the benchmark relay as reachable from inside the "
+        "task container (e.g. host.docker.internal:3600). When set, a "
+        "loopback forwarder from --agent-bin-dir bridges the canonical "
+        "relay address to this gateway",
     )
     parser.add_argument("--n-concurrent", "-n", type=int, default=4, help="Concurrent trials")
     parser.add_argument("--jobs-dir", type=Path, default=Path("jobs"), help="Job output root")
@@ -102,7 +123,25 @@ def find_binaries(bin_dir: Path | None) -> dict[str, Path]:
     )
 
 
-def build_command(args: argparse.Namespace, binaries: dict[str, Path]) -> list[str]:
+def find_agent_binaries(bin_dir: Path, with_forwarder: bool = False) -> dict[str, Path]:
+    """The Linux agent stack uploaded into each task container."""
+    names = AGENT_BINARIES + ((FORWARDER_BINARY,) if with_forwarder else ())
+    found = {name: bin_dir / name for name in names}
+    missing = [name for name, path in found.items() if not path.is_file()]
+    if missing:
+        raise SystemExit(
+            f"Linux agent binaries not found in {bin_dir}: {', '.join(missing)}. "
+            "`just benchmark` builds them; or cross-compile with "
+            "cargo --target <arch>-unknown-linux-musl and pass --agent-bin-dir."
+        )
+    return found
+
+
+def build_command(
+    args: argparse.Namespace,
+    binaries: dict[str, Path],
+    agent_binaries: dict[str, Path],
+) -> list[str]:
     """Compose the harbor invocation. Standard settings only: any timeout or
     resource override would fail leaderboard static validation, so none are
     accepted or forwarded."""
@@ -124,17 +163,22 @@ def build_command(args: argparse.Namespace, binaries: dict[str, Path]) -> list[s
     if args.upload:
         command.append("--upload")
     command += ["--agent", AGENT_IMPORT]
-    for key, value in {
+    kwargs = {
         "manifest": args.manifest,
         "provisioner_factory": PROVISIONER_FACTORY,
         "provisioner_config": args.provisioner_config,
         "artifact_root": PACKAGE_ROOT,
         "endpoint_config": args.endpoint_config,
-        "buzz_acp_binary": binaries["buzz-acp"],
-        "buzz_agent_binary": binaries["buzz-agent"],
+        "buzz_acp_binary": agent_binaries["buzz-acp"],
+        "buzz_agent_binary": agent_binaries["buzz-agent"],
+        "buzz_dev_mcp_binary": agent_binaries["buzz-dev-mcp"],
         "buzz_cli_binary": binaries["buzz"],
         "run_id": args.job_name,
-    }.items():
+    }
+    if args.relay_gateway:
+        kwargs["relay_gateway"] = args.relay_gateway
+        kwargs["forwarder_binary"] = agent_binaries[FORWARDER_BINARY]
+    for key, value in kwargs.items():
         command += ["--agent-kwarg", f"{key}={value}"]
     return command
 
@@ -185,11 +229,21 @@ def main(argv: list[str] | None = None) -> int:
         stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
         args.job_name = f"lb-{condition}-{stamp}"
 
-    binaries = find_binaries(args.buzz_bin_dir)
-    command = build_command(args, binaries)
     if args.dry_run:
-        print(" ".join(command))
+        # Dry runs print the command without requiring built binaries.
+        bin_dir = args.buzz_bin_dir or PACKAGE_ROOT.parents[1] / "target" / "release"
+        binaries = {name: bin_dir / name for name in BINARIES}
+        agent_binaries = {
+            name: args.agent_bin_dir / name
+            for name in AGENT_BINARIES + (FORWARDER_BINARY,)
+        }
+        print(" ".join(build_command(args, binaries, agent_binaries)))
         return 0
+    binaries = find_binaries(args.buzz_bin_dir)
+    agent_binaries = find_agent_binaries(
+        args.agent_bin_dir, with_forwarder=bool(args.relay_gateway)
+    )
+    command = build_command(args, binaries, agent_binaries)
     if shutil.which("harbor") is None:
         raise SystemExit(
             "harbor not on PATH — run via: uv run --project "

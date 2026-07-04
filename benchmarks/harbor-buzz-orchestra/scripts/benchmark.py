@@ -54,6 +54,19 @@ DEFAULT_MANIFEST = PACKAGE_ROOT / "manifests" / "tb-cobol-sonnet-haiku.yaml"
 DEFAULT_ENDPOINTS = PACKAGE_ROOT / "testbed" / "endpoints" / "anthropic-live.json"
 SCHEMA_SQL = PACKAGE_ROOT / "testbed" / "sql" / "benchmark_schema.sql"
 
+# Linux builds of the production agent stack, uploaded into each task
+# container per trial. Built once in a rust:alpine container (musl → fully
+# static, runs on any Linux task image of the same architecture) and cached.
+AGENT_BINARIES = ("buzz-acp", "buzz-agent", "buzz-dev-mcp")
+# Std-only loopback forwarder (not a workspace crate): agents dial the
+# relay's canonical localhost address inside the task container and the
+# forwarder bridges to the Docker host gateway. Compiled with plain rustc
+# in the same cross-build step.
+FORWARDER_SOURCE = PACKAGE_ROOT / "forwarder" / "relay_forwarder.rs"
+FORWARDER_BINARY = "relay-forwarder"
+LINUX_TARGET_DIR = STATE_DIR / "linux-target"
+RUST_IMAGE = "rust:1.95-alpine"
+
 _spec = importlib.util.spec_from_file_location(
     "run_leaderboard", Path(__file__).resolve().parent / "run_leaderboard.py"
 )
@@ -206,6 +219,11 @@ def write_provisioner_config(
         llm_api_keys[name] = key
     config = {
         "relay_http_url": f"http://localhost:{RELAY_HTTP_PORT}",
+        # The agents dial the relay's CANONICAL address — the relay is
+        # host-header tenant-bound, and its community row is the authority
+        # of RELAY_URL (localhost:3600). Inside the task container that
+        # loopback address is served by a tiny forwarder bridging to the
+        # Docker host gateway (see --relay-gateway below).
         "relay_ws_url": f"ws://localhost:{RELAY_HTTP_PORT}",
         "owner_secret_key": state["owner_secret_key"],
         "postgres_dsn": postgres_dsn(state),
@@ -257,18 +275,78 @@ def ensure_stack(state: dict[str, str]) -> None:
 
 
 def ensure_binaries() -> dict[str, Path]:
-    """Find the pinned buzz binaries, building them once if missing."""
+    """Find the host buzz CLI, building it once if missing."""
     try:
         return run_leaderboard.find_binaries(None)
     except SystemExit:
-        print("buzz binaries missing — building (cargo build, first run only)...")
+        print("host buzz CLI missing — building (cargo build, first run only)...")
     cargo = REPO_ROOT / "bin" / "cargo"
     subprocess.run(
-        [str(cargo), "build", "-p", "buzz-cli", "-p", "buzz-acp", "-p", "buzz-agent"],
+        [str(cargo), "build", "-p", "buzz-cli"],
         cwd=REPO_ROOT,
         check=True,
     )
     return run_leaderboard.find_binaries(None)
+
+
+def linux_triple() -> str:
+    """The musl triple matching the Docker engine that runs task containers."""
+    arch = subprocess.run(
+        ["docker", "version", "--format", "{{.Server.Arch}}"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    try:
+        return {
+            "arm64": "aarch64-unknown-linux-musl",
+            "amd64": "x86_64-unknown-linux-musl",
+        }[arch]
+    except KeyError:
+        raise SystemExit(f"unsupported Docker architecture: {arch!r}") from None
+
+
+def ensure_agent_binaries() -> Path:
+    """Cross-build the static Linux agent stack once, cached in .benchmark/.
+
+    The agents run *inside* each Harbor task container as the real
+    buzz-acp → buzz-agent → buzz-dev-mcp stack, so the binaries must be
+    Linux ELF for the task image architecture. musl-static means they run
+    on any Linux base image (glibc or not). The relay loopback forwarder
+    is compiled in the same step with plain rustc (std-only, no deps).
+    """
+    triple = linux_triple()
+    bin_dir = LINUX_TARGET_DIR / triple / "release"
+    targets = AGENT_BINARIES + (FORWARDER_BINARY,)
+    if all((bin_dir / name).is_file() for name in targets):
+        return bin_dir
+    print(f"Linux agent binaries missing — cross-building for {triple} "
+          f"in {RUST_IMAGE} (first run only, ~2 min)...")
+    LINUX_TARGET_DIR.mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "cargo-registry").mkdir(exist_ok=True)
+    packages = [arg for name in AGENT_BINARIES for arg in ("-p", name)]
+    forwarder_src = FORWARDER_SOURCE.relative_to(REPO_ROOT)
+    subprocess.run(
+        [
+            "docker", "run", "--rm",
+            "-v", f"{REPO_ROOT}:/src:ro",
+            "-v", f"{LINUX_TARGET_DIR}:/target",
+            "-v", f"{STATE_DIR / 'cargo-registry'}:/usr/local/cargo/registry",
+            "-e", "CARGO_TARGET_DIR=/target",
+            "-w", "/src",
+            RUST_IMAGE,
+            "sh", "-c",
+            "apk add --no-cache musl-dev >/dev/null && "
+            f"cargo build --release --locked --target {triple} "
+            + " ".join(packages)
+            + f" && rustc --edition 2021 -O --target {triple}"
+            f" -o /target/{triple}/release/{FORWARDER_BINARY}"
+            f" /src/{forwarder_src}",
+        ],
+        check=True,
+    )
+    missing = [n for n in targets if not (bin_dir / n).is_file()]
+    if missing:
+        raise SystemExit(f"cross-build produced no {', '.join(missing)} in {bin_dir}")
+    return bin_dir
 
 
 # -- GUI ---------------------------------------------------------------------
@@ -331,7 +409,9 @@ def launch_gui(state: dict[str, str]) -> subprocess.Popen:
 # -- main ---------------------------------------------------------------------
 
 
-def leaderboard_argv(args: argparse.Namespace, provisioner_config: Path) -> list[str]:
+def leaderboard_argv(
+    args: argparse.Namespace, provisioner_config: Path, agent_bin_dir: Path
+) -> list[str]:
     argv: list[str] = []
     if args.path:
         argv += ["--path", str(args.path)]
@@ -346,6 +426,15 @@ def leaderboard_argv(args: argparse.Namespace, provisioner_config: Path) -> list
         "--manifest", str(args.manifest),
         "--endpoint-config", str(args.endpoint_config),
         "--provisioner-config", str(provisioner_config),
+        "--agent-bin-dir", str(agent_bin_dir),
+        # The relay as reachable from inside a task container: Docker's
+        # host alias, bridged to the canonical localhost address by the
+        # uploaded forwarder. Override the alias with
+        # BUZZ_BENCHMARK_DOCKER_HOST if your engine exposes the host
+        # differently.
+        "--relay-gateway",
+        f"{os.environ.get('BUZZ_BENCHMARK_DOCKER_HOST', 'host.docker.internal')}"
+        f":{RELAY_HTTP_PORT}",
         "--n-concurrent", str(args.n_concurrent),
         "--jobs-dir", str(args.jobs_dir),
     ]
@@ -364,13 +453,18 @@ def main(argv: list[str] | None = None) -> int:
     write_env_file(state)
     provisioner_config = write_provisioner_config(state, args.endpoint_config)
 
-    if not args.dry_run:
+    if args.dry_run:
+        agent_bin_dir = LINUX_TARGET_DIR / linux_triple() / "release"
+    else:
         ensure_binaries()
+        agent_bin_dir = ensure_agent_binaries()
         ensure_stack(state)
         if args.gui:
             launch_gui(state)
 
-    return run_leaderboard.main(leaderboard_argv(args, provisioner_config))
+    return run_leaderboard.main(
+        leaderboard_argv(args, provisioner_config, agent_bin_dir)
+    )
 
 
 if __name__ == "__main__":

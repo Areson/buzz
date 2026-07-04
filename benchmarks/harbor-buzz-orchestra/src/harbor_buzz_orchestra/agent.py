@@ -12,7 +12,7 @@ from harbor.models.agent.context import AgentContext
 from .manifest import ExperimentManifest
 from .provisioning import TrialProvisioner
 from .runtime import OrchestraRuntime
-from .subprocess_runtime import BuzzSubprocessRuntime, EndpointLaunchConfig
+from .container_runtime import BuzzContainerRuntime, EndpointLaunchConfig
 
 
 class BuzzOrchestraAgent(BaseAgent):
@@ -35,7 +35,10 @@ class BuzzOrchestraAgent(BaseAgent):
         endpoint_config: str | Path | dict[str, Any] | None = None,
         buzz_acp_binary: str = "buzz-acp",
         buzz_agent_binary: str = "buzz-agent",
+        buzz_dev_mcp_binary: str = "buzz-dev-mcp",
         buzz_cli_binary: str = "buzz",
+        relay_gateway: str = "",
+        forwarder_binary: str = "relay-forwarder",
         run_id: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -50,7 +53,10 @@ class BuzzOrchestraAgent(BaseAgent):
             endpoint_config,
             buzz_acp_binary,
             buzz_agent_binary,
+            buzz_dev_mcp_binary,
             buzz_cli_binary,
+            relay_gateway,
+            forwarder_binary,
         )
         self.run_id = run_id
 
@@ -106,7 +112,10 @@ class BuzzOrchestraAgent(BaseAgent):
         endpoint_source: str | Path | dict[str, Any] | None,
         buzz_acp_binary: str,
         buzz_agent_binary: str,
+        buzz_dev_mcp_binary: str,
         buzz_cli_binary: str,
+        relay_gateway: str,
+        forwarder_binary: str,
     ) -> OrchestraRuntime | None:
         endpoint_data = cls._load_mapping(endpoint_source)
         if endpoint_data is None and artifact_root is None:
@@ -123,13 +132,16 @@ class BuzzOrchestraAgent(BaseAgent):
             )
             for name, value in endpoint_data.items()
         }
-        return BuzzSubprocessRuntime(
+        return BuzzContainerRuntime(
             logs_dir=logs_dir,
             artifact_root=Path(artifact_root),
             endpoints=endpoints,
             buzz_acp_binary=buzz_acp_binary,
             buzz_agent_binary=buzz_agent_binary,
+            buzz_dev_mcp_binary=buzz_dev_mcp_binary,
             buzz_cli_binary=buzz_cli_binary,
+            relay_gateway=relay_gateway,
+            forwarder_binary=forwarder_binary,
         )
 
     async def setup(self, environment: BaseEnvironment) -> None:

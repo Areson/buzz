@@ -165,6 +165,7 @@ class BuzzTrialProvisioner:
             channel_id=channel_id,
             credentials=credentials,
             user=user,
+            user_relay_url=self._config.relay_http_url,
         )
 
     def _mint_credentials(
@@ -254,6 +255,7 @@ class BuzzTrialProvisioner:
                 AgentCredential(**credential) for credential in stored["credentials"]
             ),
             user=AgentCredential(**stored["user"]),
+            user_relay_url=stored.get("user_relay_url", ""),
         )
 
     @staticmethod

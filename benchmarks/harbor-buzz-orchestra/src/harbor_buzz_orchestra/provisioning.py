@@ -35,6 +35,10 @@ class TrialHandle:
     # as a user prompt, and receives the final report. Never runs an agent
     # process, so its llm_endpoint and llm_api_key are empty strings.
     user: AgentCredential
+    # v1.2 (additive): the relay as reachable from the HOST, where the user
+    # identity and the harness run. ``relay_ws_url`` is the view from the
+    # agents' runtime (the task container). Empty means both views coincide.
+    user_relay_url: str = ""
 
 
 @runtime_checkable
