@@ -38,7 +38,6 @@ import { AttachmentGroup } from "@/shared/ui/attachment";
 import { ConfigNudgeCard } from "@/shared/ui/config-nudge-attachment";
 import {
   AgentPullRequestCard,
-  GithubPullRequestCard,
   LinkPreviewAttachment,
 } from "@/shared/ui/link-preview-attachment";
 import { useSmoothCorners } from "@/shared/ui/smoothCorners";
@@ -2078,13 +2077,11 @@ function MarkdownInner({
             data-link-preview-list=""
           >
             {resolvedLinkPreviews.map((preview) =>
-              preview.kind === "github-pull-request" ? (
-                agentAuthored ? (
-                  <AgentPullRequestCard key={preview.href} preview={preview} />
-                ) : (
-                  <GithubPullRequestCard key={preview.href} preview={preview} />
-                )
+              preview.kind === "github-pull-request" && agentAuthored ? (
+                <AgentPullRequestCard key={preview.href} preview={preview} />
               ) : (
+                // Plain dropped links keep the compact static chip; the
+                // live rich card is reserved for the chat work drawer.
                 <LinkPreviewAttachment key={preview.href} preview={preview} />
               ),
             )}
