@@ -544,7 +544,7 @@ function CompletedWorkMarker({ items }: { items: TranscriptItem[] }) {
           onClick={() => setIsOpen((current) => !current)}
           type="button"
         >
-          <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+          <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground/70">
             <span className="truncate text-sm font-medium">{label}</span>
             <ChevronDown
               className={cn(

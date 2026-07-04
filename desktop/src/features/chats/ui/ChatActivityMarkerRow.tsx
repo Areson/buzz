@@ -186,8 +186,7 @@ function MarkerMeta({ loading, meta }: { loading: boolean; meta: string }) {
 
 function markerToneClass(tone: ActivityMarkerTone) {
   if (tone === "danger") return "text-destructive";
-  if (tone === "success" || tone === "warning" || tone === "muted") {
-    return "text-muted-foreground";
-  }
-  return "text-muted-foreground";
+  // Softer than plain muted-foreground: marker rows are plumbing, and at
+  // full muted strength they still competed with the conversation text.
+  return "text-muted-foreground/70";
 }
