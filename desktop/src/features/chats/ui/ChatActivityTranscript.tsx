@@ -372,7 +372,7 @@ function ChatActivityItemView({
   if (item.type === "thought") {
     return (
       <ActivityMarkerRow
-        details={<Markdown compact content={item.text.trim() || " "} />}
+        details={<Markdown content={item.text.trim() || " "} />}
         entrance={hasRecentEntrance(item.timestamp)}
         icon={<Brain className="h-3.5 w-3.5" />}
         label={item.title || "Thinking"}
@@ -392,10 +392,7 @@ function ChatActivityItemView({
       <ActivityMarkerRow
         details={
           item.isUpdate ? null : (
-            <Markdown
-              compact
-              content={item.text.trim() || "No plan details."}
-            />
+            <Markdown content={item.text.trim() || "No plan details."} />
           )
         }
         entrance={hasRecentEntrance(item.timestamp)}
@@ -426,7 +423,7 @@ function ChatActivityItemView({
 
   return (
     <ActivityMarkerRow
-      details={item.text ? <Markdown compact content={item.text} /> : null}
+      details={item.text ? <Markdown content={item.text} /> : null}
       entrance={hasRecentEntrance(item.timestamp)}
       icon={lifecycleIcon(item)}
       label={item.title}
@@ -494,7 +491,6 @@ function ChatTranscriptMessageRow({
           <Bubble side="right">
             <Markdown
               className="min-w-0 font-medium [&_*]:text-primary-foreground [&_a]:text-primary-foreground [&_code]:bg-primary-foreground/15 [&_code]:text-primary-foreground"
-              compact
               content={displayText || text || " "}
             />
           </Bubble>
@@ -664,6 +660,7 @@ function ToolMarker({
             args={item.args}
             description={buzzTool?.label}
             fileEditDiff={compactSummary.fileEditDiff}
+            fileReadContent={compactSummary.fileReadContent}
             hasArgs={hasArgs}
             hasResult={hasResult}
             imagePreview={
@@ -734,6 +731,7 @@ function activityItemDetails(item: TranscriptItem) {
         args={item.args}
         description={buzzTool?.label}
         fileEditDiff={compactSummary.fileEditDiff}
+        fileReadContent={compactSummary.fileReadContent}
         hasArgs={hasArgs}
         hasResult={hasResult}
         imagePreview={
@@ -754,10 +752,10 @@ function activityItemDetails(item: TranscriptItem) {
     return <PromptSections sections={item.sections} />;
   }
   if (item.type === "plan" || item.type === "thought") {
-    return <Markdown compact content={item.text.trim() || " "} />;
+    return <Markdown content={item.text.trim() || " "} />;
   }
   if (item.type === "lifecycle") {
-    return item.text ? <Markdown compact content={item.text} /> : null;
+    return item.text ? <Markdown content={item.text} /> : null;
   }
   return null;
 }
@@ -781,7 +779,7 @@ function PromptSections({ sections }: { sections: PromptSection[] }) {
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-all group-hover/context:opacity-100 group-open/context:rotate-180 group-open/context:opacity-100" />
           </summary>
           <div className="px-3 pb-3 text-sm text-muted-foreground">
-            <Markdown compact content={section.body.trim() || "No metadata."} />
+            <Markdown content={section.body.trim() || "No metadata."} />
           </div>
         </details>
       ))}

@@ -354,9 +354,7 @@ function processEvent(agentPubkey: string, event: ObserverEvent) {
       );
       notifyListeners();
       return;
-    case "acp_read":
-    case "acp_write":
-    case "turn_liveness":
+    // acp_read / acp_write / turn_liveness fall through here too:
     // Any other frame carrying a turn context (tool calls, assistant text,
     // …) is equally hard evidence the turn is alive. Observer frames are
     // ephemeral — an app that subscribes mid-turn missed `turn_started`

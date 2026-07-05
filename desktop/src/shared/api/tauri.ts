@@ -1333,20 +1333,6 @@ export async function nip44DecryptFromSelf(
   return invokeTauri<string>("nip44_decrypt_from_self", { ciphertext });
 }
 
-// ── NIP-AB device pairing ───────────────────────────────────────────────────
-
-export async function startPairing(): Promise<string> {
-  return invokeTauri<string>("start_pairing");
-}
-
-export async function confirmPairingSas(): Promise<void> {
-  await invokeTauri("confirm_pairing_sas");
-}
-
-export async function cancelPairing(): Promise<void> {
-  await invokeTauri("cancel_pairing");
-}
-
 export async function applyWorkspace(
   relayUrl: string,
   nsec?: string,

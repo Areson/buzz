@@ -72,34 +72,6 @@
   color: var(--buzz-link-preview-icon-color);
 }
 
-/* Link chips inside the user's own message bubble: the standalone card
-   treatment (opaque muted fill + provider-colored icon tile) reads as a
-   gray slab against the primary bubble. Tint everything from currentColor
-   instead so the chip reads as part of the bubble. */
-.buzz-own-bubble-links [data-link-preview] {
-  background-color: color-mix(in oklab, currentColor 9%, transparent);
-  border-color: color-mix(in oklab, currentColor 22%, transparent);
-}
-
-.buzz-own-bubble-links [data-link-preview]:hover {
-  background-color: color-mix(in oklab, currentColor 15%, transparent);
-  border-color: color-mix(in oklab, currentColor 32%, transparent);
-}
-
-.buzz-own-bubble-links [data-link-preview] .link-preview-media {
-  background-color: color-mix(in oklab, currentColor 13%, transparent);
-  color: currentColor;
-}
-
-/* Mention chips get the same treatment: their standalone palette is
-   primary-on-primary-tint, which disappears entirely inside the
-   primary-colored own bubble (names rendered as blank gaps). currentColor
-   derivation keeps them legible on any bubble. */
-.buzz-own-bubble-links .message-markdown .mention-chip {
-  background: color-mix(in oklab, currentColor 16%, transparent);
-  color: inherit;
-}
-
 .message-markdown .mention-chip,
 .message-markdown .inline-code-chip,
 .message-markdown :not(pre) > code {
@@ -134,6 +106,34 @@
   transition:
     background-color 150ms ease-out,
     color 150ms ease-out;
+}
+
+/* Link chips inside the user's own message bubble: the standalone card
+   treatment (opaque muted fill + provider-colored icon tile) reads as a
+   gray slab against the primary bubble. Tint everything from currentColor
+   instead so the chip reads as part of the bubble. */
+.buzz-own-bubble-links [data-link-preview] {
+  background-color: color-mix(in oklab, currentColor 9%, transparent);
+  border-color: color-mix(in oklab, currentColor 22%, transparent);
+}
+
+.buzz-own-bubble-links [data-link-preview]:hover {
+  background-color: color-mix(in oklab, currentColor 15%, transparent);
+  border-color: color-mix(in oklab, currentColor 32%, transparent);
+}
+
+.buzz-own-bubble-links [data-link-preview] .link-preview-media {
+  background-color: color-mix(in oklab, currentColor 13%, transparent);
+  color: currentColor;
+}
+
+/* Mention chips get the same treatment: their standalone palette is
+   primary-on-primary-tint, which disappears entirely inside the
+   primary-colored own bubble (names rendered as blank gaps). currentColor
+   derivation keeps them legible on any bubble. */
+.buzz-own-bubble-links .message-markdown .mention-chip {
+  background: color-mix(in oklab, currentColor 16%, transparent);
+  color: inherit;
 }
 
 .search-result-row[aria-selected="true"]

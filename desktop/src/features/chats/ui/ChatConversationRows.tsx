@@ -131,7 +131,6 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 isOwn &&
                   "[&_*]:text-primary-foreground [&_a]:text-primary-foreground [&_code]:bg-primary-foreground/15 [&_code]:text-primary-foreground",
               )}
-              compact
               content={content || " "}
               mentionNames={mentionNames}
               mentionPubkeysByName={mentionPubkeysByName}
@@ -187,10 +186,7 @@ export function ChatContextRow({ event }: { event: RelayEvent }) {
               <MarkerContent>Project setup</MarkerContent>
             </Marker>
             <div className="mt-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-sm">
-              <Markdown
-                compact
-                content={projectSetupContent || event.content}
-              />
+              <Markdown content={projectSetupContent || event.content} />
             </div>
           </div>
         </MessageContent>
@@ -208,7 +204,7 @@ export function ChatContextRow({ event }: { event: RelayEvent }) {
           <MarkerContent>Source context</MarkerContent>
         </Marker>
         <Bubble className="text-sm" variant="outline">
-          <Markdown compact content={event.content} />
+          <Markdown content={event.content} />
         </Bubble>
       </MessageContent>
     </Message>

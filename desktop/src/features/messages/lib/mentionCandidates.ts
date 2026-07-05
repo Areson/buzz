@@ -76,6 +76,6 @@ export function formatOwnerLabel(
   return (
     owner?.displayName?.trim() ||
     owner?.nip05Handle?.trim() ||
-    `${ownerPubkey.slice(0, 8)}...`
+    `${ownerPubkey.slice(0, 8)}…`
   );
 }
