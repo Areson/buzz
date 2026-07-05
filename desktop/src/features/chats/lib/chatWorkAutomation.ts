@@ -162,6 +162,12 @@ export function readChatPinnedPr(chatId: string): string | null {
   }
 }
 
+/**
+ * Explicit "no PR" pin: suppresses branch discovery for the chat (the user
+ * said the discovered PR was wrong) while posted links still override.
+ */
+export const CHAT_PR_UNPINNED = "";
+
 export function writeChatPinnedPr(chatId: string, href: string) {
   if (typeof window === "undefined") {
     return;

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import {
+  CHAT_PR_UNPINNED,
   readChatPinnedPr,
   updateChatWorkAutomation,
   useChatWorkAutomation,
@@ -88,17 +89,32 @@ export function ChatWorkPanel({
   // Pin resolution order: a link posted in THIS chat wins, then the chat's
   // previously pinned PR, then branch discovery — discovery alone is
   // ambiguous when agents reuse a worktree across chats in one project.
-  const pinnedHref = React.useMemo(() => readChatPinnedPr(chatId), [chatId]);
+  const [pinnedHref, setPinnedHref] = React.useState<string | null>(() =>
+    readChatPinnedPr(chatId),
+  );
+  React.useEffect(() => {
+    setPinnedHref(readChatPinnedPr(chatId));
+  }, [chatId]);
+  // The empty-string sentinel means "user unlinked — no PR for this chat":
+  // discovery stays off, posted links still win.
+  const isUnpinned = pinnedHref === CHAT_PR_UNPINNED;
   const discoveredPrQuery = useGithubPrForBranchQuery(
-    monitorActive && !prHref && !pinnedHref ? projectPath : null,
+    monitorActive && !prHref && pinnedHref === null ? projectPath : null,
     branch,
   );
-  const effectiveHref = prHref ?? pinnedHref ?? discoveredPrQuery.data ?? null;
+  const effectiveHref =
+    prHref ??
+    (isUnpinned ? null : (pinnedHref ?? discoveredPrQuery.data ?? null));
   React.useEffect(() => {
     if (effectiveHref && effectiveHref !== readChatPinnedPr(chatId)) {
       writeChatPinnedPr(chatId, effectiveHref);
+      setPinnedHref(effectiveHref);
     }
   }, [chatId, effectiveHref]);
+  const handleUnlinkPr = React.useCallback(() => {
+    writeChatPinnedPr(chatId, CHAT_PR_UNPINNED);
+    setPinnedHref(CHAT_PR_UNPINNED);
+  }, [chatId]);
   const preview = effectiveHref
     ? parseSupportedLinkPreview(effectiveHref)
     : null;
@@ -259,6 +275,16 @@ export function ChatWorkPanel({
               key={preview.href}
             >
               <GithubPullRequestCard className="w-full" preview={preview} />
+              {!prHref ? (
+                <button
+                  className="self-end text-2xs text-muted-foreground/70 hover:text-foreground hover:underline"
+                  data-testid="chat-work-unlink-pr"
+                  onClick={handleUnlinkPr}
+                  type="button"
+                >
+                  Not this chat's PR? Unlink
+                </button>
+              ) : null}
               <details
                 className={cn(CHIP_CLASS, "group/ci block p-0")}
                 data-testid="chat-ci-monitor"
