@@ -214,9 +214,15 @@ test("first message in a new chat is sent and rendered", async ({ page }) => {
       ),
     )
     .toBe(true);
+  // The instruction renders as a collapsed marker row, not a bubble.
+  const automationRow = page.getByTestId("chat-automation-row");
+  await expect(automationRow).toBeVisible({ timeout: 10_000 });
+  await expect(automationRow).toContainText(
+    "Asked Fizz to address the review comments",
+  );
   await expect(
     page.getByLabel("Chat messages").getByText("unanswered review comments"),
-  ).toHaveCount(0);
+  ).not.toBeVisible();
 
   // Manual overrides: open comments expose "Run now"; green CI does not.
   await expect(page.getByTestId("automation-run-comments-now")).toBeVisible();

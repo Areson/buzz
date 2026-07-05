@@ -1,6 +1,7 @@
 import * as React from "react";
-import { Bot, FolderGit2, MessageCircle, Power } from "lucide-react";
+import { Bot, FolderGit2, MessageCircle, Power, Wand2 } from "lucide-react";
 
+import { chatAutomationLabel } from "@/features/chats/lib/chatWorkAutomation";
 import { cleanAssistantMessageText } from "@/features/chats/ui/chatActivityText";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { RelayEvent } from "@/shared/api/types";
@@ -166,6 +167,42 @@ export function ChatScrollAnchor({
   }, [forceSignature, scrollToEnd]);
 
   return null;
+}
+
+/**
+ * Marker row for an invisible automation prompt (auto-fix CI / address
+ * comments): the instruction itself stays out of the timeline, but the spot
+ * where it fired needs an anchor — total invisibility made "Run now" feel
+ * like it did nothing. Expandable to the full instruction text.
+ */
+export function ChatAutomationRow({
+  agentName,
+  event,
+}: {
+  agentName: string;
+  event: RelayEvent;
+}) {
+  const tag = event.tags.find((candidate) => candidate[0] === "automation");
+  return (
+    <Message side="center">
+      <MessageContent className="w-full max-w-full">
+        <details
+          className="group/automation-row"
+          data-testid="chat-automation-row"
+        >
+          <summary className="flex cursor-pointer list-none items-center gap-2 text-sm text-muted-foreground/70 [&::-webkit-details-marker]:hidden">
+            <Wand2 className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 truncate">
+              {chatAutomationLabel(tag, agentName)}
+            </span>
+          </summary>
+          <div className="mt-2 pl-6 text-sm text-muted-foreground">
+            {event.content}
+          </div>
+        </details>
+      </MessageContent>
+    </Message>
+  );
 }
 
 export function ChatContextRow({ event }: { event: RelayEvent }) {

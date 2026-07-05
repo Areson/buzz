@@ -68,7 +68,7 @@ export function ChatWorkPanel({
   chatId: string;
   /** Whether an agent turn is currently running in this chat. */
   isTurnActive?: boolean;
-  onAutomationPrompt?: (content: string) => void;
+  onAutomationPrompt?: (content: string, kind: "ci" | "comments") => void;
   open?: boolean;
   prHref?: string | null;
   /** Project directory — enables PR discovery by branch via the git remote. */
@@ -146,6 +146,7 @@ export function ChatWorkPanel({
     });
     onAutomationPrompt(
       `CI is failing on ${effectiveHref} (${checks.failed} of ${checks.total} checks). Investigate the failures and push fixes until the checks pass.`,
+      "ci",
     );
     // The prompt itself is invisible in the timeline — acknowledge it.
     toast.success(`Asked ${agentName} to fix the CI failures`);
@@ -160,6 +161,7 @@ export function ChatWorkPanel({
     });
     onAutomationPrompt(
       `There are unanswered review comments on ${effectiveHref}. Address each comment and its replies, push any needed changes, reply to the threads, and resolve every conversation that has been addressed.`,
+      "comments",
     );
     toast.success(`Asked ${agentName} to address the review comments`);
   }, [agentName, chatId, effectiveHref, onAutomationPrompt, openThreads]);

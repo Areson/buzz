@@ -27,7 +27,10 @@ import {
   NO_PROJECT_SELECTION_ID,
 } from "@/features/chats/lib/chatSetup";
 import { ChatActivityTranscript } from "@/features/chats/ui/ChatActivityTranscript";
-import { CHAT_AUTOMATION_TAG } from "@/features/chats/lib/chatWorkAutomation";
+import {
+  CHAT_AUTOMATION_TAG,
+  chatAutomationTag,
+} from "@/features/chats/lib/chatWorkAutomation";
 import {
   deriveBranchFromAgentMessages,
   deriveChatWorkBranch,
@@ -38,6 +41,7 @@ import { isHumanFacingAssistantText } from "@/features/chats/ui/chatActivityText
 import { entranceClassForCreatedAt } from "@/features/chats/ui/messageEntrance";
 import {
   AgentActivationCard,
+  ChatAutomationRow,
   ChatContextRow,
   ChatMessageRow,
   ChatScrollAnchor,
@@ -501,6 +505,24 @@ export function ChatDetail({
     setIsActivationPending(true);
     onActivateAgent();
   }, [onActivateAgent]);
+
+  // Automation prompts must not fail silently: surface send errors, and if
+  // the default agent is stopped, start it too — the backlog replay delivers
+  // the prompt once it connects.
+  const handleAutomationPrompt = React.useCallback(
+    (content: string, kind: "ci" | "comments") => {
+      onSend(content, [], [chatAutomationTag(kind)]).catch((error: unknown) => {
+        console.error("Failed to send automation prompt", error);
+        toast.error("Could not send the automation instructions");
+      });
+      if (defaultAgent != null && !isManagedAgentActive(defaultAgent)) {
+        setIsActivationPending(true);
+        onActivateAgent();
+      }
+    },
+    [defaultAgent, onActivateAgent, onSend],
+  );
+
   React.useEffect(() => {
     if (!isActivationPending) {
       return;
@@ -637,7 +659,12 @@ export function ChatDetail({
                               )}
                               messageId={message.id}
                             >
-                              {isAutomationMessage ? null : isContextMessage ? (
+                              {isAutomationMessage ? (
+                                <ChatAutomationRow
+                                  agentName={defaultAgent?.name ?? "Fizz"}
+                                  event={message}
+                                />
+                              ) : isContextMessage ? (
                                 <ChatContextRow event={message} />
                               ) : (
                                 <ChatMessageRow
@@ -738,9 +765,7 @@ export function ChatDetail({
           branch={workBranch}
           chatId={chat.id}
           isTurnActive={isChatTurnActive}
-          onAutomationPrompt={(content) =>
-            void onSend(content, [], [CHAT_AUTOMATION_TAG])
-          }
+          onAutomationPrompt={handleAutomationPrompt}
           open={showWorkPanel}
           prHref={workPanelHref}
           projectPath={metadata?.projectPath ?? selectedProject?.path ?? null}

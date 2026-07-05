@@ -246,6 +246,36 @@
   --buzz-shimmer-highlight: color-mix(in oklch, hsl(var(--primary)) 60%, black);
 }
 
+/* Glyph recoloring alone is too subtle at sidebar sizes — sweep a
+   translucent highlight WASH behind the text as well (same keyframes, so
+   band and wash move together). The wash is a soft primary tint the text
+   stays readable through, like a highlighter pass. */
+.buzz-shimmer-accent::after {
+  animation: buzz-shimmer var(--buzz-shimmer-duration) linear infinite;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 40%,
+    hsl(var(--primary) / 0.28) 50%,
+    transparent 60%,
+    transparent 100%
+  );
+  background-repeat: no-repeat;
+  background-size: var(--buzz-shimmer-band) 100%;
+  border-radius: 0.25rem;
+  content: "";
+  inset: -0.125rem -0.25rem;
+  pointer-events: none;
+  position: absolute;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .buzz-shimmer-accent::after {
+    animation: none;
+    content: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .buzz-shimmer,
   .shimmer {

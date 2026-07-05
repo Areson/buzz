@@ -18,6 +18,25 @@ export const CHAT_AUTOMATION_TAG: [string, string] = [
   "work-panel",
 ];
 
+/** Tag for one automation prompt, carrying its kind for the marker row. */
+export function chatAutomationTag(kind: "ci" | "comments"): string[] {
+  return [...CHAT_AUTOMATION_TAG, kind];
+}
+
+/** Marker-row label for an automation message's tag. */
+export function chatAutomationLabel(
+  tag: readonly string[] | undefined,
+  agentName: string,
+) {
+  if (tag?.[2] === "ci") {
+    return `Asked ${agentName} to fix the CI failures`;
+  }
+  if (tag?.[2] === "comments") {
+    return `Asked ${agentName} to address the review comments`;
+  }
+  return `Sent ${agentName} automation instructions`;
+}
+
 export type ChatWorkAutomation = {
   autoFixCi: boolean;
   addressComments: boolean;
