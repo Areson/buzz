@@ -91,6 +91,15 @@
   color: currentColor;
 }
 
+/* Mention chips get the same treatment: their standalone palette is
+   primary-on-primary-tint, which disappears entirely inside the
+   primary-colored own bubble (names rendered as blank gaps). currentColor
+   derivation keeps them legible on any bubble. */
+.buzz-own-bubble-links .message-markdown .mention-chip {
+  background: color-mix(in oklab, currentColor 16%, transparent);
+  color: inherit;
+}
+
 .message-markdown .mention-chip,
 .message-markdown .inline-code-chip,
 .message-markdown :not(pre) > code {
