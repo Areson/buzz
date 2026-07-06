@@ -315,28 +315,26 @@ pub(super) fn commit_archive(
             // the archive without needing the owner key.  Fail-closed: if
             // decrypt fails for any reason, drop the event — never store
             // ciphertext or partial output.
-            let stored_json = if p.event.kind.as_u16() as u64
-                == super::KIND_AGENT_TURN_METRIC as u64
-            {
-                match buzz_core_pkg::agent_turn_metric::decrypt_agent_turn_metric(
-                    owner_keys,
-                    &p.event,
-                ) {
-                    Ok(payload) => match serde_json::to_string(&payload) {
-                        Ok(json) => json,
+            let stored_json =
+                if p.event.kind.as_u16() as u64 == super::KIND_AGENT_TURN_METRIC as u64 {
+                    match buzz_core_pkg::agent_turn_metric::decrypt_agent_turn_metric(
+                        owner_keys, &p.event,
+                    ) {
+                        Ok(payload) => match serde_json::to_string(&payload) {
+                            Ok(json) => json,
+                            Err(_) => {
+                                dropped += 1;
+                                continue;
+                            }
+                        },
                         Err(_) => {
                             dropped += 1;
                             continue;
                         }
-                    },
-                    Err(_) => {
-                        dropped += 1;
-                        continue;
                     }
-                }
-            } else {
-                p.raw_json.clone()
-            };
+                } else {
+                    p.raw_json.clone()
+                };
 
             // The relay returning this event for {ids, #h/#e/#p, kinds} IS the
             // proof of scope membership. Use scope_value directly; no local

@@ -398,10 +398,7 @@ async fn probe_event_readable(state: &AppState, event_id: &str) -> Result<(), St
 /// `useAgentMetricArchiveSeed` (kind 44200) instead of the former
 /// list → merge-in-TS → create pattern.
 #[tauri::command]
-pub fn merge_save_subscription_kinds(
-    state: State<'_, AppState>,
-    kind: u32,
-) -> Result<(), String> {
+pub fn merge_save_subscription_kinds(state: State<'_, AppState>, kind: u32) -> Result<(), String> {
     if kind > u32::from(u16::MAX) {
         return Err(format!("kind {kind} is out of the valid range 0..=65535"));
     }
@@ -1177,8 +1174,7 @@ mod tests {
         let ev = make_turn_metric_event(&owner_keys, &agent_keys);
         let cand = candidate(&ev, ScopeType::OwnerP, &owner_pk);
 
-        let plan =
-            plan_archive(vec![cand], &owner_pk, relay_url, &conn).unwrap();
+        let plan = plan_archive(vec![cand], &owner_pk, relay_url, &conn).unwrap();
 
         // Must be in persistent buckets, NOT ephemeral list.
         assert_eq!(plan.buckets.len(), 1, "kind-44200 must land in a bucket");
@@ -1206,11 +1202,18 @@ mod tests {
         let ev = make_observer_frame(&owner_keys, &agent_keys, OBSERVER_FRAME_TELEMETRY);
         let cand = candidate(&ev, ScopeType::OwnerP, &owner_pk);
 
-        let plan =
-            plan_archive(vec![cand], &owner_pk, relay_url, &conn).unwrap();
+        let plan = plan_archive(vec![cand], &owner_pk, relay_url, &conn).unwrap();
 
-        assert_eq!(plan.buckets.len(), 0, "kind-24200 must NOT land in a bucket");
-        assert_eq!(plan.ephemeral.len(), 1, "kind-24200 must be on the ephemeral path");
+        assert_eq!(
+            plan.buckets.len(),
+            0,
+            "kind-24200 must NOT land in a bucket"
+        );
+        assert_eq!(
+            plan.ephemeral.len(),
+            1,
+            "kind-24200 must be on the ephemeral path"
+        );
     }
 
     /// Decrypt success: plaintext payload JSON is stored, not raw ciphertext.
@@ -1242,16 +1245,15 @@ mod tests {
             .query_row("SELECT raw_json FROM archived_events", [], |r| r.get(0))
             .unwrap();
         // Plaintext JSON should be a valid object with "harness" key.
-        let parsed: serde_json::Value = serde_json::from_str(&raw_json)
-            .expect("stored raw_json must be valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw_json).expect("stored raw_json must be valid JSON");
         assert_eq!(
             parsed["harness"], "test-harness",
             "stored plaintext must decode to AgentTurnMetricPayload"
         );
         // Sanity: must NOT be the original NIP-44 ciphertext (which is not JSON).
         assert_ne!(
-            raw_json,
-            ev.content,
+            raw_json, ev.content,
             "stored content must differ from original ciphertext"
         );
     }
@@ -1280,7 +1282,10 @@ mod tests {
             &wrong_keys, // wrong key → decrypt fails
         );
 
-        assert_eq!(result.persisted, 0, "decrypt failure must not persist the event");
+        assert_eq!(
+            result.persisted, 0,
+            "decrypt failure must not persist the event"
+        );
         assert_eq!(result.dropped, 1, "decrypt failure must count as dropped");
 
         let event_count: i64 = conn
