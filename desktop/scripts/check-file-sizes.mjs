@@ -75,12 +75,18 @@ const overrides = new Map([
   // category as above. Still queued to split.
   // merge_save_subscription_kinds command + owner_p-kinds TOCTOU fix adds ~30
   // lines. Atomic merge to close the concurrent-seed race. Still queued to split.
-  ["src-tauri/src/archive/mod.rs", 1695],
+  // IMMEDIATE-tx fix: BEGIN IMMEDIATE replaces DEFERRED unchecked_transaction
+  // in merge_owner_p_kinds comment block (~5 lines). Still queued to split.
+  ["src-tauri/src/archive/mod.rs", 1700],
   // archive/store.rs: merge_owner_p_kinds fn (read+union+upsert under a single
   // SQLite tx) + 4 unit tests (create-when-none, adds-kind, idempotent,
   // concurrent-interleave). Load-bearing TOCTOU fix for the owner_p shared row.
   // Queued to split test module into store_tests.rs in a follow-up.
-  ["src-tauri/src/archive/store.rs", 1110],
+  // IMMEDIATE-tx fix: replaces mislabeled sequential test with a real
+  // two-connection WAL regression test (tempfile + std::thread + Barrier,
+  // ~85 lines). The new test exercises the actual concurrent write path and
+  // fails fast if IMMEDIATE guard is removed. Still queued to split.
+  ["src-tauri/src/archive/store.rs", 1179],
   ["src-tauri/src/commands/agents.rs", 1437],
   // #1418 read-path fix: get_thread_replies' blocker fix (shared TIMELINE_KINDS
   // const + build_thread_replies_filter helper, mirroring the channel sibling so
