@@ -8,6 +8,8 @@ import {
   PERSONA_LABEL_OPTIONAL_CLASS,
 } from "./personaDialogPickers";
 import type { AgentPersona } from "@/shared/api/types";
+import { BuzzAgentModelTuningFields } from "./CreateAgentDialogSections";
+import { isBuzzAgentRuntime } from "./buzzAgentConfig";
 
 export function EditAgentAdvancedFields({
   acpCommand,
@@ -22,6 +24,7 @@ export function EditAgentAdvancedFields({
   linkedPersona,
   mcpCommand,
   mcpToolsets,
+  modelTuningRuntimeId,
   parallelism,
   relayUrl,
   requiredEnvKeys,
@@ -53,6 +56,12 @@ export function EditAgentAdvancedFields({
   linkedPersona: AgentPersona | null;
   mcpCommand: string;
   mcpToolsets: string;
+  /**
+   * The actual/prospective runtime id used to decide whether to show the
+   * buzz-agent model-tuning fields. Uses `prospectiveRuntimeId` from
+   * EditAgentDialog — the resolved runtime, not the "inherit"/"custom" sentinel.
+   */
+  modelTuningRuntimeId: string;
   parallelism: string;
   relayUrl: string;
   requiredEnvKeys: readonly string[];
@@ -377,6 +386,23 @@ export function EditAgentAdvancedFields({
         requiredKeys={requiredEnvKeys}
         value={envVars}
       />
+
+      {/* Tier-1 buzz-agent model-tuning knobs — only shown for buzz-agent. */}
+      {isBuzzAgentRuntime(modelTuningRuntimeId) ? (
+        <BuzzAgentModelTuningFields
+          envVars={envVars}
+          inheritedEnvVars={inheritedEnvVars}
+          onEnvVarChange={(key, value) => {
+            const next = { ...envVars };
+            if (value === "") {
+              delete next[key];
+            } else {
+              next[key] = value;
+            }
+            onEnvVarsChange(next);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
