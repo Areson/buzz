@@ -2,6 +2,7 @@ mod app_state;
 mod archive;
 mod commands;
 mod deep_link;
+mod dictation;
 mod events;
 mod huddle;
 mod managed_agents;
@@ -18,6 +19,7 @@ mod ptt_shortcut;
 mod relay;
 mod secret_store;
 mod shutdown;
+mod stt_engine;
 mod templates;
 mod util;
 
@@ -626,6 +628,10 @@ pub fn run() {
             archive::delete_save_subscription,
             archive::read_archived_events,
             is_auto_update_supported,
+            dictation::start_dictation,
+            dictation::stop_dictation,
+            dictation::push_dictation_audio,
+            dictation::get_dictation_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
