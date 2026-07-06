@@ -6,9 +6,9 @@
  * auto-creates an `owner_p` save subscription including kind 44200 agent turn
  * metrics, scoped to the current identity's pubkey.
  *
- * Merges with any existing `owner_p` subscription (e.g. an observer
- * subscription already seeded) rather than overwriting, so both kinds coexist
- * in one row.
+ * Uses `mergeSaveSubscriptionKinds` (atomic DB-side merge) so a concurrently
+ * running observer seed (24200) cannot clobber this kind — the union happens
+ * under a single SQLite transaction regardless of await ordering.
  *
  * OSS builds return `false` from `agent_metric_archive_default_enabled` →
  * no-op. After any explicit user action (seeding or opt-out), the localStorage
@@ -19,8 +19,7 @@ import * as React from "react";
 
 import { KIND_AGENT_TURN_METRIC } from "@/shared/constants/kinds";
 import {
-  createSaveSubscription,
-  listSaveSubscriptions,
+  mergeSaveSubscriptionKinds,
   agentMetricArchiveDefaultEnabled,
 } from "@/shared/api/tauriArchive";
 import {
@@ -33,22 +32,14 @@ import {
  */
 export interface AgentMetricArchiveSeedDeps {
   agentMetricArchiveDefaultEnabled: () => Promise<boolean>;
-  listSaveSubscriptions: () => Promise<
-    Array<{ scopeType: string; kinds: number[] }>
-  >;
-  createSaveSubscription: (
-    scopeType: "owner_p",
-    scopeValue: string,
-    kinds: number[],
-  ) => Promise<void>;
+  mergeSaveSubscriptionKinds: (kind: number) => Promise<void>;
   hasExplicitChoice: (pubkey: string) => boolean;
   setExplicitChoice: (pubkey: string, enabled: boolean) => void;
 }
 
 const defaultDeps: AgentMetricArchiveSeedDeps = {
   agentMetricArchiveDefaultEnabled,
-  listSaveSubscriptions,
-  createSaveSubscription,
+  mergeSaveSubscriptionKinds,
   hasExplicitChoice: hasExplicitAgentMetricArchiveChoice,
   setExplicitChoice: setExplicitAgentMetricArchiveChoice,
 };
@@ -94,25 +85,12 @@ export function useAgentMetricArchiveSeed(
         return;
       }
 
-      // Internal build + no prior choice → auto-seed.
+      // Internal build + no prior choice → auto-seed via atomic DB merge.
       try {
-        // Merge with any existing owner_p subscription so a concurrently-seeded
-        // observer subscription (24200) is not overwritten.
-        let existingKinds: number[] = [];
-        try {
-          const existing = await deps.listSaveSubscriptions();
-          existingKinds =
-            existing.find((s) => s.scopeType === "owner_p")?.kinds ?? [];
-        } catch {
-          // Best-effort — on error, seed with just our kind.
-        }
-        const mergedKinds = existingKinds.includes(KIND_AGENT_TURN_METRIC)
-          ? existingKinds
-          : [...existingKinds, KIND_AGENT_TURN_METRIC];
-        await deps.createSaveSubscription("owner_p", pubkey, mergedKinds);
+        await deps.mergeSaveSubscriptionKinds(KIND_AGENT_TURN_METRIC);
       } catch (err) {
         console.warn(
-          "[useAgentMetricArchiveSeed] createSaveSubscription failed:",
+          "[useAgentMetricArchiveSeed] mergeSaveSubscriptionKinds failed:",
           err,
         );
         // Do NOT set the localStorage flag — a transient failure (relay

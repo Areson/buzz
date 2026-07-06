@@ -73,7 +73,14 @@ const overrides = new Map([
   // decrypt-success plaintext storage, decrypt-fail-closed, 24200 still
   // ephemeral) + run_batch_sync_with_keys helper (~175 lines). Same test-growth
   // category as above. Still queued to split.
-  ["src-tauri/src/archive/mod.rs", 1670],
+  // merge_save_subscription_kinds command + owner_p-kinds TOCTOU fix adds ~30
+  // lines. Atomic merge to close the concurrent-seed race. Still queued to split.
+  ["src-tauri/src/archive/mod.rs", 1695],
+  // archive/store.rs: merge_owner_p_kinds fn (read+union+upsert under a single
+  // SQLite tx) + 4 unit tests (create-when-none, adds-kind, idempotent,
+  // concurrent-interleave). Load-bearing TOCTOU fix for the owner_p shared row.
+  // Queued to split test module into store_tests.rs in a follow-up.
+  ["src-tauri/src/archive/store.rs", 1110],
   ["src-tauri/src/commands/agents.rs", 1437],
   // #1418 read-path fix: get_thread_replies' blocker fix (shared TIMELINE_KINDS
   // const + build_thread_replies_filter helper, mirroring the channel sibling so

@@ -111,6 +111,22 @@ export async function agentMetricArchiveDefaultEnabled(): Promise<boolean> {
 }
 
 /**
+ * Atomically merge `kind` into the `owner_p` save subscription for the
+ * current identity + relay.
+ *
+ * Performs a read-modify-write inside a single SQLite transaction on the Rust
+ * side, so concurrent callers (e.g. observer seed + metric seed racing on
+ * first run) cannot clobber each other's kind.
+ *
+ * Called by both `useObserverArchiveSeed` and `useAgentMetricArchiveSeed`
+ * instead of the former list → merge-in-TS → create pattern.
+ */
+export async function mergeSaveSubscriptionKinds(kind: number): Promise<void> {
+  await invokeTauri("merge_save_subscription_kinds", { kind });
+  notifySubscriptionChange();
+}
+
+/**
  * Create a save subscription.
  * Runs an access probe on the backend (channel membership, event readability).
  * `kinds` is sent as a plain number array — Tauri serializes it correctly.

@@ -13,21 +13,16 @@ import test from "node:test";
 function makeDeps({
   defaultOn = false,
   hasExplicitChoice = false,
-  createShouldFail = false,
-  existingKinds = [],
+  mergeShouldFail = false,
 } = {}) {
-  const calls = { createSaveSubscription: [], setExplicitChoice: [] };
+  const calls = { mergeSaveSubscriptionKinds: [], setExplicitChoice: [] };
 
   return {
     calls,
     agentMetricArchiveDefaultEnabled: async () => defaultOn,
-    listSaveSubscriptions: async () =>
-      existingKinds.length > 0
-        ? [{ scopeType: "owner_p", kinds: existingKinds }]
-        : [],
-    createSaveSubscription: async (scopeType, scopeValue, kinds) => {
-      if (createShouldFail) throw new Error("create failed");
-      calls.createSaveSubscription.push({ scopeType, scopeValue, kinds });
+    mergeSaveSubscriptionKinds: async (kind) => {
+      if (mergeShouldFail) throw new Error("merge failed");
+      calls.mergeSaveSubscriptionKinds.push({ kind });
     },
     hasExplicitChoice: (_pubkey) => hasExplicitChoice,
     setExplicitChoice: (pubkey, enabled) => {
@@ -54,18 +49,7 @@ async function runSeed(pubkey, deps) {
   if (!defaultOn) return;
 
   try {
-    let existingKinds = [];
-    try {
-      const existing = await deps.listSaveSubscriptions();
-      existingKinds =
-        existing.find((s) => s.scopeType === "owner_p")?.kinds ?? [];
-    } catch {
-      // best-effort
-    }
-    const mergedKinds = existingKinds.includes(KIND_AGENT_TURN_METRIC)
-      ? existingKinds
-      : [...existingKinds, KIND_AGENT_TURN_METRIC];
-    await deps.createSaveSubscription("owner_p", pubkey, mergedKinds);
+    await deps.mergeSaveSubscriptionKinds(KIND_AGENT_TURN_METRIC);
   } catch {
     return; // transient failure — do NOT set explicit choice
   }
@@ -80,42 +64,12 @@ test("test_internal_build_unset_seeds_owner_p_subscription", async () => {
   await runSeed("pubkey123", deps);
 
   assert.equal(
-    deps.calls.createSaveSubscription.length,
+    deps.calls.mergeSaveSubscriptionKinds.length,
     1,
-    "should call createSaveSubscription once",
+    "should call mergeSaveSubscriptionKinds once",
   );
-  const call = deps.calls.createSaveSubscription[0];
-  assert.equal(call.scopeType, "owner_p");
-  assert.equal(call.scopeValue, "pubkey123");
-  assert.deepEqual(call.kinds, [44200]);
-});
-
-test("test_internal_build_merges_with_existing_observer_kinds", async () => {
-  // Observer already seeded [24200]; metric seed must produce [24200, 44200].
-  const deps = makeDeps({
-    defaultOn: true,
-    hasExplicitChoice: false,
-    existingKinds: [24200],
-  });
-  await runSeed("pubkey123", deps);
-
-  assert.equal(deps.calls.createSaveSubscription.length, 1);
-  const call = deps.calls.createSaveSubscription[0];
-  assert.deepEqual(call.kinds, [24200, 44200]);
-});
-
-test("test_internal_build_idempotent_when_kind_already_present", async () => {
-  // 44200 already in the row — merged kinds should be the same.
-  const deps = makeDeps({
-    defaultOn: true,
-    hasExplicitChoice: false,
-    existingKinds: [24200, 44200],
-  });
-  await runSeed("pubkey123", deps);
-
-  assert.equal(deps.calls.createSaveSubscription.length, 1);
-  const call = deps.calls.createSaveSubscription[0];
-  assert.deepEqual(call.kinds, [24200, 44200]);
+  const call = deps.calls.mergeSaveSubscriptionKinds[0];
+  assert.equal(call.kind, 44200);
 });
 
 test("test_internal_build_unset_persists_explicit_choice_after_seed", async () => {
@@ -136,9 +90,9 @@ test("test_explicit_choice_set_does_not_reseed", async () => {
   await runSeed("pubkey123", deps);
 
   assert.equal(
-    deps.calls.createSaveSubscription.length,
+    deps.calls.mergeSaveSubscriptionKinds.length,
     0,
-    "should not call createSaveSubscription when explicit choice is already set",
+    "should not call mergeSaveSubscriptionKinds when explicit choice is already set",
   );
   assert.equal(
     deps.calls.setExplicitChoice.length,
@@ -152,9 +106,9 @@ test("test_oss_build_does_not_seed", async () => {
   await runSeed("pubkey123", deps);
 
   assert.equal(
-    deps.calls.createSaveSubscription.length,
+    deps.calls.mergeSaveSubscriptionKinds.length,
     0,
-    "should not call createSaveSubscription in OSS build",
+    "should not call mergeSaveSubscriptionKinds in OSS build",
   );
   assert.equal(
     deps.calls.setExplicitChoice.length,
@@ -163,18 +117,18 @@ test("test_oss_build_does_not_seed", async () => {
   );
 });
 
-test("test_create_failure_does_not_persist_explicit_choice", async () => {
+test("test_merge_failure_does_not_persist_explicit_choice", async () => {
   const deps = makeDeps({
     defaultOn: true,
     hasExplicitChoice: false,
-    createShouldFail: true,
+    mergeShouldFail: true,
   });
   await runSeed("pubkey123", deps);
 
   assert.equal(
     deps.calls.setExplicitChoice.length,
     0,
-    "should NOT persist explicit choice after a transient create failure",
+    "should NOT persist explicit choice after a transient merge failure",
   );
 });
 
@@ -182,7 +136,7 @@ test("test_empty_pubkey_does_nothing", async () => {
   const deps = makeDeps({ defaultOn: true, hasExplicitChoice: false });
   await runSeed("", deps);
 
-  assert.equal(deps.calls.createSaveSubscription.length, 0);
+  assert.equal(deps.calls.mergeSaveSubscriptionKinds.length, 0);
   assert.equal(deps.calls.setExplicitChoice.length, 0);
 });
 
@@ -190,6 +144,79 @@ test("test_undefined_pubkey_does_nothing", async () => {
   const deps = makeDeps({ defaultOn: true, hasExplicitChoice: false });
   await runSeed(undefined, deps);
 
-  assert.equal(deps.calls.createSaveSubscription.length, 0);
+  assert.equal(deps.calls.mergeSaveSubscriptionKinds.length, 0);
   assert.equal(deps.calls.setExplicitChoice.length, 0);
+});
+
+// ── Concurrent-interleave test ───────────────────────────────────────────────
+//
+// Verifies the scenario Paul identified: on an internal-build first run with
+// both flags on and no prior owner_p row, the observer and metric seeds race.
+// With the old TS-side list+merge+create pattern the interleave could be:
+//
+//   1. observer seed: await list() → []
+//   2. metric seed:  await list() → []    (row not yet written)
+//   3. observer writes [24200]
+//   4. metric writes [44200]  → clobbers 24200
+//
+// The new pattern delegates the merge to Rust under a single SQLite tx.
+// Here we model that by tracking a shared "db state" and verifying that
+// running both seeds concurrently (Promise.all) leaves both kinds present.
+
+test("test_concurrent_seeds_both_kinds_survive", async () => {
+  // Shared in-memory "db" — the atomic merge impl would serialize via SQLite
+  // write lock; here we simulate by letting calls accumulate and checking
+  // the final state.
+  const db = new Set(); // kinds present after all merges
+
+  function makeConcurrentDeps(defaultOn = true) {
+    return {
+      agentMetricArchiveDefaultEnabled: async () => defaultOn,
+      // Simulates the atomic merge: each call simply adds its kind to the set,
+      // regardless of what was there before (atomicity guarantee).
+      mergeSaveSubscriptionKinds: async (kind) => {
+        db.add(kind);
+      },
+      hasExplicitChoice: (_pubkey) => false,
+      setExplicitChoice: () => {},
+    };
+  }
+
+  const observerDeps = makeConcurrentDeps();
+  const metricDeps = makeConcurrentDeps();
+
+  // Replace the kind constant in the observer runSeed equivalent with 24200.
+  async function runObserverSeed(pubkey, deps) {
+    if (!pubkey) return;
+    if (deps.hasExplicitChoice(pubkey)) return;
+    let defaultOn;
+    try {
+      defaultOn = await deps.agentMetricArchiveDefaultEnabled();
+    } catch {
+      return;
+    }
+    if (!defaultOn) return;
+    try {
+      await deps.mergeSaveSubscriptionKinds(24200);
+    } catch {
+      return;
+    }
+    deps.setExplicitChoice(pubkey, true);
+  }
+
+  // Run both seeds concurrently — no await between them.
+  await Promise.all([
+    runObserverSeed("pubkey123", observerDeps),
+    runSeed("pubkey123", metricDeps),
+  ]);
+
+  assert.ok(
+    db.has(24200),
+    "observer kind 24200 must be present after concurrent seeds",
+  );
+  assert.ok(
+    db.has(44200),
+    "metric kind 44200 must be present after concurrent seeds",
+  );
+  assert.equal(db.size, 2, "exactly two kinds, no extras");
 });

@@ -2,12 +2,13 @@
  * First-run seeding for observer-feed archive.
  *
  * When an internal build has `BUZZ_BUILD_OBSERVER_ARCHIVE_DEFAULT` set and the
- * current identity has not yet made an explicit choice, this hook auto-creates
- * an `owner_p` save subscription including kind 24200 observer frames, scoped
- * to the current identity's pubkey.
+ * current identity has not yet made an explicit choice, this hook
+ * auto-creates an `owner_p` save subscription including kind 24200 observer
+ * frames, scoped to the current identity's pubkey.
  *
- * Merges with any existing `owner_p` subscription (e.g. a metric subscription
- * already seeded) rather than overwriting, so both kinds coexist in one row.
+ * Uses `mergeSaveSubscriptionKinds` (atomic DB-side merge) so a concurrently
+ * running metric seed (44200) cannot clobber this kind — the union happens
+ * under a single SQLite transaction regardless of await ordering.
  *
  * OSS builds return `false` from `observer_archive_default_enabled` → no-op.
  * After any explicit user action (seeding or opt-out), the localStorage flag
@@ -18,8 +19,7 @@ import * as React from "react";
 
 import { KIND_AGENT_OBSERVER_FRAME } from "@/shared/constants/kinds";
 import {
-  createSaveSubscription,
-  listSaveSubscriptions,
+  mergeSaveSubscriptionKinds,
   observerArchiveDefaultEnabled,
 } from "@/shared/api/tauriArchive";
 import {
@@ -32,22 +32,14 @@ import {
  */
 export interface ObserverArchiveSeedDeps {
   observerArchiveDefaultEnabled: () => Promise<boolean>;
-  listSaveSubscriptions: () => Promise<
-    Array<{ scopeType: string; kinds: number[] }>
-  >;
-  createSaveSubscription: (
-    scopeType: "owner_p",
-    scopeValue: string,
-    kinds: number[],
-  ) => Promise<void>;
+  mergeSaveSubscriptionKinds: (kind: number) => Promise<void>;
   hasExplicitChoice: (pubkey: string) => boolean;
   setExplicitChoice: (pubkey: string, enabled: boolean) => void;
 }
 
 const defaultDeps: ObserverArchiveSeedDeps = {
   observerArchiveDefaultEnabled,
-  listSaveSubscriptions,
-  createSaveSubscription,
+  mergeSaveSubscriptionKinds,
   hasExplicitChoice: hasExplicitObserverArchiveChoice,
   setExplicitChoice: setExplicitObserverArchiveChoice,
 };
@@ -93,25 +85,12 @@ export function useObserverArchiveSeed(
         return;
       }
 
-      // Internal build + no prior choice → auto-seed.
+      // Internal build + no prior choice → auto-seed via atomic DB merge.
       try {
-        // Merge with any existing owner_p subscription so a concurrently-seeded
-        // metric subscription (44200) is not overwritten.
-        let existingKinds: number[] = [];
-        try {
-          const existing = await deps.listSaveSubscriptions();
-          existingKinds =
-            existing.find((s) => s.scopeType === "owner_p")?.kinds ?? [];
-        } catch {
-          // Best-effort — on error, seed with just our kind.
-        }
-        const mergedKinds = existingKinds.includes(KIND_AGENT_OBSERVER_FRAME)
-          ? existingKinds
-          : [...existingKinds, KIND_AGENT_OBSERVER_FRAME];
-        await deps.createSaveSubscription("owner_p", pubkey, mergedKinds);
+        await deps.mergeSaveSubscriptionKinds(KIND_AGENT_OBSERVER_FRAME);
       } catch (err) {
         console.warn(
-          "[useObserverArchiveSeed] createSaveSubscription failed:",
+          "[useObserverArchiveSeed] mergeSaveSubscriptionKinds failed:",
           err,
         );
         // Do NOT set the localStorage flag — a transient failure (relay

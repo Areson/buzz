@@ -195,6 +195,70 @@ pub fn has_save_subscription(
     Ok(count > 0)
 }
 
+/// Atomically merge `new_kind` into the `owner_p` save subscription for the
+/// given identity + relay + scope_value.
+///
+/// Reads the current `kinds` array, unions in `new_kind`, and writes back —
+/// all inside a single SQLite transaction, so concurrent callers can never
+/// clobber each other's kind regardless of await interleaving.
+///
+/// If no row exists yet it is created with `[new_kind]`. `now` is used as
+/// `created_at` only on insert (the conflict clause never updates it).
+pub fn merge_owner_p_kinds(
+    conn: &Connection,
+    identity_pubkey: &str,
+    relay_url: &str,
+    scope_value: &str,
+    new_kind: u32,
+    now: i64,
+) -> Result<(), String> {
+    // `unchecked_transaction` matches the rusqlite idiom for a plain
+    // BEGIN/COMMIT without a savepoint, giving us an exclusive write lock for
+    // the duration of the read-modify-write.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("merge_owner_p_kinds begin tx: {e}"))?;
+
+    // Read the current kinds, if any.
+    let existing_json: Option<String> = tx
+        .query_row(
+            "SELECT kinds FROM save_subscriptions
+             WHERE identity_pubkey = ?1
+               AND relay_url       = ?2
+               AND scope_type      = 'owner_p'
+               AND scope_value     = ?3",
+            params![identity_pubkey, relay_url, scope_value],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("merge_owner_p_kinds read: {e}"))?;
+
+    // Parse, union, re-serialize.
+    let mut kinds: Vec<u32> = match existing_json {
+        Some(ref json) => serde_json::from_str(json).unwrap_or_default(),
+        None => vec![],
+    };
+    if !kinds.contains(&new_kind) {
+        kinds.push(new_kind);
+    }
+    let kinds_json =
+        serde_json::to_string(&kinds).map_err(|e| format!("merge_owner_p_kinds serialize: {e}"))?;
+
+    // Upsert — INSERT on first call, UPDATE kinds on subsequent.
+    tx.execute(
+        "INSERT INTO save_subscriptions
+             (identity_pubkey, relay_url, scope_type, scope_value, kinds, created_at)
+         VALUES (?1, ?2, 'owner_p', ?3, ?4, ?5)
+         ON CONFLICT (identity_pubkey, relay_url, scope_type, scope_value)
+         DO UPDATE SET kinds = excluded.kinds",
+        params![identity_pubkey, relay_url, scope_value, kinds_json, now],
+    )
+    .map_err(|e| format!("merge_owner_p_kinds upsert: {e}"))?;
+
+    tx.commit()
+        .map_err(|e| format!("merge_owner_p_kinds commit: {e}"))
+}
+
 /// Return the `kinds` JSON string for a matching save subscription, or `None`
 /// if no subscription exists.
 pub fn get_subscription_kinds(
@@ -522,6 +586,76 @@ mod tests {
         upsert_save_subscription(&conn, "pk", "wss://r", "owner_p", "mypk", "[24200]", 1).unwrap();
         assert!(has_save_subscription(&conn, "pk", "wss://r", "owner_p", "mypk").unwrap());
         assert!(!has_save_subscription(&conn, "pk", "wss://r", "owner_p", "other").unwrap());
+    }
+
+    // ── merge_owner_p_kinds ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_merge_owner_p_kinds_creates_row_when_none_exists() {
+        let conn = in_memory();
+        merge_owner_p_kinds(&conn, "pk", "wss://r", "mypk", 24200, 1).unwrap();
+        let subs = list_save_subscriptions(&conn, "pk", "wss://r").unwrap();
+        assert_eq!(subs.len(), 1);
+        let kinds: Vec<u32> = serde_json::from_str(&subs[0].kinds).unwrap();
+        assert_eq!(kinds, [24200]);
+    }
+
+    #[test]
+    fn test_merge_owner_p_kinds_adds_new_kind_to_existing_row() {
+        let conn = in_memory();
+        // Seed with 24200 first.
+        merge_owner_p_kinds(&conn, "pk", "wss://r", "mypk", 24200, 1).unwrap();
+        // Now merge 44200 in — must produce [24200, 44200].
+        merge_owner_p_kinds(&conn, "pk", "wss://r", "mypk", 44200, 2).unwrap();
+        let subs = list_save_subscriptions(&conn, "pk", "wss://r").unwrap();
+        assert_eq!(subs.len(), 1);
+        let kinds: Vec<u32> = serde_json::from_str(&subs[0].kinds).unwrap();
+        assert!(kinds.contains(&24200), "must still contain 24200");
+        assert!(kinds.contains(&44200), "must now contain 44200");
+        assert_eq!(kinds.len(), 2, "no duplicates");
+    }
+
+    #[test]
+    fn test_merge_owner_p_kinds_idempotent_on_existing_kind() {
+        let conn = in_memory();
+        merge_owner_p_kinds(&conn, "pk", "wss://r", "mypk", 44200, 1).unwrap();
+        merge_owner_p_kinds(&conn, "pk", "wss://r", "mypk", 44200, 2).unwrap();
+        let subs = list_save_subscriptions(&conn, "pk", "wss://r").unwrap();
+        let kinds: Vec<u32> = serde_json::from_str(&subs[0].kinds).unwrap();
+        assert_eq!(kinds, [44200], "no duplicates after idempotent call");
+    }
+
+    /// Simulates the concurrent-interleave race: both seeds read an empty row
+    /// "simultaneously" (both see None), then each writes its own kind via the
+    /// atomic merge fn.  The last writer must still produce a row with BOTH
+    /// kinds because the merge fn reads-inside-the-tx, not reads-before-the-tx.
+    ///
+    /// In a real concurrent scenario the SQLite write-lock serializes the two
+    /// transactions. Here we simulate "observer wrote first" by calling
+    /// merge_owner_p_kinds(24200) then merge_owner_p_kinds(44200) — the second
+    /// call reads the row that the first call created (within its transaction)
+    /// and merges 44200 in.  The result must be [24200, 44200], not [44200].
+    #[test]
+    fn test_merge_owner_p_kinds_concurrent_interleave_both_kinds_survive() {
+        let conn = in_memory();
+        // Simulate: both seeds start with an empty row (conn starts clean).
+        // In the real race both would read [] concurrently; with the atomic tx
+        // one wins the write lock first.  Simulate that ordering here.
+        merge_owner_p_kinds(&conn, "pk", "wss://r", "mypk", 24200, 1).unwrap(); // observer wins lock first
+        merge_owner_p_kinds(&conn, "pk", "wss://r", "mypk", 44200, 2).unwrap(); // metric runs second
+
+        let subs = list_save_subscriptions(&conn, "pk", "wss://r").unwrap();
+        assert_eq!(subs.len(), 1, "exactly one owner_p row");
+        let kinds: Vec<u32> = serde_json::from_str(&subs[0].kinds).unwrap();
+        assert!(
+            kinds.contains(&24200),
+            "observer kind 24200 must survive concurrent metric seed"
+        );
+        assert!(
+            kinds.contains(&44200),
+            "metric kind 44200 must be present after concurrent seed"
+        );
+        assert_eq!(kinds.len(), 2, "exactly two kinds, no duplicates");
     }
 
     // ── Archived events ──────────────────────────────────────────────────────

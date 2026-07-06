@@ -618,6 +618,7 @@ pub fn run() {
             agent_metric_archive_default_enabled,
             archive::archive_events,
             archive::create_save_subscription,
+            archive::merge_save_subscription_kinds,
             archive::list_save_subscriptions,
             archive::delete_save_subscription,
             archive::read_archived_events,

@@ -384,6 +384,35 @@ async fn probe_event_readable(state: &AppState, event_id: &str) -> Result<(), St
     Ok(())
 }
 
+// ── merge_save_subscription_kinds ────────────────────────────────────────────
+
+/// Atomically merge `kind` into the `owner_p` save subscription for the
+/// current identity + relay.
+///
+/// Reads the existing `kinds` array, unions in `kind`, and writes back — all
+/// inside a single SQLite transaction. This prevents the TOCTOU race where two
+/// concurrent seed hooks (observer seed + metric seed) each read an empty row
+/// and the last writer clobbers the first.
+///
+/// Called by both `useObserverArchiveSeed` (kind 24200) and
+/// `useAgentMetricArchiveSeed` (kind 44200) instead of the former
+/// list → merge-in-TS → create pattern.
+#[tauri::command]
+pub fn merge_save_subscription_kinds(
+    state: State<'_, AppState>,
+    kind: u32,
+) -> Result<(), String> {
+    if kind > u32::from(u16::MAX) {
+        return Err(format!("kind {kind} is out of the valid range 0..=65535"));
+    }
+
+    let identity_pk = identity_pubkey(&state)?;
+    let relay_url = relay_ws_url_with_override(&state);
+    let now = now_secs();
+    let conn = open_db()?;
+    store::merge_owner_p_kinds(&conn, &identity_pk, &relay_url, &identity_pk, kind, now)
+}
+
 // ── list_save_subscriptions ──────────────────────────────────────────────────
 
 /// List all save subscriptions for the current identity + relay.
