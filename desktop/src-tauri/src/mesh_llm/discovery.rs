@@ -99,6 +99,33 @@ pub fn availability_from_events(events: Vec<nostr::Event>) -> MeshAvailability {
     }
 }
 
+/// Collect verified mesh owner IDs from members' kind:30621 status events.
+///
+/// These events are relay-signed and readable only by community members; the
+/// relay only includes `ownerId` when the reporting node's own attestation
+/// verified. The result feeds `--trust-policy allowlist --trust-owner …` on
+/// Buzz-spawned nodes: mesh's ownership layer then rejects any peer whose
+/// verified owner is not a community member — admission enforced by mesh,
+/// membership decided by Buzz.
+pub fn trusted_owner_ids_from_events(events: &[nostr::Event]) -> Vec<String> {
+    let mut owners: Vec<String> = events
+        .iter()
+        .filter_map(|event| {
+            let content = serde_json::from_str::<serde_json::Value>(&event.content).ok()?;
+            let owner = content
+                .get("ownerId")
+                .or_else(|| content.get("owner_id"))?
+                .as_str()?
+                .trim()
+                .to_ascii_lowercase();
+            (owner.len() == 64 && owner.bytes().all(|b| b.is_ascii_hexdigit())).then_some(owner)
+        })
+        .collect();
+    owners.sort();
+    owners.dedup();
+    owners
+}
+
 pub fn mesh_status_filter() -> serde_json::Value {
     serde_json::json!({
         "kinds": [MESH_STATUS_KIND],

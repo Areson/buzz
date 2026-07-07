@@ -46,6 +46,21 @@ pub struct NodeSpawnConfig {
     pub console_port: u16,
     pub max_vram_gb: Option<f64>,
     pub join_tokens: Vec<String>,
+    /// Owner keystore attesting this node (mesh ownership layer). Required:
+    /// Buzz-managed nodes always run attested so peers can admit them by
+    /// owner ID.
+    pub owner_key: PathBuf,
+    /// Verified owner IDs admitted at gossip (`--trust-policy allowlist`).
+    /// Buzz builds this from owner IDs published by community members via
+    /// the membership-gated kind:30621 pipeline; this node's own owner ID
+    /// is always included. Mesh enforces the gate cryptographically —
+    /// unattested peers and peers with unlisted owners are rejected even
+    /// if they hold a valid invite token.
+    pub trusted_owner_ids: Vec<String>,
+    /// `BUZZ_MANAGED_AGENT` instance stamp (same scheme as managed agents)
+    /// so the orphan sweep can reclaim a node left behind by a crashed
+    /// desktop without ever touching a user's standalone mesh-llm.
+    pub instance_id: Option<String>,
 }
 
 impl NodeProcess {
@@ -70,6 +85,20 @@ impl NodeProcess {
         }
         for token in &config.join_tokens {
             cmd.arg("--join").arg(token);
+        }
+        // Ownership + trust: mesh's idiomatic admission. This node is
+        // attested by the Buzz-managed owner key (--owner-required makes a
+        // broken keystore a startup failure, not a silent downgrade), and
+        // only peers with verified, allowlisted owners are admitted at
+        // gossip. Buzz's membership is the source of the allowlist.
+        cmd.arg("--owner-key").arg(&config.owner_key);
+        cmd.arg("--owner-required");
+        cmd.arg("--trust-policy").arg("allowlist");
+        for owner_id in &config.trusted_owner_ids {
+            cmd.arg("--trust-owner").arg(owner_id);
+        }
+        if let Some(instance_id) = config.instance_id.as_deref() {
+            cmd.env("BUZZ_MANAGED_AGENT", instance_id);
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())

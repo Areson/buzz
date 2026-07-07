@@ -7,6 +7,20 @@ const RELAY_MESH_RUNTIME_NO_TARGET: &str =
 
 pub type CmdResult<T> = Result<T, String>;
 
+/// Fetch community members' verified mesh owner IDs from the relay's
+/// membership-gated kind:30621 events. This is the mesh trust allowlist:
+/// Buzz decides membership, mesh enforces it at gossip via
+/// `--trust-policy allowlist`. Best-effort empty on relay errors — the node
+/// still trusts itself, and a later restart picks up the full list; an
+/// unreachable relay also means no fresh dial pointers, so nothing admits
+/// strangers in the interim.
+async fn trusted_owner_ids(state: &AppState) -> Vec<String> {
+    match relay::query_relay(state, &[mesh_llm::mesh_status_filter()]).await {
+        Ok(events) => mesh_llm::trusted_owner_ids_from_events(&events),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[tauri::command]
 pub async fn mesh_availability(
     state: State<'_, AppState>,
@@ -21,8 +35,12 @@ pub async fn mesh_availability(
 pub async fn mesh_start_node(
     app: AppHandle,
     state: State<'_, AppState>,
-    request: mesh_llm::StartMeshNodeRequest,
+    mut request: mesh_llm::StartMeshNodeRequest,
 ) -> CmdResult<mesh_llm::MeshNodeStatus> {
+    // Trust allowlist from membership-gated status events, resolved before
+    // taking the runtime lock (relay round-trip).
+    request.trusted_owner_ids = trusted_owner_ids(&state).await;
+
     let mut runtime = state.mesh_llm_runtime.lock().await;
     if runtime.is_some() {
         return Err("mesh node is already running".to_string());
@@ -145,6 +163,7 @@ pub(crate) async fn ensure_client_node_for_model_dial_only(
         model_id: None,
         max_vram_gb: None,
         join_token: Some(addr.to_string()),
+        trusted_owner_ids: trusted_owner_ids(state).await,
     };
     let mut runtime = state.mesh_llm_runtime.lock().await;
     if runtime.is_some() {
@@ -220,6 +239,7 @@ pub(crate) async fn ensure_client_node_for_model(
         model_id: None,
         max_vram_gb: None,
         join_token: Some(join_token),
+        trusted_owner_ids: trusted_owner_ids(state).await,
     };
     let mut runtime = state.mesh_llm_runtime.lock().await;
     if runtime.is_some() {
@@ -533,6 +553,7 @@ mod tests {
             model_id: Some(HOSTED_MODEL.to_string()),
             max_vram_gb: None,
             join_token: None,
+            trusted_owner_ids: Vec::new(),
         })
         .await
         .expect("serve runtime should start");

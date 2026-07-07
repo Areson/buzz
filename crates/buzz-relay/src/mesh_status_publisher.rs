@@ -62,6 +62,14 @@ pub struct BuzzMeshStatus {
     pub models: Vec<MeshModelOption>,
     /// Aggregate peer count from mesh status.
     pub peer_count: usize,
+    /// Reporting node's verified mesh owner ID (`owner.owner_id` from mesh
+    /// status, only when `owner.verified`). Members read these to build the
+    /// mesh trust allowlist (`--trust-policy allowlist --trust-owner …`), so
+    /// mesh's own ownership layer enforces "Buzz members only" at gossip.
+    /// Public data (it appears in signed ownership certificates peers
+    /// exchange anyway); membership-gated like the rest of this event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
 }
 
 /// Model value + display label. `id` is the API/routing value; `name` is UI-only.
@@ -109,6 +117,17 @@ pub fn sanitize_mesh_status(payload: &Value, now_unix: u64) -> BuzzMeshStatus {
     let node_id = string_field(payload, "node_id");
     let mesh_id = string_field(payload, "mesh_id");
     let mesh_name = string_field(payload, "mesh_name");
+    // Owner ID only when the node's own attestation verified — an unverified
+    // claim must not enter members' trust allowlists.
+    let owner_id = payload
+        .get("owner")
+        .filter(|owner| {
+            owner
+                .get("verified")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .and_then(|owner| string_field(owner, "owner_id"));
     let my_vram_gb = payload.get("my_vram_gb").and_then(Value::as_f64);
 
     let mut models = Vec::<MeshModelOption>::new();
@@ -186,6 +205,7 @@ pub fn sanitize_mesh_status(payload: &Value, now_unix: u64) -> BuzzMeshStatus {
         serve_targets,
         models,
         peer_count: peers.len(),
+        owner_id,
     }
 }
 

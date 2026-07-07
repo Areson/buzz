@@ -7,7 +7,7 @@ pub(crate) use coordinator::{
 pub use coordinator::{spawn_listener, start_client, MeshCoordinator};
 
 mod discovery;
-pub use discovery::{availability_from_events, mesh_status_filter};
+pub use discovery::{availability_from_events, mesh_status_filter, trusted_owner_ids_from_events};
 use discovery::{device_name_from_status, endpoint_id_from_status, enrich_status_payload_identity};
 
 mod preset;
@@ -18,6 +18,9 @@ pub use node_install::{ensure_node_installed, node_installed, MESH_NODE_VERSION}
 
 pub(crate) mod node_process;
 use node_process::{NodeProcess, NodeSpawnConfig, NodeStatus};
+
+pub(crate) mod owner_identity;
+use owner_identity::ensure_owner_identity;
 
 use serde::{Deserialize, Serialize};
 
@@ -155,6 +158,12 @@ pub struct StartMeshNodeRequest {
     pub max_vram_gb: Option<u64>,
     #[serde(default)]
     pub join_token: Option<String>,
+    /// Verified owner IDs of community members' nodes, from the
+    /// membership-gated kind:30621 events (`trusted_owner_ids_from_events`).
+    /// Becomes the node's mesh trust allowlist; this node's own owner ID is
+    /// added automatically.
+    #[serde(default)]
+    pub trusted_owner_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,6 +236,16 @@ impl DesktopMeshRuntime {
         let binary = ensure_node_installed(app)
             .await
             .map_err(|error| anyhow::anyhow!("mesh node install failed: {error}"))?;
+        // Owner identity: generated once per desktop, then reused. The node's
+        // trust allowlist is members' owner IDs plus our own (a single-node
+        // mesh must trust itself).
+        let (owner_key, own_owner_id) = ensure_owner_identity(&binary)
+            .await
+            .map_err(|error| anyhow::anyhow!("mesh owner identity setup failed: {error}"))?;
+        let mut trusted_owner_ids = request.trusted_owner_ids.clone();
+        if !trusted_owner_ids.contains(&own_owner_id) {
+            trusted_owner_ids.push(own_owner_id);
+        }
         let model_id = request
             .model_id
             .clone()
@@ -243,6 +262,9 @@ impl DesktopMeshRuntime {
             console_port: mesh_console_port()?,
             max_vram_gb: request.max_vram_gb.map(|v| v as f64),
             join_tokens: request.join_token.clone().into_iter().collect(),
+            owner_key,
+            trusted_owner_ids,
+            instance_id: app.map(|a| crate::managed_agents::current_instance_id(a)),
         };
         let node = NodeProcess::spawn(config.clone()).await?;
 

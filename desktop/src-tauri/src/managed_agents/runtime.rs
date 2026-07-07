@@ -40,6 +40,12 @@ pub(crate) const KNOWN_AGENT_BINARIES: &[&str] = &[
     // invocations — not listed here.
     "buzz-dev-mcp",
     "buzz_dev_mcp",
+    // Downloaded mesh compute node (mesh_llm/node_process.rs). Spawned with
+    // the BUZZ_MANAGED_AGENT stamp like agents, so the orphan sweep reclaims
+    // it after a desktop crash. A user-run standalone `mesh-llm serve` has no
+    // stamp and is never touched.
+    "mesh-llm",
+    "mesh_llm",
 ];
 
 /// Script interpreters that may host managed agent wrappers (e.g. npm shims).

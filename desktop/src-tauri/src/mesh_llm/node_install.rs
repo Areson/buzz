@@ -293,6 +293,15 @@ mod tests {
         ensure_node_installed(None).await.expect("cache hit");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
 
+        // Owner identity: first call generates, second call reuses.
+        let (owner_key, owner_id) = crate::mesh_llm::owner_identity::ensure_owner_identity(&binary)
+            .await
+            .expect("owner identity");
+        let (_, owner_id_again) = crate::mesh_llm::owner_identity::ensure_owner_identity(&binary)
+            .await
+            .expect("owner identity reuse");
+        assert_eq!(owner_id, owner_id_again, "owner identity is stable");
+
         let node = crate::mesh_llm::node_process::NodeProcess::spawn(
             crate::mesh_llm::node_process::NodeSpawnConfig {
                 binary,
@@ -302,6 +311,9 @@ mod tests {
                 console_port: 23131,
                 max_vram_gb: None,
                 join_tokens: Vec::new(),
+                owner_key,
+                trusted_owner_ids: vec![owner_id.clone()],
+                instance_id: Some("xyz.block.buzz.app.test".to_string()),
             },
         )
         .await
@@ -321,6 +333,23 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+        // Node ownership attested and verified with our owner identity —
+        // this is what peers verify before allowlist admission.
+        assert_eq!(
+            status
+                .payload
+                .pointer("/owner/verified")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "node ownership must verify"
+        );
+        assert_eq!(
+            status
+                .payload
+                .pointer("/owner/owner_id")
+                .and_then(serde_json::Value::as_str),
+            Some(owner_id.as_str())
+        );
 
         // OpenAI-compatible surface answers.
         let models: serde_json::Value = reqwest::get(format!("{}/models", node.api_base_url()))
@@ -332,5 +361,161 @@ mod tests {
         assert_eq!(models.get("object").and_then(|v| v.as_str()), Some("list"));
 
         node.stop().await.expect("stop");
+    }
+
+    /// Two-node admission proof for the Buzz-managed trust gate: a serving
+    /// node with `--trust-policy allowlist` admits a peer whose owner is
+    /// allowlisted and refuses to peer with one whose owner is not — even
+    /// though BOTH hold the same valid invite token. Invite tokens are dial
+    /// metadata; ownership attestation is the gate. Run manually:
+    /// `cargo test --features mesh-llm -- --ignored mesh_trust --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "spawns three mesh nodes; network + timing dependent"]
+    async fn mesh_trust_allowlist_admits_member_rejects_stranger() {
+        use crate::mesh_llm::node_process::{NodeProcess, NodeSpawnConfig};
+
+        let binary = ensure_node_installed(None).await.expect("install");
+        let tmp = std::env::temp_dir().join(format!("buzz-mesh-trust-{}", std::process::id()));
+        tokio::fs::create_dir_all(&tmp).await.expect("tmp dir");
+
+        // Three distinct owner identities: host, member, stranger.
+        let mut keys = Vec::new();
+        for name in ["host", "member", "stranger"] {
+            let path = tmp.join(format!("{name}.key"));
+            let out = tokio::process::Command::new(&binary)
+                .args(["auth", "init", "--no-passphrase", "--force", "--owner-key"])
+                .arg(&path)
+                .output()
+                .await
+                .expect("auth init");
+            assert!(out.status.success(), "auth init {name}");
+            let out = tokio::process::Command::new(&binary)
+                .args(["auth", "status", "--owner-key"])
+                .arg(&path)
+                .output()
+                .await
+                .expect("auth status");
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let owner = crate::mesh_llm::owner_identity::test_parse_owner_id(&text)
+                .expect("owner id parse");
+            keys.push((path, owner));
+        }
+        let (host_key, host_owner) = keys[0].clone();
+        let (member_key, member_owner) = keys[1].clone();
+        let (stranger_key, _stranger_owner) = keys[2].clone();
+
+        let spawn = |serve: bool,
+                     api_port: u16,
+                     console_port: u16,
+                     owner_key: std::path::PathBuf,
+                     trusted: Vec<String>,
+                     join: Vec<String>| {
+            let binary = binary.clone();
+            async move {
+                NodeProcess::spawn(NodeSpawnConfig {
+                    binary,
+                    serve,
+                    model: None,
+                    api_port,
+                    console_port,
+                    max_vram_gb: None,
+                    join_tokens: join,
+                    owner_key,
+                    trusted_owner_ids: trusted,
+                    instance_id: Some("xyz.block.buzz.app.test".to_string()),
+                })
+                .await
+            }
+        };
+
+        // Host: allowlist = {host, member}. Stranger's owner NOT listed.
+        let host = spawn(
+            false,
+            29437,
+            23231,
+            host_key,
+            vec![host_owner.clone(), member_owner.clone()],
+            Vec::new(),
+        )
+        .await
+        .expect("host node");
+        let token = host
+            .status()
+            .await
+            .expect("host status")
+            .invite_token
+            .expect("host invite token");
+
+        // Member: allowlisted owner, joins with the token → must peer.
+        let member = spawn(
+            false,
+            29438,
+            23232,
+            member_key,
+            vec![member_owner.clone(), host_owner.clone()],
+            vec![token.clone()],
+        )
+        .await
+        .expect("member node");
+
+        // Stranger: valid token, but owner not in host's allowlist → must
+        // NOT be admitted as a peer.
+        let stranger = spawn(
+            false,
+            29439,
+            23233,
+            stranger_key,
+            Vec::new(), // trusts no one; irrelevant to host's decision
+            vec![token.clone()],
+        )
+        .await
+        .expect("stranger node");
+
+        // Give gossip time to settle, then read the host's peer table.
+        let mut member_admitted = false;
+        let mut stranger_admitted = false;
+        for _ in 0..15 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let status = host.status().await.expect("host status");
+            let peers = status
+                .payload
+                .get("peers")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let owner_of = |p: &serde_json::Value| {
+                p.pointer("/owner/owner_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            };
+            member_admitted = peers
+                .iter()
+                .any(|p| owner_of(p).as_deref() == Some(member_owner.as_str()));
+            stranger_admitted = peers.iter().any(|p| {
+                owner_of(p).as_deref() != Some(member_owner.as_str())
+                    && owner_of(p).as_deref() != Some(host_owner.as_str())
+            });
+            if member_admitted {
+                break;
+            }
+        }
+
+        assert!(
+            member_admitted,
+            "allowlisted member owner must be admitted as a peer"
+        );
+        assert!(
+            !stranger_admitted,
+            "non-allowlisted owner must NOT appear in the host's peer table"
+        );
+
+        stranger.stop().await.ok();
+        member.stop().await.ok();
+        host.stop().await.ok();
+        tokio::fs::remove_dir_all(&tmp).await.ok();
     }
 }
