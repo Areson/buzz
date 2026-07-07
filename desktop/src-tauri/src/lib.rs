@@ -323,7 +323,7 @@ pub fn run() {
             // bundled CLI binary. Non-fatal: agents find CLI via PATH.
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(parent) = exe.parent() {
-                    if let Err(error) = managed_agents::ensure_cli_symlink(parent) {
+                    if let Err(error) = managed_agents::ensure_cli_symlink(parent, is_dev_nest) {
                         eprintln!("buzz-desktop: failed to create CLI symlink: {error}");
                     }
                 }
@@ -508,6 +508,7 @@ pub fn run() {
             download_image,
             download_file,
             fetch_media_bytes,
+            copy_image_to_clipboard,
             list_relay_members,
             get_my_relay_membership,
             add_relay_member,
@@ -529,6 +530,7 @@ pub fn run() {
             discover_agent_models,
             get_agent_config_surface,
             get_runtime_file_config,
+            get_baked_build_env_keys,
             put_agent_session_config,
             mesh_availability,
             mesh_start_node,
