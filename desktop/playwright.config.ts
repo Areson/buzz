@@ -79,6 +79,7 @@ export default defineConfig({
         "**/persona-model-combobox-screenshots.spec.ts",
         "**/drafts-screenshots.spec.ts",
         "**/channel-sort.spec.ts",
+        "**/global-agent-config-screenshots.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],
