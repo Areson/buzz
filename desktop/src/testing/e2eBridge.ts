@@ -5889,6 +5889,14 @@ type MockAgentTemplate = {
   source: "builtin" | "saved";
 };
 
+/** Built-in starter names from handleListAgentTemplates — reserved so a
+ * save-as-template collision check can mirror the real command. */
+const MOCK_BUILTIN_TEMPLATE_NAMES = [
+  "Fizz",
+  "Product Strategist",
+  "QA Reviewer",
+] as const;
+
 async function handleListAgentTemplates(): Promise<MockAgentTemplate[]> {
   const builtins: MockAgentTemplate[] = [
     {
@@ -5979,39 +5987,39 @@ async function handleSaveAgentAsTemplate(args: {
     throw new Error("agent has no name to save as a template");
   }
   const now = new Date().toISOString();
-  // Mirror the real command: update an existing active in-app persona with
-  // the same display name, otherwise insert a fresh record.
-  let persona = mockPersonas.find(
+  // Mirror the real command: error when an active in-app persona or a
+  // built-in starter already uses the same display name — saving must never
+  // silently update an existing template in place.
+  const collidesWithSaved = mockPersonas.some(
     (candidate) =>
       candidate.is_active &&
       !candidate.source_team &&
       candidate.display_name.trim().toLowerCase() === name.toLowerCase(),
   );
-  if (persona) {
-    persona.display_name = name;
-    persona.avatar_url = agent.avatar_url;
-    persona.system_prompt = agent.system_prompt ?? "";
-    persona.runtime = agent.agent_command || null;
-    persona.model = agent.model;
-    persona.updated_at = now;
-  } else {
-    persona = {
-      id: crypto.randomUUID(),
-      display_name: name,
-      avatar_url: agent.avatar_url,
-      system_prompt: agent.system_prompt ?? "",
-      runtime: agent.agent_command || null,
-      model: agent.model,
-      provider: null,
-      name_pool: [],
-      is_builtin: false,
-      is_active: true,
-      source_team: null,
-      created_at: now,
-      updated_at: now,
-    };
-    mockPersonas.push(persona);
+  const collidesWithBuiltin = MOCK_BUILTIN_TEMPLATE_NAMES.some(
+    (builtinName) => builtinName.trim().toLowerCase() === name.toLowerCase(),
+  );
+  if (collidesWithSaved || collidesWithBuiltin) {
+    throw new Error(
+      `A template named \u{201c}${name}\u{201d} already exists. Delete it or rename this agent before saving.`,
+    );
   }
+  const persona = {
+    id: crypto.randomUUID(),
+    display_name: name,
+    avatar_url: agent.avatar_url,
+    system_prompt: agent.system_prompt ?? "",
+    runtime: agent.agent_command || null,
+    model: agent.model,
+    provider: null,
+    name_pool: [],
+    is_builtin: false,
+    is_active: true,
+    source_team: null,
+    created_at: now,
+    updated_at: now,
+  };
+  mockPersonas.push(persona);
   return {
     id: persona.id,
     displayName: persona.display_name,

@@ -58,9 +58,11 @@ fn assemble_agent_templates(personas: &[PersonaRecord]) -> Vec<AgentTemplate> {
 }
 
 /// Save a managed agent's pinned config as a reusable template (a persona
-/// record) so it shows up in the New Agent catalog. An existing active
-/// in-app template with the same display name is updated in place — saving
-/// the same agent twice refreshes the template instead of duplicating it.
+/// record) so it shows up in the New Agent catalog. Saving errors when an
+/// active in-app template (or a built-in starter) already uses the same
+/// display name — silently updating in place could clobber a template the
+/// user didn't mean to touch. Delete the existing template or rename the
+/// agent first; a deliberate refresh affordance can come later.
 /// `env_vars` are deliberately excluded: templates are shareable definitions
 /// and must never carry credentials. The record is retained for relay sync
 /// (kind:30175), so the template reaches the owner's other devices.
@@ -95,7 +97,7 @@ pub async fn save_agent_as_template(
         let runtime =
             crate::managed_agents::known_acp_runtime(&effective_command).map(|r| r.id.to_string());
 
-        let persona = upsert_template_persona(
+        let persona = insert_template_persona(
             &mut personas,
             name,
             record.avatar_url.clone(),
@@ -104,7 +106,7 @@ pub async fn save_agent_as_template(
             record.model.clone(),
             record.provider.clone(),
             now_iso(),
-        );
+        )?;
         save_personas(&app, &personas)?;
         super::personas::retain_persona_pending(&app, &state, &persona);
         try_regenerate_nest(&app);
@@ -114,15 +116,16 @@ pub async fn save_agent_as_template(
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
-/// Pure core of [`save_agent_as_template`]: update the matching active
-/// in-app template (same trimmed display name, case-insensitive) in place, or
-/// push a fresh record when none matches. Team-sourced records
-/// (`source_team.is_some()`) never match — saving an agent must not hijack a
-/// team persona that happens to share the name. `env_vars` stay empty on
-/// insert and untouched on update: templates are shareable definitions and
-/// must never carry credentials.
+/// Pure core of [`save_agent_as_template`]: push a fresh record, or error
+/// when the trimmed display name (case-insensitive) collides with an active
+/// in-app template or a built-in starter — never update an existing template
+/// in place, so a save can't silently clobber one. Inactive and team-sourced
+/// records (`source_team.is_some()`) don't block: they aren't in the catalog
+/// as saved in-app templates, and a fresh record must not hijack them either.
+/// `env_vars` stay empty: templates are shareable definitions and must never
+/// carry credentials.
 #[allow(clippy::too_many_arguments)]
-fn upsert_template_persona(
+fn insert_template_persona(
     personas: &mut Vec<PersonaRecord>,
     name: String,
     avatar_url: Option<String>,
@@ -131,42 +134,37 @@ fn upsert_template_persona(
     model: Option<String>,
     provider: Option<String>,
     now: String,
-) -> PersonaRecord {
-    match personas.iter_mut().find(|p| {
+) -> Result<PersonaRecord, String> {
+    let collides = personas.iter().any(|p| {
         p.is_active && p.source_team.is_none() && p.display_name.trim().eq_ignore_ascii_case(&name)
-    }) {
-        Some(existing) => {
-            existing.display_name = name;
-            existing.avatar_url = avatar_url;
-            existing.system_prompt = system_prompt;
-            existing.runtime = runtime;
-            existing.model = model;
-            existing.provider = provider;
-            existing.updated_at = now;
-            existing.clone()
-        }
-        None => {
-            let persona = PersonaRecord {
-                id: uuid::Uuid::new_v4().to_string(),
-                display_name: name,
-                avatar_url,
-                system_prompt,
-                runtime,
-                model,
-                provider,
-                name_pool: Vec::new(),
-                is_builtin: false,
-                is_active: true,
-                source_team: None,
-                source_team_persona_slug: None,
-                env_vars: Default::default(),
-                created_at: now.clone(),
-                updated_at: now,
-            };
-            personas.push(persona.clone());
-            persona
-        }
+    }) || builtin_agent_templates()
+        .iter()
+        .any(|builtin| builtin.display_name.trim().eq_ignore_ascii_case(&name));
+    if collides {
+        return Err(format!(
+            "A template named \u{201c}{name}\u{201d} already exists. Delete it or rename this agent before saving."
+        ));
     }
+
+    let persona = PersonaRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        display_name: name,
+        avatar_url,
+        system_prompt,
+        runtime,
+        model,
+        provider,
+        name_pool: Vec::new(),
+        is_builtin: false,
+        is_active: true,
+        source_team: None,
+        source_team_persona_slug: None,
+        env_vars: Default::default(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    personas.push(persona.clone());
+    Ok(persona)
 }
 
 /// Export a managed agent's pinned config as a shareable `.persona.json`
@@ -302,12 +300,12 @@ mod tests {
     // ── save_agent_as_template core ──────────────────────────────────────
 
     #[test]
-    fn upsert_same_name_updates_in_place_instead_of_duplicating() {
+    fn insert_errors_when_active_saved_template_shares_the_name() {
         let mut existing = persona("existing-id", "My Agent");
         existing.env_vars = BTreeMap::from([("API_KEY".to_string(), "secret".to_string())]);
         let mut personas = vec![existing];
 
-        let result = upsert_template_persona(
+        let result = insert_template_persona(
             &mut personas,
             "my agent".to_string(), // case-insensitive match
             Some("https://example.com/new.png".to_string()),
@@ -318,27 +316,25 @@ mod tests {
             "2025-06-01T00:00:00Z".to_string(),
         );
 
-        assert_eq!(personas.len(), 1, "same-name save must not duplicate");
-        assert_eq!(result.id, "existing-id", "identity preserved");
-        let p = &personas[0];
-        assert_eq!(p.system_prompt, "new prompt");
-        assert_eq!(p.model, Some("sonnet".to_string()));
-        assert_eq!(p.updated_at, "2025-06-01T00:00:00Z");
-        assert_eq!(p.created_at, "2025-01-01T00:00:00Z", "created_at preserved");
-        assert_eq!(
-            p.env_vars.get("API_KEY"),
-            Some(&"secret".to_string()),
-            "stored env vars survive an update — and never come from the agent"
+        let err = result.expect_err("same-name save must error, not update in place");
+        assert!(
+            err.contains("already exists"),
+            "error should explain the collision: {err}"
         );
+        assert_eq!(personas.len(), 1, "nothing inserted on collision");
+        let p = &personas[0];
+        assert_eq!(p.system_prompt, "saved prompt", "existing record untouched");
+        assert_eq!(p.updated_at, "2025-01-01T00:00:00Z", "no silent refresh");
     }
 
     #[test]
-    fn upsert_no_match_inserts_fresh_record_without_env_vars() {
-        let mut personas = vec![persona("other-id", "Other")];
+    fn insert_errors_when_name_collides_with_a_builtin_starter() {
+        let builtin_name = builtin_agent_templates()[0].display_name.clone();
+        let mut personas = Vec::new();
 
-        let result = upsert_template_persona(
+        let result = insert_template_persona(
             &mut personas,
-            "Brand New".to_string(),
+            builtin_name.to_uppercase(),
             None,
             "prompt".to_string(),
             None,
@@ -347,7 +343,30 @@ mod tests {
             "2025-06-01T00:00:00Z".to_string(),
         );
 
-        assert_eq!(personas.len(), 2, "unmatched name inserts a new record");
+        assert!(
+            result.is_err(),
+            "built-in starter names are reserved in the catalog"
+        );
+        assert!(personas.is_empty());
+    }
+
+    #[test]
+    fn insert_unique_name_creates_fresh_record_without_env_vars() {
+        let mut personas = vec![persona("other-id", "Other")];
+
+        let result = insert_template_persona(
+            &mut personas,
+            "Brand New".to_string(),
+            None,
+            "prompt".to_string(),
+            None,
+            None,
+            None,
+            "2025-06-01T00:00:00Z".to_string(),
+        )
+        .expect("unique name saves cleanly");
+
+        assert_eq!(personas.len(), 2, "unique name inserts a new record");
         assert!(result.is_active);
         assert!(!result.is_builtin);
         assert!(
@@ -358,14 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn upsert_skips_inactive_and_team_sourced_records_with_same_name() {
+    fn insert_ignores_inactive_and_team_sourced_records_with_same_name() {
         let mut inactive = persona("inactive-id", "My Agent");
         inactive.is_active = false;
         let mut team_owned = persona("team-id", "My Agent");
         team_owned.source_team = Some("team-1".to_string());
         let mut personas = vec![inactive, team_owned];
 
-        let result = upsert_template_persona(
+        let result = insert_template_persona(
             &mut personas,
             "My Agent".to_string(),
             None,
@@ -374,7 +393,8 @@ mod tests {
             None,
             None,
             "2025-06-01T00:00:00Z".to_string(),
-        );
+        )
+        .expect("inactive/team-sourced records neither block nor get hijacked");
 
         assert_eq!(
             personas.len(),
