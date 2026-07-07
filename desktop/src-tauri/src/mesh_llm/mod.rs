@@ -13,7 +13,12 @@ use discovery::{device_name_from_status, endpoint_id_from_status, enrich_status_
 mod preset;
 pub use preset::{agent_preset, MeshAgentPreset, MeshAgentPresetRequest};
 
-use mesh_llm_sdk::{client, serve, EmbeddedNodeHandle, MeshDiscoveryMode};
+mod node_install;
+pub use node_install::{ensure_node_installed, node_installed, MESH_NODE_VERSION};
+
+pub(crate) mod node_process;
+use node_process::{NodeProcess, NodeSpawnConfig, NodeStatus};
+
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_MESH_API_PORT: u16 = 9337;
@@ -197,83 +202,52 @@ pub fn stopped_status() -> MeshNodeStatus {
 }
 
 pub struct DesktopMeshRuntime {
-    handle: EmbeddedNodeHandle,
+    /// The spawned node plus the config it was spawned with. Interior
+    /// mutability because `dial_endpoint_addr` joins a mesh by respawning
+    /// the node with an extra `--join` token (the standalone node has no
+    /// join-at-runtime management endpoint yet) while callers hold `&self`.
+    node: tokio::sync::Mutex<(NodeProcess, NodeSpawnConfig)>,
     mode: MeshNodeMode,
     model_id: Option<String>,
     model_name: Option<String>,
 }
 
-async fn initialize_mesh_native_runtime() -> anyhow::Result<()> {
-    let cache = mesh_llm_sdk::native_runtime::native_runtime_cache(None)?;
-    let installed = cache.installed()?;
-    let current = mesh_llm_sdk::native_runtime::CURRENT_MESH_VERSION;
-    if !installed
-        .iter()
-        .any(|runtime| runtime.mesh_version == current)
-    {
-        anyhow::bail!(
-            "mesh native runtime for MeshLLM {current} is not installed; run `just mesh=1 staging` or `just mesh-e2e-hardware` to prepare it"
-        );
-    }
-    // initialize_host_runtime became async upstream (mesh-llm #900s series).
-    mesh_llm_host_runtime::initialize_host_runtime()
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "mesh native runtime failed to load; run `just mesh=1 staging` or `just mesh-e2e-hardware` to repair it: {error}"
-            )
-        })
-}
-
 impl DesktopMeshRuntime {
     pub async fn start(request: StartMeshNodeRequest) -> anyhow::Result<Self> {
+        Self::start_with_app(request, None).await
+    }
+
+    /// Start the node, downloading the mesh-llm binary first if this is the
+    /// first use (progress emitted as app events when `app` is provided).
+    pub async fn start_with_app(
+        request: StartMeshNodeRequest,
+        app: Option<&tauri::AppHandle>,
+    ) -> anyhow::Result<Self> {
         validate_no_leak_request(&request)?;
-        initialize_mesh_native_runtime().await?;
+        let binary = ensure_node_installed(app)
+            .await
+            .map_err(|error| anyhow::anyhow!("mesh node install failed: {error}"))?;
         let model_id = request
             .model_id
             .clone()
             .filter(|value| !value.trim().is_empty());
         let model_name = model_id.clone();
-        let handle = match request.mode {
-            MeshNodeMode::Serve => {
-                let model = model_id
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("modelId is required for serve mode"))?;
-                let mut builder = serve::EmbeddedServeConfig::builder()
-                    .model(model)
-                    .api_port(mesh_api_port()?)
-                    .console_port(mesh_console_port()?)
-                    .publish(false)
-                    .auto_join(false)
-                    .disable_iroh_relays(true)
-                    .discovery_mode(MeshDiscoveryMode::Nostr)
-                    .console_ui(true);
-                if let Some(max_vram_gb) = request.max_vram_gb {
-                    builder = builder.max_vram_gb(max_vram_gb as f64);
-                }
-                if let Some(join_token) = request.join_token.as_deref() {
-                    builder = builder.join_token(join_token);
-                }
-                serve::start(builder.build()).await?
-            }
-            MeshNodeMode::Client => {
-                let mut builder = client::EmbeddedClientConfig::builder()
-                    .api_port(mesh_api_port()?)
-                    .console_port(mesh_console_port()?)
-                    .publish(false)
-                    .auto_join(false)
-                    .disable_iroh_relays(true)
-                    .discovery_mode(MeshDiscoveryMode::Nostr)
-                    .console_ui(true);
-                if let Some(join_token) = request.join_token.as_deref() {
-                    builder = builder.join_token(join_token);
-                }
-                client::start(builder.build()).await?
-            }
+        if matches!(request.mode, MeshNodeMode::Serve) && model_id.is_none() {
+            anyhow::bail!("modelId is required for serve mode");
+        }
+        let config = NodeSpawnConfig {
+            binary,
+            serve: matches!(request.mode, MeshNodeMode::Serve),
+            model: model_id.clone(),
+            api_port: mesh_api_port()?,
+            console_port: mesh_console_port()?,
+            max_vram_gb: request.max_vram_gb.map(|v| v as f64),
+            join_tokens: request.join_token.clone().into_iter().collect(),
         };
+        let node = NodeProcess::spawn(config.clone()).await?;
 
         Ok(Self {
-            handle,
+            node: tokio::sync::Mutex::new((node, config)),
             mode: request.mode,
             model_id,
             model_name,
@@ -281,30 +255,48 @@ impl DesktopMeshRuntime {
     }
 
     pub async fn status(&self) -> anyhow::Result<MeshNodeStatus> {
-        let status = self.handle.status().await?;
-        self.status_from_sdk(status)
+        let status = self.node.lock().await.0.status().await?;
+        self.status_from_node(status)
     }
 
     pub async fn status_report_payload(&self) -> anyhow::Result<serde_json::Value> {
-        let status = self.handle.status().await?;
+        let status = self.node.lock().await.0.status().await?;
         let mut payload = status.payload;
         enrich_status_payload_identity(&mut payload, status.invite_token.as_deref());
         Ok(payload)
     }
 
+    /// Join a mesh at `endpoint_addr` (invite token).
+    ///
+    /// The standalone node accepts join tokens only at startup (`--join`);
+    /// there is no join-at-runtime management endpoint yet (upstream
+    /// candidate: `POST /api/join`). A repeated token is a no-op fast path;
+    /// a new token respawns the node with the token appended — model state
+    /// is preserved because serve mode reloads its configured model and
+    /// client mode has none.
     pub async fn dial_endpoint_addr(&self, endpoint_addr: impl Into<String>) -> anyhow::Result<()> {
-        self.handle.join_token(endpoint_addr).await
+        let token = endpoint_addr.into();
+        let mut guard = self.node.lock().await;
+        if guard.1.join_tokens.iter().any(|t| t == &token) {
+            return Ok(());
+        }
+        let mut config = guard.1.clone();
+        config.join_tokens.push(token);
+        // Stop the old node first — same ports — then spawn with the new
+        // token. On spawn failure the lock is released with the node gone;
+        // callers see the error and the next start recreates it.
+        guard.0.take_stop().await.ok();
+        let node = NodeProcess::spawn(config.clone()).await?;
+        *guard = (node, config);
+        Ok(())
     }
 
     pub async fn installed_models(&self) -> anyhow::Result<Vec<MeshModelOption>> {
-        let status = self.handle.status().await?;
+        let status = self.node.lock().await.0.status().await?;
         Ok(models_from_status_payload(Some(&status.payload)))
     }
 
-    fn status_from_sdk(
-        &self,
-        status: mesh_llm_sdk::EmbeddedNodeStatus,
-    ) -> anyhow::Result<MeshNodeStatus> {
+    fn status_from_node(&self, status: NodeStatus) -> anyhow::Result<MeshNodeStatus> {
         let health = health_from_payload(&status.payload);
         let endpoint_id = endpoint_id_from_status(&status.payload, status.invite_token.as_deref());
         let device_name = device_name_from_status(&status.payload, endpoint_id.as_deref());
@@ -329,7 +321,7 @@ impl DesktopMeshRuntime {
     }
 
     pub async fn stop(self) -> anyhow::Result<()> {
-        self.handle.stop().await
+        self.node.into_inner().0.stop().await
     }
 }
 

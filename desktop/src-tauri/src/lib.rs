@@ -540,6 +540,7 @@ pub fn run() {
             mesh_node_status,
             mesh_installed_models,
             mesh_agent_preset,
+            mesh_node_install_status,
             update_managed_agent,
             discover_backend_providers,
             probe_backend_provider,

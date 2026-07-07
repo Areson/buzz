@@ -56,6 +56,11 @@ pub async fn mesh_installed_models(
 }
 
 #[tauri::command]
+pub fn mesh_node_install_status() -> CmdResult<serde_json::Value> {
+    Err("mesh-llm feature not enabled".to_string())
+}
+
+#[tauri::command]
 pub fn mesh_agent_preset(_request: serde_json::Value) -> CmdResult<serde_json::Value> {
     Err("mesh-llm feature not enabled".to_string())
 }

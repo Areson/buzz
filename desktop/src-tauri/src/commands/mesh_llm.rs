@@ -28,7 +28,9 @@ pub async fn mesh_start_node(
         return Err("mesh node is already running".to_string());
     }
 
-    let started = mesh_llm::DesktopMeshRuntime::start(request)
+    // First use downloads the mesh-llm node binary; pass the app handle so
+    // install progress reaches the UI as `mesh-node-install-progress` events.
+    let started = mesh_llm::DesktopMeshRuntime::start_with_app(request, Some(&app))
         .await
         .map_err(|error| error.to_string())?;
     let status = started
@@ -436,6 +438,17 @@ pub fn mesh_agent_preset(
     request: mesh_llm::MeshAgentPresetRequest,
 ) -> CmdResult<mesh_llm::MeshAgentPreset> {
     mesh_llm::agent_preset(request)
+}
+
+/// Whether the mesh-llm node binary is installed, and at which pinned
+/// version. Lets the UI say "first start will download the mesh runtime
+/// (~30 MB)" instead of surprising the user.
+#[tauri::command]
+pub fn mesh_node_install_status() -> CmdResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "installed": mesh_llm::node_installed(),
+        "version": mesh_llm::MESH_NODE_VERSION,
+    }))
 }
 
 #[cfg(all(test, feature = "mesh-llm"))]

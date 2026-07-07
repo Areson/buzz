@@ -18,7 +18,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["system-keyring"]
-mesh-llm = ["dep:mesh-llm-sdk", "dep:mesh-llm-host-runtime"]
+# Mesh compute UI + node management. The mesh-llm node itself is NOT
+# compiled in (that cost ~52 MB) — it is downloaded on first use as a
+# checksum-verified release binary and run as a supervised child process
+# (see mesh_llm/node_install.rs). This feature is therefore only a few KB
+# of client code and stays cheap to enable everywhere.
+mesh-llm = []
 # OS keyring backing for desktop secret storage (nsec private keys). When
 # disabled, secrets fall back to 0o600 files. On by default for real builds.
 system-keyring = ["dep:keyring"]
@@ -65,7 +70,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 infer = "0.19"
 hex = "0.4"
-tokio = { version = "1", features = ["fs", "sync", "rt", "macros", "time"] }
+tokio = { version = "1", features = ["fs", "sync", "rt", "macros", "time", "process"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 bytes = "1"
@@ -84,11 +89,10 @@ buzz_core_pkg = { package = "buzz-core", path = "../../crates/buzz-core" }
 buzz_persona_pkg = { package = "buzz-persona", path = "../../crates/buzz-persona" }
 buzz_sdk_pkg = { package = "buzz-sdk", path = "../../crates/buzz-sdk" }
 buzz_agent_pkg = { package = "buzz-agent", path = "../../crates/buzz-agent" }
-mesh-llm-sdk = { git = "https://github.com/Mesh-LLM/mesh-llm.git", rev = "49cf03427ad86becf8dc0596b738c055d166e7e2", package = "mesh-llm-sdk", default-features = false, features = ["client", "serving"], optional = true }
-mesh-llm-host-runtime = { git = "https://github.com/Mesh-LLM/mesh-llm.git", rev = "49cf03427ad86becf8dc0596b738c055d166e7e2", package = "mesh-llm-host-runtime", default-features = false, features = ["dynamic-native-runtime"], optional = true }
 base64 = "0.22"
 sha2 = "0.11"
 tar = "0.4"
+flate2 = "1"
 bzip2 = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 tauri-plugin-global-shortcut = "2"
