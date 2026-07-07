@@ -249,6 +249,11 @@ const overrides = new Map([
   // flow. Load-bearing feature growth; queued to split with the rest of this
   // list.
   ["src/features/messages/ui/MessageComposer.tsx", 1033],
+  // global-agent-config: model-tuning section (BuzzAgentModelTuningFields via
+  // EditAgentAdvancedFields) + providerValid gate + effectiveProvider derivation
+  // + globalProvider threading into getPersonaProviderOptions. All load-bearing
+  // feature logic; queued to split with the rest of this list.
+  ["src/features/agents/ui/EditAgentDialog.tsx", 1083],
 ]);
 
 await runFileSizeCheck({
