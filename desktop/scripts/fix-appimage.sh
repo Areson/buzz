@@ -8,6 +8,10 @@
 # re-sign after repacking (CI release builds). Without them the script
 # repacks but skips signing, which is fine for local testing.
 #
+# Set APPIMAGETOOL_RUNTIME_FILE to a pre-downloaded AppImage type2 runtime to
+# avoid appimagetool fetching one from its mutable `continuous` tag (CI pins
+# this; unset is fine for local testing).
+#
 # Root cause — three interlocking failures (upstream: https://github.com/tauri-apps/tauri/issues/15665):
 #
 #  1. EGL crash: linuxdeploy bundles libwayland-client.so.0 (1.22) alongside
@@ -44,14 +48,14 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
+if [[ ! -f "$1" ]]; then
+  echo "Error: file not found: $1" >&2
+  exit 1
+fi
+
 APPIMAGE_ABS="$(realpath "$1")"
 APPIMAGE_DIR="$(dirname "$APPIMAGE_ABS")"
 APPIMAGE_NAME="$(basename "$APPIMAGE_ABS")"
-
-if [[ ! -f "$APPIMAGE_ABS" ]]; then
-  echo "Error: file not found: $APPIMAGE_ABS" >&2
-  exit 1
-fi
 
 # Locate the desktop/ directory (this script lives at desktop/scripts/).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,6 +79,15 @@ echo "==> Extracting $APPIMAGE_NAME"
 
 LIBDIR="$WORKDIR/squashfs-root/usr/lib"
 
+# Guard against a bundler layout change: if the primary offending lib is not
+# where we expect it, the rm globs below would silently no-op and we'd ship
+# an unfixed artifact. Fail loudly instead so a tauri/linuxdeploy upgrade
+# that changes the bundled lib set gets noticed here, not by users.
+if ! compgen -G "$LIBDIR/libwayland-client.so*" > /dev/null; then
+  echo "Error: libwayland-client not found in $LIBDIR — bundler layout changed; update fix-appimage.sh" >&2
+  exit 1
+fi
+
 echo "==> Removing infra libs that conflict with system Mesa / GLib / GStreamer"
 rm -f \
   "$LIBDIR"/libwayland-client.so* \
@@ -95,11 +108,22 @@ rm -f \
   "$LIBDIR"/libffi.so*
 
 echo "==> Symlinking system GStreamer plugin directory"
+# On distros without the Debian multiarch layout (e.g. Arch), this symlink
+# dangles — GStreamer then falls back to its default plugin discovery, which
+# is a safe degradation (unlike the original empty in-bundle dir).
 rm -rf "$LIBDIR/gstreamer-1.0"
 ln -s "/usr/lib/$MULTIARCH/gstreamer-1.0" "$LIBDIR/gstreamer-1.0"
 
 echo "==> Repacking AppImage"
+# Pass a pinned type2 runtime when provided (CI sets APPIMAGETOOL_RUNTIME_FILE);
+# without it appimagetool downloads the runtime from its mutable `continuous`
+# tag at repack time — acceptable for local testing, not for release builds.
+RUNTIME_ARGS=()
+if [[ -n "${APPIMAGETOOL_RUNTIME_FILE:-}" ]]; then
+  RUNTIME_ARGS=(--runtime-file "$APPIMAGETOOL_RUNTIME_FILE")
+fi
 APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$(uname -m)" appimagetool \
+  "${RUNTIME_ARGS[@]}" \
   "$WORKDIR/squashfs-root" "$APPIMAGE_ABS"
 
 # Re-sign after repack so the updater can verify the artifact.
@@ -108,20 +132,24 @@ APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$(uname -m)" appimagetool \
 #   Old: <name>.AppImage.tar.gz + .tar.gz.sig    (tar-wrapped, then signed)
 # We handle both: always re-sign the AppImage; if a .tar.gz sibling exists
 # alongside it, recreate it from the freshly repacked AppImage and re-sign that.
+# Our release config pins createUpdaterArtifacts: true (build-release-config.mjs),
+# so the tar.gz branch is dead in CI today — kept deliberately because the
+# workflow's artifact-locate step prefers a tar.gz when one exists; dropping
+# this branch could publish a stale tarball containing the unfixed AppImage.
 if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  # `tauri signer sign` reads TAURI_SIGNING_PRIVATE_KEY and
+  # TAURI_SIGNING_PRIVATE_KEY_PASSWORD from the environment (same as the
+  # macOS jobs in release.yml) — never pass the password via argv, where
+  # it would be visible in /proc/<pid>/cmdline.
   echo "==> Re-signing AppImage"
-  (cd "$DESKTOP_DIR" && pnpm tauri signer sign \
-    ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:+--password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"} \
-    "$APPIMAGE_ABS")
+  (cd "$DESKTOP_DIR" && pnpm tauri signer sign "$APPIMAGE_ABS")
 
   TARBALL="$APPIMAGE_ABS.tar.gz"
   if [[ -f "$TARBALL" ]]; then
     echo "==> Recreating updater archive $TARBALL"
     tar -czf "$TARBALL" -C "$APPIMAGE_DIR" "$APPIMAGE_NAME"
     echo "==> Re-signing updater archive"
-    (cd "$DESKTOP_DIR" && pnpm tauri signer sign \
-      ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:+--password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"} \
-      "$TARBALL")
+    (cd "$DESKTOP_DIR" && pnpm tauri signer sign "$TARBALL")
   fi
 else
   echo "==> TAURI_SIGNING_PRIVATE_KEY not set — skipping signing (local build)"

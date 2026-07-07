@@ -445,7 +445,8 @@ jobs:
     name: Release Linux
     if: github.repository == 'block/buzz'
     runs-on: ubuntu-latest
-    container: ubuntu:22.04
+    # Digest-pinned like the SHA-pinned actions below; Renovate keeps it fresh.
+    container: ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982
     needs: setup
     timeout-minutes: 60
     permissions:
@@ -493,8 +494,11 @@ jobs:
           # Install GitHub CLI — preinstalled on runners but absent in containers.
           # wget and ca-certificates are now available from the step above.
           mkdir -p -m 755 /etc/apt/keyrings
-          wget -qO /usr/share/keyrings/githubcli-archive-keyring.gpg \
+          wget -q --tries=3 --timeout=30 -O /usr/share/keyrings/githubcli-archive-keyring.gpg \
             https://cli.github.com/packages/githubcli-archive-keyring.gpg
+          # Pin the keyring like appimagetool below. If GitHub rotates the
+          # keyring this fails loudly — recompute and update the hash.
+          echo "6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b  /usr/share/keyrings/githubcli-archive-keyring.gpg" | sha256sum -c
           chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
             > /etc/apt/sources.list.d/github-cli.list
@@ -526,14 +530,27 @@ jobs:
               exit 1
               ;;
           esac
-          wget -qO /tmp/appimagetool \
+          wget -q --tries=3 --timeout=30 -O /tmp/appimagetool \
             "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${ARCH_SUFFIX}.AppImage"
-          # SHA256 integrity check — only enforced for x86_64 (the only arch CI builds today).
-          # If an aarch64 runner is added, compute and add its expected hash here.
+          # SHA256 integrity check. Refuse to run an unverified binary: if a new
+          # arch (e.g. aarch64) is enabled in CI, compute its hash and add it here.
           if [[ "$ARCH_SUFFIX" == "x86_64" ]]; then
             echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  /tmp/appimagetool" | sha256sum -c
+          else
+            echo "::error::No pinned SHA256 for appimagetool-${ARCH_SUFFIX} — add it before enabling this architecture"
+            exit 1
           fi
           install -m 755 /tmp/appimagetool /usr/local/bin/appimagetool
+          # appimagetool otherwise fetches the AppImage type2 runtime from the
+          # MUTABLE `continuous` tag at repack time — the runtime is the first
+          # code users execute, so pin it too. Tag: 20251108, hash is for the
+          # x86_64 asset (non-x86_64 already hard-fails above).
+          # (https://github.com/AppImage/type2-runtime/releases/tag/20251108)
+          wget -q --tries=3 --timeout=30 -O /tmp/appimage-runtime \
+            "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-${ARCH_SUFFIX}"
+          echo "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  /tmp/appimage-runtime" | sha256sum -c
+          install -D -m 644 /tmp/appimage-runtime /usr/local/lib/appimage-runtime
+          echo "APPIMAGETOOL_RUNTIME_FILE=/usr/local/lib/appimage-runtime" >> "$GITHUB_ENV"
 
       - name: Install desktop dependencies
         run: just desktop-install-ci
