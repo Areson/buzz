@@ -28,8 +28,8 @@ function makeTool(overrides = {}) {
 }
 
 /** Build the row via the real summary pipeline, then render it to HTML. */
-function renderRow(item) {
-  const summary = buildCompactToolSummary(item);
+function renderRow(item, { summaryTitleEnabled = true } = {}) {
+  const summary = buildCompactToolSummary(item, { summaryTitleEnabled });
   return renderToStaticMarkup(
     React.createElement(CompactToolSummaryRow, {
       action: summary.action,
@@ -118,4 +118,45 @@ test("render: rows without a summary keep today's descriptor label", () => {
 
   assert.ok(html.includes(">Ran<"), `descriptor verb should render: ${html}`);
   assert.ok(html.includes("git status"));
+});
+
+test("render: experiment off ignores the friendly title and paints the raw descriptor", () => {
+  const html = renderRow(
+    makeTool({
+      toolName: "developer__shell",
+      args: { command: "git status" },
+      summaryTitle: "checking repository state",
+    }),
+    { summaryTitleEnabled: false },
+  );
+
+  assert.ok(
+    !html.includes("checking repository state"),
+    `friendly title must not paint when the experiment is off: ${html}`,
+  );
+  assert.ok(
+    html.includes(">Ran<"),
+    `raw descriptor verb must render when the experiment is off: ${html}`,
+  );
+  assert.ok(html.includes("git status"));
+});
+
+test("render: experiment off keeps the raw file-read label", () => {
+  const html = renderRow(
+    makeTool({
+      toolName: "read_file",
+      args: { path: "crates/buzz-agent/src/agent.rs" },
+      summaryTitle: "reading agent source module",
+    }),
+    { summaryTitleEnabled: false },
+  );
+
+  assert.ok(
+    !html.includes("reading agent source module"),
+    `friendly title must not paint when the experiment is off: ${html}`,
+  );
+  assert.ok(
+    html.includes(">Read<"),
+    `raw descriptor verb must render when the experiment is off: ${html}`,
+  );
 });
