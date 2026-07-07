@@ -125,7 +125,8 @@ const overrides = new Map([
   // config-bridge-aware requirements: getRuntimeFileConfig command adds ~15 lines.
   // +26 lines from PRs landing on main between prior rebase and this rebase.
   // baked-env-required-badge: getBakedBuildEnvKeys wrapper adds ~16 lines. Queued to split.
-  ["src/shared/api/tauri.ts", 1388],
+  // identity-import-keyring: +1 for `lost` field in RawIdentity type (merged total 1389).
+  ["src/shared/api/tauri.ts", 1389],
   // readiness-gate: PersonaDialog.tsx threads computeLocalModeGate +
   // requiredCredentialEnvKeys + RequiredFieldLabel so the "New agent" dialog
   // shows required markers and credential amber rows (parity with
@@ -179,7 +180,6 @@ const overrides = new Map([
   // uid-keyed lockfile path + behavioral tests add ~303 lines. Load-bearing
   // security fix for the lost-update race that stranded agent keys.
   ["src-tauri/src/secret_store.rs", 1043],
-  ["src-tauri/src/app_state.rs", 1033],
   // multi-slot splitting + no-op suppression (#1309): the ReadStateManager
   // class grew from ~700 lines to ~1019 with the addition of
   // splitContextsIntoBudgetedSlots (pure fn + 5 tests), publishSplitSlots,

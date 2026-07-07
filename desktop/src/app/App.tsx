@@ -204,6 +204,7 @@ function AppReady({
       <OnboardingFlow
         actions={onboarding.flow.actions}
         canBackToWorkspaceSetup={canBackToWorkspaceSetup}
+        identityLost={onboarding.identityLost}
         initialProfile={onboarding.flow.initialProfile}
         key={onboarding.currentPubkey ?? "anonymous"}
         onBackToWorkspaceSetup={onBackToWorkspaceSetup}
