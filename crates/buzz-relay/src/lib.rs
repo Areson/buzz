@@ -39,6 +39,7 @@ pub mod subscription;
 pub mod telemetry;
 /// Row-zero host binding: resolve the request community from the connection host.
 pub mod tenant;
+pub(crate) mod thread_fork;
 /// Webhook secret generation and constant-time comparison.
 pub mod webhook_secret;
 /// Workflow action sink — relay-side implementation of [`buzz_workflow::ActionSink`].

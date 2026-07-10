@@ -79,6 +79,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   isFetchingOlder,
   followThreadById,
   isFollowingThread,
+  isThreadForkActive,
   isFollowingThreadById,
   isMessageUnreadById,
   isJoining = false,
@@ -103,6 +104,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   onDelete,
   onEdit,
   onEditSave,
+  onEndThreadFork,
   onFollowThread,
   onMarkUnread,
   onMarkRead,
@@ -118,6 +120,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   onSendMessage,
   onSendVideoReviewComment,
   onSendThreadReply,
+  onStartThreadFork,
   onThreadScrollTargetResolved,
   onThreadPanelResizeStart,
   onTargetReached,
@@ -606,6 +609,11 @@ export const ChannelPane = React.memo(function ChannelPane({
           ) : null}
           <MessageTimeline
             ref={messageTimelineRef}
+            activeThreadForkRootId={
+              isThreadForkActive && threadHeadMessage
+                ? threadHeadMessage.id
+                : null
+            }
             agentPubkeys={agentPubkeys}
             channelId={activeChannel?.id}
             channelIntro={channelIntro}
@@ -799,6 +807,7 @@ export const ChannelPane = React.memo(function ChannelPane({
               huddleMemberPubkeys={huddleMemberPubkeys}
               huddleMemberPubkeysPending={huddleMemberPubkeysPending}
               isFollowingThread={isFollowingThread}
+              isThreadForkActive={isThreadForkActive}
               isMessageUnreadById={isMessageUnreadById}
               isSending={isSending}
               isSinglePanelView={
@@ -815,12 +824,14 @@ export const ChannelPane = React.memo(function ChannelPane({
               onEdit={onEdit}
               onEditLastOwnMessage={handleEditLastOwnThreadMessage}
               onEditSave={onEditSave}
+              onEndThreadFork={onEndThreadFork}
               onFollowThread={onFollowThread}
               onMarkUnread={onMarkUnread}
               onMarkRead={onMarkRead}
               onExpandReplies={onExpandThreadReplies}
               onSelectReplyTarget={onSelectThreadReplyTarget}
               onSend={onSendThreadReply}
+              onStartThreadFork={onStartThreadFork}
               onScrollTargetResolved={onThreadScrollTargetResolved}
               onToggleReaction={onToggleReaction}
               onUnfollowThread={onUnfollowThread}

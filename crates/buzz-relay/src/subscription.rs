@@ -58,6 +58,78 @@ pub struct SubscriptionRegistry {
     global_wildcard_index: DashMap<CommunityId, Vec<(ConnId, SubId)>>,
 }
 
+pub(crate) fn filters_match_thread_fork(
+    filters: &[Filter],
+    event: &StoredEvent,
+    parent_channel_id: Uuid,
+) -> bool {
+    filters
+        .iter()
+        .any(|filter| filter_match_thread_fork(filter, event, parent_channel_id))
+}
+
+fn filter_match_thread_fork(filter: &Filter, event: &StoredEvent, parent_channel_id: Uuid) -> bool {
+    if let Some(kinds) = &filter.kinds {
+        if !kinds.contains(&event.event.kind) {
+            return false;
+        }
+    }
+
+    if let Some(authors) = &filter.authors {
+        if !authors.contains(&event.event.pubkey) {
+            return false;
+        }
+    }
+
+    if let Some(since) = filter.since {
+        if event.event.created_at < since {
+            return false;
+        }
+    }
+
+    if let Some(until) = filter.until {
+        if event.event.created_at > until {
+            return false;
+        }
+    }
+
+    if let Some(ids) = &filter.ids {
+        let event_id_hex = event.event.id.to_hex();
+        if !ids.iter().any(|id| event_id_hex.starts_with(&id.to_hex())) {
+            return false;
+        }
+    }
+
+    let parent_channel = parent_channel_id.to_string();
+    for (tag_key, tag_values) in filter.generic_tags.iter() {
+        let tag_key_str = tag_key.to_string();
+        if tag_key_str == "h" {
+            if !tag_values
+                .iter()
+                .any(|value| value.as_str() == parent_channel)
+            {
+                return false;
+            }
+            continue;
+        }
+
+        let has_match = tag_values.iter().any(|filter_val| {
+            event
+                .event
+                .tags
+                .iter()
+                .filter(|tag| tag.kind().to_string() == tag_key_str)
+                .filter_map(|tag| tag.content())
+                .any(|event_val| event_val == filter_val.as_str())
+        });
+        if !has_match {
+            return false;
+        }
+    }
+
+    true
+}
+
 impl SubscriptionRegistry {
     /// Creates a new empty registry.
     pub fn new() -> Self {
@@ -328,6 +400,57 @@ impl SubscriptionRegistry {
         results
     }
 
+    /// Return parent-channel subscriptions that match a verified forked child
+    /// event for delivery into the parent thread.
+    ///
+    /// This is intentionally separate from [`Self::fan_out_scoped`]: normal
+    /// channel scoping remains symmetric, and the fork path is the only caller
+    /// that may reinterpret the event's `#h` as the authorized parent channel.
+    #[tracing::instrument(skip_all)]
+    pub fn fan_out_thread_fork_scoped(
+        &self,
+        community_id: CommunityId,
+        parent_channel_id: Uuid,
+        event: &StoredEvent,
+    ) -> Vec<(ConnId, SubId)> {
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
+
+        let key = IndexKey {
+            channel_id: parent_channel_id,
+            kind: event.event.kind,
+        };
+        if let Some(candidates) = self.channel_kind_index.get(&(community_id, key)) {
+            for (conn_id, sub_id) in candidates.iter() {
+                self.push_thread_fork_match(
+                    *conn_id,
+                    sub_id,
+                    parent_channel_id,
+                    event,
+                    &mut results,
+                    &mut seen,
+                );
+            }
+        }
+        if let Some(wildcards) = self
+            .channel_wildcard_index
+            .get(&(community_id, parent_channel_id))
+        {
+            for (conn_id, sub_id) in wildcards.iter() {
+                self.push_thread_fork_match(
+                    *conn_id,
+                    sub_id,
+                    parent_channel_id,
+                    event,
+                    &mut results,
+                    &mut seen,
+                );
+            }
+        }
+
+        results
+    }
+
     /// Test-only convenience wrapper preserving the original single-tenant test API.
     #[cfg(test)]
     pub fn fan_out(&self, event: &StoredEvent) -> Vec<(ConnId, SubId)> {
@@ -362,6 +485,27 @@ impl SubscriptionRegistry {
         if let Some(conn_subs) = self.subs.get(&conn_id) {
             if let Some((filters, _, _)) = conn_subs.get(sub_id) {
                 if filters_match(filters, event) {
+                    let entry = (conn_id, sub_id.to_string());
+                    if seen.insert(entry.clone()) {
+                        results.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    fn push_thread_fork_match(
+        &self,
+        conn_id: ConnId,
+        sub_id: &str,
+        parent_channel_id: Uuid,
+        event: &StoredEvent,
+        results: &mut Vec<(ConnId, SubId)>,
+        seen: &mut HashSet<(ConnId, SubId)>,
+    ) {
+        if let Some(conn_subs) = self.subs.get(&conn_id) {
+            if let Some((filters, _, _)) = conn_subs.get(sub_id) {
+                if filters_match_thread_fork(filters, event, parent_channel_id) {
                     let entry = (conn_id, sub_id.to_string());
                     if seen.insert(entry.clone()) {
                         results.push(entry);
@@ -580,6 +724,22 @@ mod tests {
         StoredEvent::with_received_at(event, Utc::now(), channel_id, true)
     }
 
+    fn make_child_thread_event(
+        kind: Kind,
+        child_channel_id: Uuid,
+        root_event_id: &str,
+    ) -> StoredEvent {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(kind, "test")
+            .tags([
+                Tag::parse(["h", &child_channel_id.to_string()]).expect("valid h tag"),
+                Tag::parse(["e", root_event_id, "", "reply"]).expect("valid e tag"),
+            ])
+            .sign_with_keys(&keys)
+            .expect("sign");
+        StoredEvent::with_received_at(event, Utc::now(), Some(child_channel_id), true)
+    }
+
     #[test]
     fn test_subscription_registry_register_and_fan_out() {
         let registry = SubscriptionRegistry::new();
@@ -595,6 +755,47 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].0, conn_id);
         assert_eq!(matches[0].1, sub_id);
+    }
+
+    #[test]
+    fn thread_fork_fanout_matches_parent_subscription_without_weakening_normal_fanout() {
+        let registry = SubscriptionRegistry::new();
+        let conn_parent = Uuid::new_v4();
+        let conn_child = Uuid::new_v4();
+        let parent_channel_id = Uuid::new_v4();
+        let child_channel_id = Uuid::new_v4();
+        let root_event_id = "a".repeat(64);
+        let h_tag = SingleLetterTag::lowercase(Alphabet::H);
+        let e_tag = SingleLetterTag::lowercase(Alphabet::E);
+
+        registry.register(
+            conn_parent,
+            "parent".to_string(),
+            vec![Filter::new()
+                .kind(Kind::Custom(9))
+                .custom_tags(h_tag, [parent_channel_id.to_string()])
+                .custom_tags(e_tag, [root_event_id.clone()])],
+            Some(parent_channel_id),
+        );
+        registry.register(
+            conn_child,
+            "child".to_string(),
+            vec![Filter::new().kind(Kind::Custom(9))],
+            Some(child_channel_id),
+        );
+
+        let event = make_child_thread_event(Kind::Custom(9), child_channel_id, &root_event_id);
+
+        assert_eq!(
+            registry.fan_out_scoped(test_community(), &event),
+            vec![(conn_child, "child".to_string())],
+            "normal fan-out stays scoped to the child channel"
+        );
+        assert_eq!(
+            registry.fan_out_thread_fork_scoped(test_community(), parent_channel_id, &event),
+            vec![(conn_parent, "parent".to_string())],
+            "only the explicit fork fan-out path may match the parent channel"
+        );
     }
 
     #[test]

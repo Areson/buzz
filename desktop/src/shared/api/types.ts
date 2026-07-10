@@ -957,6 +957,21 @@ export type ThreadRepliesResponse = {
   nextCursor: ThreadCursor | null;
 };
 
+export type ThreadForkMemberError = {
+  pubkey: string;
+  error: string;
+};
+
+export type ThreadForkInfo = {
+  parentChannelId: string;
+  childChannelId: string;
+  rootEventId: string;
+  creatorPubkey: string;
+  active: boolean;
+  added: string[];
+  errors: ThreadForkMemberError[];
+};
+
 /**
  * Composite backward keyset cursor for channel-timeline paging via the bridge
  * (`getChannelMessagesBefore`).

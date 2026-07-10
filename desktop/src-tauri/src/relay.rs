@@ -308,6 +308,32 @@ pub async fn query_relay_at(
     parse_json_response(response).await
 }
 
+/// GET a structured relay endpoint using NIP-98 auth.
+///
+/// `path` must be root-relative and include any query string exactly as the
+/// relay expects it in the signed URL.
+pub async fn get_relay_json<T: DeserializeOwned>(
+    state: &AppState,
+    path: &str,
+) -> Result<T, String> {
+    let url = format!("{}{}", relay_api_base_url_with_override(state), path);
+    let auth = build_nip98_auth_header(&Method::GET, &url, &[], state)?;
+
+    let response = state
+        .http_client
+        .get(&url)
+        .header("Authorization", auth)
+        .send()
+        .await
+        .map_err(|e| classify_request_error(&e))?;
+
+    if !response.status().is_success() {
+        return Err(relay_error_message(response).await);
+    }
+
+    parse_json_response(response).await
+}
+
 // ── Command response parsing ────────────────────────────────────────────────
 
 /// Parse a command-event OK message of the form `"response:<json>"`.

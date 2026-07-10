@@ -168,7 +168,12 @@ const overrides = new Map([
   // getProfile/updateProfile/getUserProfile/getUsersBatch/searchUsers) moved to
   // tauriProfiles.ts; limit ratcheted down 1360 → 1241 to bank the headroom.
   // baked-env fold-in: getBakedBuildEnv + BakedEnvEntry type adds ~28 lines.
-  ["src/shared/api/tauri.ts", 1271],
+  // thread-forks: Tauri invoke wrappers for start/end thread fork commands.
+  // Load-bearing command plumbing; queued to split with the rest of this list.
+  ["src/shared/api/tauri.ts", 1321],
+  // thread-forks: ThreadForkSession/ThreadForkState command result types.
+  // Load-bearing API shape for the fork thread UI; queued to split.
+  ["src/shared/api/types.ts", 1015],
   // readiness-gate: PersonaDialog.tsx threads computeLocalModeGate +
   // requiredCredentialEnvKeys + RequiredFieldLabel so the "New agent" dialog
   // shows required markers and credential amber rows (parity with
@@ -270,7 +275,9 @@ const overrides = new Map([
   // (reply-inclusive; would clear unread state early). The file was already
   // at the 1000 ceiling; comment-only overage, not code growth. Queued to
   // split with the rest of this list.
-  ["src/features/channels/ui/ChannelScreen.tsx", 1002],
+  // thread-forks: active fork state wiring, fork-aware thread open/close
+  // handlers, and fork controls. Load-bearing UI flow; queued to split.
+  ["src/features/channels/ui/ChannelScreen.tsx", 1117],
   // Shared UI was added to this guard after splitting globals/markdown so
   // large shared renderers cannot grow further while follow-up splits land.
   // +33 for config-nudge detect-and-render + author-auth gate (normalizePubkey guard).

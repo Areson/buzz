@@ -6,7 +6,10 @@ import { useActiveChannelHeader } from "@/features/channels/useActiveChannelHead
 import { useChannelPaneHandlers } from "@/features/channels/useChannelPaneHandlers";
 import {
   useChannelMembersQuery,
+  useEndThreadForkMutation,
   useJoinChannelMutation,
+  useStartThreadForkMutation,
+  useThreadForkStateQuery,
 } from "@/features/channels/hooks";
 import {
   MSG_PREFIX,
@@ -43,7 +46,10 @@ import {
   type ChannelWindowThreadSummary,
 } from "@/features/messages/lib/channelWindowStore";
 import { getThreadReference } from "@/features/messages/lib/threading";
-import { imetaMediaFromTags } from "@/features/messages/lib/imetaMediaMarkdown";
+import {
+  imetaMediaFromTags,
+  splitOutgoingTags,
+} from "@/features/messages/lib/imetaMediaMarkdown";
 import {
   resolveTimelineLoadingLatch,
   selectTimelineLoadingState,
@@ -59,6 +65,7 @@ import {
   profileLookupsEqual,
 } from "@/features/profile/lib/identity";
 import type { RelayEvent, RespondToMode, SearchHit } from "@/shared/api/types";
+import { sendChannelMessage } from "@/shared/api/tauri";
 import { useChannelFind } from "@/features/search/useChannelFind";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 import { AgentSessionProvider } from "@/shared/context/AgentSessionContext";
@@ -391,6 +398,99 @@ export function ChannelScreen({
     }
     return pubkeys;
   }, [knownAgentPubkeys, messageProfiles]);
+  const forkAgentPubkeys = React.useMemo(
+    () =>
+      (channelMembers ?? [])
+        .filter((member) => member.role === "bot" || member.isAgent)
+        .map((member) => normalizePubkey(member.pubkey)),
+    [channelMembers],
+  );
+  const threadForkStateQuery = useThreadForkStateQuery(
+    activeChannelId,
+    effectiveOpenThreadHeadId,
+    Boolean(activeChannelId && effectiveOpenThreadHeadId),
+  );
+  const activeThreadFork =
+    threadForkStateQuery.data?.active === true
+      ? threadForkStateQuery.data
+      : null;
+  const canEndActiveThreadFork = Boolean(
+    activeThreadFork &&
+      currentPubkey &&
+      normalizePubkey(activeThreadFork.creatorPubkey) ===
+        normalizePubkey(currentPubkey),
+  );
+  const startThreadForkMutation = useStartThreadForkMutation(
+    activeChannelId,
+    effectiveOpenThreadHeadId,
+  );
+  const endThreadForkMutation = useEndThreadForkMutation(
+    activeChannelId,
+    effectiveOpenThreadHeadId,
+  );
+  const handleStartThreadFork = React.useCallback(async () => {
+    await startThreadForkMutation.mutateAsync({
+      agentPubkeys: forkAgentPubkeys,
+    });
+  }, [forkAgentPubkeys, startThreadForkMutation]);
+  const handleEndThreadFork = React.useCallback(async () => {
+    if (!activeThreadFork || !canEndActiveThreadFork) {
+      return;
+    }
+    await endThreadForkMutation.mutateAsync({
+      childChannelId: activeThreadFork.childChannelId,
+    });
+  }, [activeThreadFork, canEndActiveThreadFork, endThreadForkMutation]);
+  const handleForkAwareThreadReply = React.useCallback(
+    async ({
+      channelId,
+      content,
+      mediaTags,
+      mentionPubkeys,
+      parentEventId,
+      threadHeadId,
+    }: {
+      channelId?: string | null;
+      content: string;
+      mediaTags?: string[][];
+      mentionPubkeys: string[];
+      parentEventId: string;
+      threadHeadId: string | null;
+    }) => {
+      if (
+        activeThreadFork &&
+        threadHeadId === activeThreadFork.rootEventId &&
+        activeThreadFork.childChannelId
+      ) {
+        const {
+          mediaTags: imetaTags,
+          emojiTags,
+          mentionTags,
+        } = splitOutgoingTags(mediaTags);
+        const result = await sendChannelMessage(
+          activeThreadFork.childChannelId,
+          content,
+          parentEventId,
+          imetaTags,
+          mentionPubkeys,
+          undefined,
+          emojiTags,
+          mentionTags,
+        );
+        return { id: result.eventId };
+      }
+
+      const sent = await sendMessageMutation.mutateAsync({
+        channelId: channelId ?? undefined,
+        content,
+        mediaTags,
+        mentionPubkeys,
+        parentEventId,
+      });
+      return { id: sent.id };
+    },
+    [activeThreadFork, sendMessageMutation],
+  );
   const personasQuery = usePersonasQuery();
   const { personaLookup, respondToLookup } = React.useMemo(() => {
     const agents = managedAgentsQuery.data ?? [];
@@ -523,6 +623,7 @@ export function ChannelScreen({
     openThreadHeadId: effectiveOpenThreadHeadId,
     onOptimisticOpenThreadHeadIdChange: setOptimisticOpenThreadHeadId,
     sendMessageMutation,
+    sendThreadReply: handleForkAwareThreadReply,
     setExpandedThreadReplyIds,
     setEditTargetId,
     setOpenThreadHeadId,
@@ -899,6 +1000,7 @@ export function ChannelScreen({
                   isFollowingThreadById={isFollowingThread}
                   isMessageUnreadById={isMessageUnread}
                   isFollowingThread={isNotifiedForEffectiveThread}
+                  isThreadForkActive={Boolean(activeThreadFork)}
                   isSending={sendMessageMutation.isPending}
                   isSinglePanelView={isSinglePanelView}
                   isTimelineLoading={isTimelineLoading}
@@ -934,6 +1036,13 @@ export function ChannelScreen({
                   onEditSave={
                     activeChannel?.archivedAt ? undefined : handleEditSave
                   }
+                  onEndThreadFork={
+                    activeChannel?.archivedAt ||
+                    !activeThreadFork ||
+                    !canEndActiveThreadFork
+                      ? undefined
+                      : handleEndThreadFork
+                  }
                   onMarkUnread={handleMessageMarkUnread}
                   onMarkRead={handleMessageMarkRead}
                   onExpandThreadReplies={handleExpandThreadReplies}
@@ -947,6 +1056,13 @@ export function ChannelScreen({
                   onSendMessage={handleSendMessage}
                   onSendVideoReviewComment={effectiveSendVideoReviewComment}
                   onSendThreadReply={handleSendThreadReply}
+                  onStartThreadFork={
+                    activeChannel?.archivedAt ||
+                    activeThreadFork ||
+                    forkAgentPubkeys.length === 0
+                      ? undefined
+                      : handleStartThreadFork
+                  }
                   onThreadScrollTargetResolved={
                     handleThreadScrollTargetResolved
                   }

@@ -10,7 +10,9 @@ import {
   getChannelDetails,
   getChannelMembers,
   getChannels,
+  getThreadForkState,
   hideDm,
+  endThreadFork,
   joinChannel,
   leaveChannel,
   openDm,
@@ -18,6 +20,7 @@ import {
   setCanvas,
   setChannelPurpose,
   setChannelTopic,
+  startThreadFork,
   unarchiveChannel,
   updateChannel,
 } from "@/shared/api/tauri";
@@ -29,6 +32,7 @@ import type {
   OpenDmInput,
   SetChannelPurposeInput,
   SetChannelTopicInput,
+  ThreadForkInfo,
   UpdateChannelInput,
 } from "@/shared/api/types";
 import { useWorkspaces } from "@/features/workspaces/useWorkspaces";
@@ -42,6 +46,10 @@ const channelDetailQueryKey = (channelId: string) =>
   ["channels", channelId, "detail"] as const;
 const channelMembersQueryKey = (channelId: string) =>
   ["channels", channelId, "members"] as const;
+export const threadForkQueryKey = (
+  parentChannelId: string | null,
+  rootEventId: string | null,
+) => ["thread-fork", parentChannelId, rootEventId] as const;
 const channelTypeOrder = {
   stream: 0,
   forum: 1,
@@ -528,6 +536,82 @@ export function useSelectedChannel(
     selectedChannelId,
     setSelectedChannelId,
   };
+}
+
+// ── Thread Forks ─────────────────────────────────────────────────────────────
+export function useThreadForkStateQuery(
+  parentChannelId: string | null,
+  rootEventId: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: threadForkQueryKey(parentChannelId, rootEventId),
+    queryFn: () => {
+      if (!parentChannelId || !rootEventId) {
+        return Promise.reject(new Error("No thread selected"));
+      }
+      return getThreadForkState(parentChannelId, rootEventId);
+    },
+    enabled: enabled && parentChannelId !== null && rootEventId !== null,
+  });
+}
+
+export function useStartThreadForkMutation(
+  parentChannelId: string | null,
+  rootEventId: string | null,
+) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: {
+      agentPubkeys: string[];
+      channelName?: string | null;
+    }) => {
+      if (!parentChannelId || !rootEventId) {
+        return Promise.reject(new Error("No thread selected"));
+      }
+      return startThreadFork({
+        parentChannelId,
+        rootEventId,
+        agentPubkeys: input.agentPubkeys,
+        channelName: input.channelName ?? null,
+      });
+    },
+    onSuccess: (info: ThreadForkInfo) => {
+      queryClient.setQueryData(
+        threadForkQueryKey(parentChannelId, rootEventId),
+        info,
+      );
+      void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
+    },
+  });
+}
+
+export function useEndThreadForkMutation(
+  parentChannelId: string | null,
+  rootEventId: string | null,
+) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: { childChannelId: string }) => {
+      if (!parentChannelId || !rootEventId) {
+        return Promise.reject(new Error("No thread selected"));
+      }
+      return endThreadFork({
+        parentChannelId,
+        rootEventId,
+        childChannelId: input.childChannelId,
+      });
+    },
+    onSuccess: (info: ThreadForkInfo) => {
+      queryClient.setQueryData(
+        threadForkQueryKey(parentChannelId, rootEventId),
+        info,
+      );
+      void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
+    },
+  });
 }
 
 // ── Canvas ────────────────────────────────────────────────────────────────────

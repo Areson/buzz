@@ -20,6 +20,7 @@
 
 use std::time::Duration;
 
+use buzz_core::kind::{KIND_THREAD_FORK_ENDED, KIND_THREAD_FORK_STARTED};
 use buzz_test_client::{BuzzTestClient, RelayMessage, TestClientError};
 use nostr::{Alphabet, EventBuilder, Filter, Keys, Kind, SingleLetterTag, Tag};
 
@@ -77,6 +78,71 @@ async fn create_test_channel(keys: &Keys) -> String {
     );
 
     channel_uuid.to_string()
+}
+
+fn thread_fork_link_event(
+    signer: &Keys,
+    parent_channel_id: &str,
+    child_channel_id: &str,
+    root_event_id: &str,
+) -> nostr::Event {
+    let content = serde_json::json!({
+        "child_channel_id": child_channel_id,
+        "root_event_id": root_event_id,
+    })
+    .to_string();
+    EventBuilder::new(Kind::Custom(KIND_THREAD_FORK_STARTED as u16), content)
+        .tags([Tag::parse(["h", parent_channel_id]).expect("h tag")])
+        .sign_with_keys(signer)
+        .expect("sign thread fork link")
+}
+
+fn thread_fork_end_event(
+    signer: &Keys,
+    parent_channel_id: &str,
+    child_channel_id: &str,
+    root_event_id: &str,
+) -> nostr::Event {
+    let content = serde_json::json!({
+        "child_channel_id": child_channel_id,
+        "root_event_id": root_event_id,
+    })
+    .to_string();
+    EventBuilder::new(Kind::Custom(KIND_THREAD_FORK_ENDED as u16), content)
+        .tags([Tag::parse(["h", parent_channel_id]).expect("h tag")])
+        .sign_with_keys(signer)
+        .expect("sign thread fork end")
+}
+
+fn child_thread_reply_event(
+    signer: &Keys,
+    child_channel_id: &str,
+    root_event_id: &str,
+    content: &str,
+) -> nostr::Event {
+    EventBuilder::new(Kind::Custom(9), content)
+        .tags([
+            Tag::parse(["h", child_channel_id]).expect("h tag"),
+            Tag::parse(["e", root_event_id, "", "root"]).expect("root tag"),
+            Tag::parse(["e", root_event_id, "", "reply"]).expect("reply tag"),
+        ])
+        .sign_with_keys(signer)
+        .expect("sign child thread reply")
+}
+
+fn child_root_only_event(
+    signer: &Keys,
+    child_channel_id: &str,
+    root_event_id: &str,
+    content: &str,
+) -> nostr::Event {
+    EventBuilder::new(Kind::Custom(9), content)
+        .tags([
+            Tag::parse(["h", child_channel_id]).expect("h tag"),
+            Tag::parse(["e", root_event_id, "", "root"]).expect("root tag"),
+        ])
+        .sign_with_keys(signer)
+        .expect("sign root-only child event")
 }
 
 #[tokio::test]
@@ -149,6 +215,213 @@ async fn test_send_event_and_receive_via_subscription() {
 
     client_a.disconnect().await.expect("disconnect A");
     client_b.disconnect().await.expect("disconnect B");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_thread_fork_c2_parent_subscription_live_and_backfill() {
+    let url = relay_url();
+    let parent_keys = Keys::generate();
+    let child_keys = Keys::generate();
+    let bad_child_keys = Keys::generate();
+
+    let parent_channel = create_test_channel(&parent_keys).await;
+    let child_channel = create_test_channel(&child_keys).await;
+    let bad_child_channel = create_test_channel(&bad_child_keys).await;
+
+    let mut parent_client = BuzzTestClient::connect(&url, &parent_keys)
+        .await
+        .expect("parent connect");
+    let mut child_client = BuzzTestClient::connect(&url, &child_keys)
+        .await
+        .expect("child connect");
+    let mut bad_child_client = BuzzTestClient::connect(&url, &bad_child_keys)
+        .await
+        .expect("bad child connect");
+
+    let root = EventBuilder::new(Kind::Custom(9), "fork root")
+        .tags([Tag::parse(["h", &parent_channel]).expect("h tag")])
+        .sign_with_keys(&parent_keys)
+        .expect("sign root");
+    let root_event_id = root.id.to_hex();
+    let ok = parent_client.send_event(root).await.expect("send root");
+    assert!(ok.accepted, "root rejected: {}", ok.message);
+
+    let valid_link =
+        thread_fork_link_event(&child_keys, &parent_channel, &child_channel, &root_event_id);
+    let ok = child_client
+        .send_event(valid_link)
+        .await
+        .expect("send valid fork link");
+    assert!(ok.accepted, "valid fork link rejected: {}", ok.message);
+
+    let wrong_signed_link = thread_fork_link_event(
+        &parent_keys,
+        &parent_channel,
+        &bad_child_channel,
+        &root_event_id,
+    );
+    let ok = parent_client
+        .send_event(wrong_signed_link)
+        .await
+        .expect("send wrong-signed fork link");
+    assert!(
+        ok.accepted,
+        "wrong-signed link should be stored but not authorize: {}",
+        ok.message
+    );
+
+    let h_tag = SingleLetterTag::lowercase(Alphabet::H);
+    let e_tag = SingleLetterTag::lowercase(Alphabet::E);
+    let filter = Filter::new()
+        .kind(Kind::Custom(9))
+        .custom_tags(h_tag, [parent_channel.as_str()])
+        .custom_tags(e_tag, [root_event_id.as_str()]);
+
+    let live_sid = sub_id("fork-live");
+    parent_client
+        .subscribe(&live_sid, vec![filter.clone()])
+        .await
+        .expect("subscribe parent thread");
+    parent_client
+        .collect_until_eose(&live_sid, Duration::from_secs(5))
+        .await
+        .expect("drain parent thread history before live reply");
+
+    let root_only_event = child_root_only_event(
+        &child_keys,
+        &child_channel,
+        &root_event_id,
+        "root-only child event",
+    );
+    let root_only_id = root_only_event.id;
+    let ok = child_client
+        .send_event(root_only_event)
+        .await
+        .expect("send root-only child event");
+    assert!(
+        ok.accepted,
+        "root-only event should be accepted as a child-channel event: {}",
+        ok.message
+    );
+    assert!(
+        parent_client
+            .recv_event(Duration::from_millis(300))
+            .await
+            .is_err(),
+        "root-only child event must not reach parent subscription live"
+    );
+
+    let child_reply = child_thread_reply_event(
+        &child_keys,
+        &child_channel,
+        &root_event_id,
+        "forked child live reply",
+    );
+    let child_reply_id = child_reply.id;
+    let ok = child_client
+        .send_event(child_reply)
+        .await
+        .expect("send forked child reply");
+    assert!(
+        ok.accepted,
+        "forked child reply should be accepted: {}",
+        ok.message
+    );
+
+    let msg = parent_client
+        .recv_event(Duration::from_secs(5))
+        .await
+        .expect("parent receives forked child reply live");
+    match msg {
+        RelayMessage::Event { event, .. } => assert_eq!(event.id, child_reply_id),
+        other => panic!("expected forked child EVENT, got: {:?}", other),
+    }
+
+    let bad_reply = child_thread_reply_event(
+        &bad_child_keys,
+        &bad_child_channel,
+        &root_event_id,
+        "wrong-signed child reply",
+    );
+    let ok = bad_child_client
+        .send_event(bad_reply)
+        .await
+        .expect("send wrong-signed child reply");
+    assert!(
+        !ok.accepted,
+        "wrong-signed fork link must not authorize child reply"
+    );
+    assert!(
+        parent_client
+            .recv_event(Duration::from_millis(300))
+            .await
+            .is_err(),
+        "wrong-signed child reply must not reach parent subscription"
+    );
+
+    let mut backfill_client = BuzzTestClient::connect(&url, &parent_keys)
+        .await
+        .expect("backfill connect");
+    let backfill_sid = sub_id("fork-backfill");
+    backfill_client
+        .subscribe(&backfill_sid, vec![filter.clone()])
+        .await
+        .expect("subscribe parent thread for backfill");
+    let backfill = backfill_client
+        .collect_until_eose(&backfill_sid, Duration::from_secs(5))
+        .await
+        .expect("collect parent thread backfill");
+    assert!(
+        backfill.iter().any(|event| event.id == child_reply_id),
+        "parent-thread backfill must include fork-linked child reply"
+    );
+    assert!(
+        !backfill.iter().any(|event| event.id == root_only_id),
+        "parent-thread backfill must not include root-only child events"
+    );
+
+    let ended_link =
+        thread_fork_end_event(&child_keys, &parent_channel, &child_channel, &root_event_id);
+    let ok = child_client
+        .send_event(ended_link)
+        .await
+        .expect("send thread fork end");
+    assert!(ok.accepted, "thread fork end rejected: {}", ok.message);
+
+    let mut ended_backfill_client = BuzzTestClient::connect(&url, &parent_keys)
+        .await
+        .expect("post-end backfill connect");
+    let ended_backfill_sid = sub_id("fork-ended-backfill");
+    ended_backfill_client
+        .subscribe(&ended_backfill_sid, vec![filter.clone()])
+        .await
+        .expect("subscribe parent thread after fork end");
+    let ended_backfill = ended_backfill_client
+        .collect_until_eose(&ended_backfill_sid, Duration::from_secs(5))
+        .await
+        .expect("collect post-end parent thread backfill");
+    assert!(
+        !ended_backfill
+            .iter()
+            .any(|event| event.id == child_reply_id),
+        "parent-thread backfill must stop including child replies once the fork is ended"
+    );
+
+    parent_client.disconnect().await.expect("parent disconnect");
+    child_client.disconnect().await.expect("child disconnect");
+    bad_child_client
+        .disconnect()
+        .await
+        .expect("bad child disconnect");
+    backfill_client
+        .disconnect()
+        .await
+        .expect("backfill disconnect");
+    ended_backfill_client
+        .disconnect()
+        .await
+        .expect("post-end backfill disconnect");
 }
 
 #[tokio::test]

@@ -906,7 +906,37 @@ pub async fn query_events(
 
         for reply in thread_replies {
             let se = reply.stored_event;
-            if !event_in_accessible_channel(&se, &accessible_channels) {
+            let direct_access = event_in_accessible_channel(&se, &accessible_channels)
+                && buzz_core::filter::filters_match(std::slice::from_ref(filter), &se);
+            let fork_access = if direct_access {
+                false
+            } else if let Some(parent_channel_id) = extract_channel_from_filter(filter) {
+                match crate::thread_fork::event_accessible_via_thread_fork(
+                    state.as_ref(),
+                    tenant.community(),
+                    &se,
+                    &accessible_channels,
+                )
+                .await
+                {
+                    Ok(true) => crate::subscription::filters_match_thread_fork(
+                        std::slice::from_ref(filter),
+                        &se,
+                        parent_channel_id,
+                    ),
+                    Ok(false) => false,
+                    Err(e) => {
+                        tracing::warn!(
+                            event_id = %se.event.id.to_hex(),
+                            "thread-fork bridge authorization failed closed: {e}"
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            if !direct_access && !fork_access {
                 continue;
             }
             // Defense-in-depth: never deliver a result-gated event (e.g. kind:44200
@@ -1251,6 +1281,85 @@ pub async fn count_events(
     }
 
     Ok(Json(serde_json::json!({ "count": total })))
+}
+
+/// Return the relay-authoritative active thread-fork lane for a parent/root.
+///
+/// This is a structured NIP-98 GET read rather than a synthetic event because
+/// the result depends on DB-only authority: immutable `channels.created_by` and
+/// server `received_at` ordering.
+pub async fn thread_fork_active_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((parent_channel_id_raw, root_event_id_raw)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let parent_channel_id = uuid::Uuid::parse_str(&parent_channel_id_raw)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid parent_channel_id"))?;
+    let root_event_id = root_event_id_raw.to_ascii_lowercase();
+    let root_event_id_bytes = hex::decode(&root_event_id)
+        .ok()
+        .filter(|bytes| bytes.len() == 32)
+        .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "invalid root_event_id"))?;
+
+    let raw_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let tenant = crate::tenant::bind_community(&state.db, raw_host)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "relay: no community is configured for this host",
+            )
+        })?;
+
+    let path = format!("/thread-forks/{parent_channel_id_raw}/{root_event_id_raw}/active");
+    let url = nip98_expected_url(&state.config.relay_url, &tenant, &path);
+    let (pubkey, event_id_bytes) =
+        verify_bridge_auth(&headers, "GET", &url, None, state.config.require_auth_token)?;
+    check_nip98_replay(&state, &tenant, event_id_bytes).await?;
+    let pubkey_bytes = pubkey.to_bytes().to_vec();
+
+    let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
+    super::relay_members::enforce_relay_membership(
+        &state,
+        tenant.community(),
+        &pubkey_bytes,
+        auth_tag,
+    )
+    .await?;
+
+    let accessible_channels = state
+        .get_accessible_channel_ids_cached(tenant.community(), &pubkey_bytes)
+        .await
+        .map_err(|e| internal_error(&format!("channel access lookup: {e}")))?;
+    if !accessible_channels.contains(&parent_channel_id) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "restricted: parent channel is not accessible",
+        ));
+    }
+
+    let Some(active) = state
+        .db
+        .active_thread_fork_session(tenant.community(), parent_channel_id, &root_event_id_bytes)
+        .await
+        .map_err(|e| internal_error(&format!("thread fork active state lookup: {e}")))?
+    else {
+        return Ok(Json(Value::Null));
+    };
+
+    Ok(Json(serde_json::json!({
+        "parent_channel_id": parent_channel_id.to_string(),
+        "child_channel_id": active.child_channel_id.to_string(),
+        "root_event_id": root_event_id,
+        "creator_pubkey": hex::encode(active.creator_pubkey),
+        "active": true,
+        "started_event_id": hex::encode(active.started_event_id),
+        "started_received_at": active.started_received_at.timestamp(),
+        "latest_created_at_secs": active.started_created_at.timestamp(),
+    })))
 }
 
 fn has_mixed_search_filters(filters: &[nostr::Filter]) -> bool {
@@ -1862,6 +1971,8 @@ fn ban_json(b: &buzz_db::moderation::BanRecord) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzz_core::kind::{KIND_THREAD_FORK_ENDED, KIND_THREAD_FORK_STARTED};
+    use buzz_db::channel::{ChannelType, ChannelVisibility};
     use nostr::{Alphabet, EventBuilder, Keys, Kind, SingleLetterTag, Tag};
 
     fn redis_pool() -> deadpool_redis::Pool {
@@ -1884,6 +1995,253 @@ mod tests {
             .expect("sign auth event")
             .id
             .to_bytes()
+    }
+
+    fn test_config() -> crate::config::Config {
+        let mut config = crate::config::Config::from_env().expect("default config loads");
+        config.require_relay_membership = false;
+        config.redis_url = "redis://127.0.0.1:1".to_string();
+        config
+    }
+
+    async fn test_state() -> Arc<AppState> {
+        let config = test_config();
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        let db = buzz_db::Db::from_pool(pool.clone());
+        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool");
+        let pubsub = Arc::new(
+            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+                .await
+                .expect("pubsub manager"),
+        );
+        let audit = buzz_audit::AuditService::new(pool.clone());
+        let auth = buzz_auth::AuthService::new(config.auth.clone());
+        let search = buzz_search::SearchService::new(pool.clone());
+        let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+            db.clone(),
+            buzz_workflow::WorkflowConfig::default(),
+        ));
+        let media_storage = buzz_media::MediaStorage::new(&config.media).expect("media storage");
+        let (state, _audit_shutdown) = AppState::new(
+            config,
+            db,
+            redis_pool,
+            audit,
+            pubsub,
+            auth,
+            search,
+            workflow_engine,
+            Keys::generate(),
+            media_storage,
+        );
+        Arc::new(state)
+    }
+
+    fn bridge_headers(host: &str, keys: &Keys) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::HOST, host.parse().expect("host"));
+        headers.insert(
+            "x-pubkey",
+            keys.public_key().to_hex().parse().expect("pubkey"),
+        );
+        headers
+    }
+
+    fn text_note(keys: &Keys, content: &str, tags: Vec<Tag>) -> nostr::Event {
+        EventBuilder::new(Kind::Custom(9), content.to_string())
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign text note")
+    }
+
+    fn thread_fork_lifecycle_link(
+        signer: &Keys,
+        kind: u32,
+        parent_channel_id: uuid::Uuid,
+        child_channel_id: uuid::Uuid,
+        root_id_hex: &str,
+    ) -> nostr::Event {
+        let content = serde_json::json!({
+            "child_channel_id": child_channel_id,
+            "root_event_id": root_id_hex,
+        })
+        .to_string();
+        EventBuilder::new(Kind::Custom(kind as u16), content)
+            .tags([Tag::parse(["h", &parent_channel_id.to_string()]).expect("h tag")])
+            .sign_with_keys(signer)
+            .expect("sign thread fork lifecycle event")
+    }
+
+    async fn bridge_thread_query(
+        state: Arc<AppState>,
+        host: &str,
+        keys: &Keys,
+        parent_channel_id: uuid::Uuid,
+        root_id_hex: &str,
+    ) -> Result<Vec<nostr::Event>, (StatusCode, Json<Value>)> {
+        let raw_filter = serde_json::json!({
+            "kinds": [9],
+            "#h": [parent_channel_id.to_string()],
+            "#e": [root_id_hex],
+            "depth_limit": 10,
+            "limit": 20,
+        });
+        let body = axum::body::Bytes::from(serde_json::to_vec(&vec![raw_filter]).expect("body"));
+        let response = query_events(State(state), bridge_headers(host, keys), body).await?;
+        let events: Vec<nostr::Event> =
+            serde_json::from_value(response.0).expect("bridge events deserialize");
+        Ok(events)
+    }
+
+    #[tokio::test]
+    async fn bridge_thread_fork_parent_query_hides_child_reply_after_end_with_child_access() {
+        let state = test_state().await;
+        let host = format!(
+            "bridge-thread-fork-{}.example",
+            uuid::Uuid::new_v4().simple()
+        );
+        let community = match state.db.ensure_configured_community(&host).await {
+            Ok(community) => community,
+            Err(e) => {
+                eprintln!("skipping bridge thread-fork regression: Postgres unavailable: {e}");
+                return;
+            }
+        };
+
+        let parent_owner = Keys::generate();
+        let child_creator = Keys::generate();
+        let viewer = Keys::generate();
+        let parent_channel_id = uuid::Uuid::new_v4();
+        let child_channel_id = uuid::Uuid::new_v4();
+
+        state
+            .db
+            .create_channel_with_id(
+                community.id,
+                parent_channel_id,
+                "bridge fork parent",
+                ChannelType::Stream,
+                ChannelVisibility::Open,
+                None,
+                &parent_owner.public_key().to_bytes(),
+                None,
+            )
+            .await
+            .expect("create parent channel");
+        state
+            .db
+            .create_channel_with_id(
+                community.id,
+                child_channel_id,
+                "bridge fork child",
+                ChannelType::Stream,
+                ChannelVisibility::Open,
+                None,
+                &child_creator.public_key().to_bytes(),
+                None,
+            )
+            .await
+            .expect("create child channel");
+
+        let root = text_note(
+            &parent_owner,
+            "bridge fork root",
+            vec![Tag::parse(["h", &parent_channel_id.to_string()]).expect("h tag")],
+        );
+        state
+            .db
+            .insert_event(community.id, &root, Some(parent_channel_id))
+            .await
+            .expect("insert root event");
+        let root_id_hex = root.id.to_hex();
+        let root_created_at = chrono::DateTime::from_timestamp(root.created_at.as_secs() as i64, 0)
+            .expect("root timestamp");
+
+        let start = thread_fork_lifecycle_link(
+            &child_creator,
+            KIND_THREAD_FORK_STARTED,
+            parent_channel_id,
+            child_channel_id,
+            &root_id_hex,
+        );
+        state
+            .db
+            .insert_event(community.id, &start, Some(parent_channel_id))
+            .await
+            .expect("insert start event");
+
+        let child_reply = text_note(
+            &child_creator,
+            "bridge fork child reply",
+            vec![
+                Tag::parse(["h", &child_channel_id.to_string()]).expect("h tag"),
+                Tag::parse(["e", &root_id_hex, "", "root"]).expect("root tag"),
+                Tag::parse(["e", &root_id_hex, "", "reply"]).expect("reply tag"),
+            ],
+        );
+        let child_created_at =
+            chrono::DateTime::from_timestamp(child_reply.created_at.as_secs() as i64, 0)
+                .expect("child timestamp");
+        state
+            .db
+            .insert_event_with_thread_metadata(
+                community.id,
+                &child_reply,
+                Some(child_channel_id),
+                Some(buzz_db::event::ThreadMetadataParams {
+                    event_id: child_reply.id.as_bytes(),
+                    event_created_at: child_created_at,
+                    channel_id: child_channel_id,
+                    parent_event_id: Some(root.id.as_bytes()),
+                    parent_event_created_at: Some(root_created_at),
+                    root_event_id: Some(root.id.as_bytes()),
+                    root_event_created_at: Some(root_created_at),
+                    depth: 1,
+                    broadcast: true,
+                }),
+            )
+            .await
+            .expect("insert child reply with thread metadata");
+
+        let active_results = bridge_thread_query(
+            state.clone(),
+            &host,
+            &viewer,
+            parent_channel_id,
+            &root_id_hex,
+        )
+        .await
+        .expect("active parent thread query");
+        assert!(
+            active_results
+                .iter()
+                .any(|event| event.id == child_reply.id),
+            "active fork must expose child reply through the parent-thread bridge query"
+        );
+
+        let end = thread_fork_lifecycle_link(
+            &child_creator,
+            KIND_THREAD_FORK_ENDED,
+            parent_channel_id,
+            child_channel_id,
+            &root_id_hex,
+        );
+        state
+            .db
+            .insert_event(community.id, &end, Some(parent_channel_id))
+            .await
+            .expect("insert end event");
+
+        let ended_results =
+            bridge_thread_query(state, &host, &viewer, parent_channel_id, &root_id_hex)
+                .await
+                .expect("ended parent thread query");
+        assert!(
+            !ended_results.iter().any(|event| event.id == child_reply.id),
+            "ended fork must not leak a directly accessible child reply through the parent #h bridge query"
+        );
     }
 
     #[test]

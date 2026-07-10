@@ -7,11 +7,12 @@
 use chrono::{DateTime, Utc};
 use nostr::Event;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use buzz_core::kind::{
     event_kind_i32, is_ephemeral, is_parameterized_replaceable, KIND_AUTH, KIND_EVENT_REMINDER,
-    KIND_HUDDLE_STARTED,
+    KIND_HUDDLE_STARTED, KIND_THREAD_FORK_ENDED, KIND_THREAD_FORK_STARTED,
 };
 use buzz_core::{CommunityId, StoredEvent};
 
@@ -131,6 +132,10 @@ const HUDDLE_LINK_CONTENT_MAX_BYTES: i64 = 512;
 /// Maximum candidate rows inspected after SQL prefiltering by parent, creator,
 /// kind, and UUID substring.
 const HUDDLE_LINK_CANDIDATE_LIMIT: i64 = 32;
+/// Maximum length for a thread-fork link body.
+///
+/// The canonical content is a small JSON object with one UUID and one event id.
+const THREAD_FORK_LINK_CONTENT_MAX_BYTES: i64 = 1024;
 
 /// Extract the `d_tag` value for storage.
 ///
@@ -189,6 +194,97 @@ fn huddle_started_content_links(content: &str, ephemeral_channel_id: Uuid) -> bo
         .is_some_and(|id| id == ephemeral_channel_id)
 }
 
+fn thread_fork_content_child_channel_id(content: &str, root_event_id: &[u8]) -> Option<Uuid> {
+    let root_hex = hex::encode(root_event_id);
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|value| {
+            let child_channel_id = value
+                .get("child_channel_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())?;
+            let root_matches = value
+                .get("root_event_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| id.eq_ignore_ascii_case(&root_hex));
+            root_matches.then_some(child_channel_id)
+        })
+}
+
+#[cfg(test)]
+fn thread_fork_content_links(content: &str, child_channel_id: Uuid, root_event_id: &[u8]) -> bool {
+    thread_fork_content_child_channel_id(content, root_event_id)
+        .is_some_and(|id| id == child_channel_id)
+}
+
+#[derive(Clone, Debug)]
+struct ThreadForkLifecycleCandidate {
+    event_id: Vec<u8>,
+    pubkey: Vec<u8>,
+    kind: i32,
+    child_channel_id: Uuid,
+    created_at: DateTime<Utc>,
+    received_at: DateTime<Utc>,
+}
+
+/// Canonical active thread-fork lane resolved from creator-signed lifecycle
+/// rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadForkActiveSession {
+    /// Child channel receiving routed replies for the active lane.
+    pub child_channel_id: Uuid,
+    /// Public key that created the child channel and signed the lifecycle row.
+    pub creator_pubkey: Vec<u8>,
+    /// Client timestamp on the canonical STARTED event.
+    pub started_created_at: DateTime<Utc>,
+    /// Relay receive timestamp on the canonical STARTED event.
+    pub started_received_at: DateTime<Utc>,
+    /// Event id of the canonical STARTED event.
+    pub started_event_id: Vec<u8>,
+}
+
+fn canonical_active_thread_fork_session(
+    mut candidates: Vec<ThreadForkLifecycleCandidate>,
+    child_creators: &HashMap<Uuid, Vec<u8>>,
+) -> Option<ThreadForkActiveSession> {
+    candidates.sort_by(|left, right| {
+        left.received_at
+            .cmp(&right.received_at)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    });
+
+    let mut active_sessions: HashMap<(Uuid, Vec<u8>), ThreadForkActiveSession> = HashMap::new();
+    for candidate in candidates {
+        let Some(created_by) = child_creators.get(&candidate.child_channel_id) else {
+            continue;
+        };
+        if created_by.as_slice() != candidate.pubkey.as_slice() {
+            continue;
+        }
+
+        let key = (candidate.child_channel_id, candidate.pubkey.clone());
+        if candidate.kind == KIND_THREAD_FORK_STARTED as i32 {
+            active_sessions
+                .entry(key)
+                .or_insert_with(|| ThreadForkActiveSession {
+                    child_channel_id: candidate.child_channel_id,
+                    creator_pubkey: candidate.pubkey,
+                    started_created_at: candidate.created_at,
+                    started_received_at: candidate.received_at,
+                    started_event_id: candidate.event_id,
+                });
+        } else if candidate.kind == KIND_THREAD_FORK_ENDED as i32 {
+            active_sessions.remove(&key);
+        }
+    }
+
+    active_sessions.into_values().min_by(|left, right| {
+        left.started_received_at
+            .cmp(&right.started_received_at)
+            .then_with(|| left.started_event_id.cmp(&right.started_event_id))
+    })
+}
+
 /// Return whether `parent_channel_id` has a creator-signed huddle-start event
 /// that links to `ephemeral_channel_id`.
 ///
@@ -231,6 +327,115 @@ pub async fn huddle_started_link_exists(
     Ok(candidates
         .iter()
         .any(|content| huddle_started_content_links(content, ephemeral_channel_id)))
+}
+
+/// Return the canonical active thread-fork lane for `root_event_id`, if any.
+///
+/// The creator constraint binds every considered link to its child channel
+/// creator. Among live links for the same parent/root, the canonical lane is
+/// the active session with the earliest relay `received_at` STARTED event, with
+/// event id as a deterministic tie-breaker.
+pub async fn active_thread_fork_session(
+    pool: &PgPool,
+    community_id: CommunityId,
+    parent_channel_id: Uuid,
+    root_event_id: &[u8],
+) -> Result<Option<ThreadForkActiveSession>> {
+    if root_event_id.len() != 32 {
+        return Ok(None);
+    }
+
+    let root_needle = format!("%{}%", hex::encode(root_event_id));
+    let rows: Vec<(Vec<u8>, Vec<u8>, i32, String, DateTime<Utc>, DateTime<Utc>)> = sqlx::query_as(
+        r#"
+        SELECT id, pubkey, kind, content, created_at, received_at
+        FROM events
+        WHERE deleted_at IS NULL
+          AND community_id = $1
+          AND channel_id = $2
+          AND kind IN ($3, $4)
+          AND octet_length(content) <= $5
+          AND content ILIKE $6
+        ORDER BY received_at ASC, id ASC
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(parent_channel_id)
+    .bind(KIND_THREAD_FORK_STARTED as i32)
+    .bind(KIND_THREAD_FORK_ENDED as i32)
+    .bind(THREAD_FORK_LINK_CONTENT_MAX_BYTES)
+    .bind(root_needle)
+    .fetch_all(pool)
+    .await?;
+
+    let candidates: Vec<ThreadForkLifecycleCandidate> = rows
+        .into_iter()
+        .filter_map(
+            |(event_id, pubkey, kind, content, created_at, received_at)| {
+                thread_fork_content_child_channel_id(&content, root_event_id).map(
+                    |child_channel_id| ThreadForkLifecycleCandidate {
+                        event_id,
+                        pubkey,
+                        kind,
+                        child_channel_id,
+                        created_at,
+                        received_at,
+                    },
+                )
+            },
+        )
+        .collect();
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let child_ids: Vec<Uuid> = candidates
+        .iter()
+        .map(|candidate| candidate.child_channel_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let child_creators: HashMap<Uuid, Vec<u8>> = sqlx::query_as::<_, (Uuid, Vec<u8>)>(
+        r#"
+        SELECT id, created_by
+        FROM channels
+        WHERE community_id = $1
+          AND id = ANY($2)
+          AND deleted_at IS NULL
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(&child_ids)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect();
+
+    Ok(canonical_active_thread_fork_session(
+        candidates,
+        &child_creators,
+    ))
+}
+
+/// Return whether `parent_channel_id` has a creator-signed thread-fork link
+/// that is the canonical active lane for `root_event_id`.
+pub async fn thread_fork_link_is_active(
+    pool: &PgPool,
+    community_id: CommunityId,
+    parent_channel_id: Uuid,
+    child_channel_id: Uuid,
+    root_event_id: &[u8],
+    creator_pubkey: &[u8],
+) -> Result<bool> {
+    let canonical =
+        active_thread_fork_session(pool, community_id, parent_channel_id, root_event_id).await?;
+
+    Ok(canonical.is_some_and(|session| {
+        session.child_channel_id == child_channel_id
+            && session.creator_pubkey.as_slice() == creator_pubkey
+    }))
 }
 
 /// Insert a Nostr event. Rejects AUTH and ephemeral kinds.
@@ -1429,7 +1634,7 @@ mod tests {
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Tag};
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
 
     async fn setup_pool() -> PgPool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
@@ -1451,6 +1656,241 @@ mod tests {
             .await
             .expect("insert test community");
         id
+    }
+
+    #[test]
+    fn thread_fork_link_content_requires_child_and_root_match() {
+        let child_channel_id = Uuid::new_v4();
+        let root_event_id = vec![0xab; 32];
+        let content = serde_json::json!({
+            "child_channel_id": child_channel_id,
+            "root_event_id": hex::encode(&root_event_id),
+        })
+        .to_string();
+
+        assert!(thread_fork_content_links(
+            &content,
+            child_channel_id,
+            &root_event_id
+        ));
+        assert!(!thread_fork_content_links(
+            &content,
+            Uuid::new_v4(),
+            &root_event_id
+        ));
+        assert!(!thread_fork_content_links(
+            &content,
+            child_channel_id,
+            &[0xcd; 32]
+        ));
+    }
+
+    fn thread_fork_candidate(
+        kind: u32,
+        child_channel_id: Uuid,
+        pubkey: &[u8],
+        created_at_secs: i64,
+        received_at_secs: i64,
+        event_id_byte: u8,
+    ) -> ThreadForkLifecycleCandidate {
+        ThreadForkLifecycleCandidate {
+            event_id: vec![event_id_byte; 32],
+            pubkey: pubkey.to_vec(),
+            kind: kind as i32,
+            child_channel_id,
+            created_at: DateTime::from_timestamp(created_at_secs, 0).expect("test timestamp"),
+            received_at: DateTime::from_timestamp(received_at_secs, 0).expect("test timestamp"),
+        }
+    }
+
+    fn child_creators(pairs: &[(Uuid, &[u8])]) -> HashMap<Uuid, Vec<u8>> {
+        pairs
+            .iter()
+            .map(|(id, creator)| (*id, creator.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn canonical_thread_fork_session_uses_earliest_live_received_at() {
+        let child_a = Uuid::new_v4();
+        let creator_a = vec![0xaa; 32];
+        let child_b = Uuid::new_v4();
+        let creator_b = vec![0xbb; 32];
+        let creators = child_creators(&[(child_a, &creator_a), (child_b, &creator_b)]);
+
+        let canonical = canonical_active_thread_fork_session(
+            vec![
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 1, 20, 0x20),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_b, &creator_b, 2, 10, 0x10),
+            ],
+            &creators,
+        )
+        .expect("canonical session");
+
+        assert_eq!(canonical.child_channel_id, child_b);
+        assert_eq!(canonical.creator_pubkey, creator_b);
+        assert_eq!(
+            canonical.started_received_at,
+            DateTime::from_timestamp(10, 0).expect("test timestamp")
+        );
+    }
+
+    #[test]
+    fn canonical_thread_fork_session_uses_received_at_not_client_created_at() {
+        let child_a = Uuid::new_v4();
+        let creator_a = vec![0xaa; 32];
+        let child_b = Uuid::new_v4();
+        let creator_b = vec![0xbb; 32];
+        let creators = child_creators(&[(child_a, &creator_a), (child_b, &creator_b)]);
+
+        let canonical = canonical_active_thread_fork_session(
+            vec![
+                thread_fork_candidate(
+                    KIND_THREAD_FORK_STARTED,
+                    child_a,
+                    &creator_a,
+                    10_000,
+                    20,
+                    0x20,
+                ),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_b, &creator_b, 1, 10, 0x10),
+            ],
+            &creators,
+        )
+        .expect("canonical session");
+
+        assert_eq!(canonical.child_channel_id, child_b);
+        assert_eq!(
+            canonical.started_received_at,
+            DateTime::from_timestamp(10, 0).expect("test timestamp")
+        );
+        assert_eq!(
+            canonical.started_created_at,
+            DateTime::from_timestamp(1, 0).expect("test timestamp")
+        );
+    }
+
+    #[test]
+    fn canonical_thread_fork_session_uses_event_id_tie_break() {
+        let child_a = Uuid::new_v4();
+        let creator_a = vec![0xaa; 32];
+        let child_b = Uuid::new_v4();
+        let creator_b = vec![0xbb; 32];
+        let creators = child_creators(&[(child_a, &creator_a), (child_b, &creator_b)]);
+
+        let canonical = canonical_active_thread_fork_session(
+            vec![
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 1, 10, 0x20),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_b, &creator_b, 2, 10, 0x10),
+            ],
+            &creators,
+        )
+        .expect("canonical session");
+
+        assert_eq!(canonical.child_channel_id, child_b);
+        assert_eq!(canonical.started_event_id, vec![0x10; 32]);
+    }
+
+    #[test]
+    fn canonical_thread_fork_session_releases_ended_lane() {
+        let child_a = Uuid::new_v4();
+        let creator_a = vec![0xaa; 32];
+        let child_b = Uuid::new_v4();
+        let creator_b = vec![0xbb; 32];
+        let creators = child_creators(&[(child_a, &creator_a), (child_b, &creator_b)]);
+
+        let canonical = canonical_active_thread_fork_session(
+            vec![
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 1, 10, 0x10),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_b, &creator_b, 2, 20, 0x20),
+                thread_fork_candidate(KIND_THREAD_FORK_ENDED, child_a, &creator_a, 3, 30, 0x30),
+            ],
+            &creators,
+        )
+        .expect("canonical session");
+
+        assert_eq!(canonical.child_channel_id, child_b);
+        assert_eq!(canonical.creator_pubkey, creator_b);
+    }
+
+    #[test]
+    fn canonical_thread_fork_session_uses_restart_after_end() {
+        let child_a = Uuid::new_v4();
+        let creator_a = vec![0xaa; 32];
+        let child_b = Uuid::new_v4();
+        let creator_b = vec![0xbb; 32];
+        let creators = child_creators(&[(child_a, &creator_a), (child_b, &creator_b)]);
+
+        let canonical = canonical_active_thread_fork_session(
+            vec![
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 1, 10, 0x10),
+                thread_fork_candidate(KIND_THREAD_FORK_ENDED, child_a, &creator_a, 2, 20, 0x20),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_b, &creator_b, 3, 30, 0x30),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 4, 40, 0x40),
+            ],
+            &creators,
+        )
+        .expect("canonical session");
+
+        assert_eq!(canonical.child_channel_id, child_b);
+        assert_eq!(
+            canonical.started_received_at,
+            DateTime::from_timestamp(30, 0).expect("test timestamp")
+        );
+    }
+
+    #[test]
+    fn canonical_thread_fork_session_ignores_wrong_creator() {
+        let child_a = Uuid::new_v4();
+        let creator_a = vec![0xaa; 32];
+        let child_b = Uuid::new_v4();
+        let creator_b = vec![0xbb; 32];
+        let wrong_creator = vec![0xcc; 32];
+        let creators = child_creators(&[(child_a, &creator_a), (child_b, &creator_b)]);
+
+        let canonical = canonical_active_thread_fork_session(
+            vec![
+                thread_fork_candidate(
+                    KIND_THREAD_FORK_STARTED,
+                    child_b,
+                    &wrong_creator,
+                    1,
+                    5,
+                    0x05,
+                ),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 2, 10, 0x10),
+            ],
+            &creators,
+        )
+        .expect("canonical session");
+
+        assert_eq!(canonical.child_channel_id, child_a);
+        assert_eq!(canonical.creator_pubkey, creator_a);
+    }
+
+    #[test]
+    fn canonical_thread_fork_session_ignores_duplicate_started_until_end() {
+        let child_a = Uuid::new_v4();
+        let creator_a = vec![0xaa; 32];
+        let child_b = Uuid::new_v4();
+        let creator_b = vec![0xbb; 32];
+        let creators = child_creators(&[(child_a, &creator_a), (child_b, &creator_b)]);
+
+        let canonical = canonical_active_thread_fork_session(
+            vec![
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 1, 10, 0x10),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_b, &creator_b, 2, 20, 0x20),
+                thread_fork_candidate(KIND_THREAD_FORK_STARTED, child_a, &creator_a, 3, 50, 0x50),
+            ],
+            &creators,
+        )
+        .expect("canonical session");
+
+        assert_eq!(canonical.child_channel_id, child_a);
+        assert_eq!(
+            canonical.started_received_at,
+            DateTime::from_timestamp(10, 0).expect("test timestamp")
+        );
     }
 
     #[tokio::test]

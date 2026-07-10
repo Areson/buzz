@@ -1,6 +1,9 @@
 //! EVENT handler — WS dispatcher → ingest pipeline → fan-out.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use axum::body::Bytes;
 use tracing::{debug, error, info, warn};
@@ -45,7 +48,7 @@ fn bounded_kind_label(kind: u32) -> String {
         44100..=44101 => kind.to_string(),
         45001..=45003 => kind.to_string(),
         46001..=46012 | 46020 | 46030..=46031 => kind.to_string(),
-        48001 | 48100..=48103 | 48106 => kind.to_string(),
+        48001 | 48100..=48103 | 48106 | 48110..=48111 => kind.to_string(),
         49001 => kind.to_string(),
         _ => "other".to_string(),
     }
@@ -197,6 +200,108 @@ pub async fn filter_fanout_by_access(
     allowed
 }
 
+async fn fanout_matches_with_thread_forks(
+    state: &AppState,
+    community_id: CommunityId,
+    stored: &StoredEvent,
+    threaded: Option<&crate::state::ThreadedChannelVisibility>,
+) -> Vec<(crate::subscription::ConnId, crate::subscription::SubId)> {
+    let mut matches = state.sub_registry.fan_out_scoped(community_id, stored);
+    matches = filter_fanout_by_access(state, community_id, stored, matches, threaded).await;
+
+    let parent_channel_id =
+        match crate::thread_fork::authorized_parent_channel_for_event(state, community_id, stored)
+            .await
+        {
+            Ok(Some(parent_channel_id)) => parent_channel_id,
+            Ok(None) => return matches,
+            Err(e) => {
+                warn!(
+                    event_id = %stored.event.id.to_hex(),
+                    "thread-fork fan-out authorization failed closed: {e}"
+                );
+                return matches;
+            }
+        };
+
+    let fork_matches =
+        state
+            .sub_registry
+            .fan_out_thread_fork_scoped(community_id, parent_channel_id, stored);
+    if fork_matches.is_empty() {
+        return matches;
+    }
+
+    let mut parent_scoped = stored.clone();
+    parent_scoped.channel_id = Some(parent_channel_id);
+    let fork_matches =
+        filter_fanout_by_access(state, community_id, &parent_scoped, fork_matches, None).await;
+
+    let mut seen: HashSet<_> = matches.iter().cloned().collect();
+    for recipient in fork_matches {
+        if seen.insert(recipient.clone()) {
+            matches.push(recipient);
+        }
+    }
+
+    matches
+}
+
+async fn fanout_thread_fork_matches_for_parent(
+    state: &AppState,
+    community_id: CommunityId,
+    stored: &StoredEvent,
+    parent_channel_id: uuid::Uuid,
+) -> Vec<(crate::subscription::ConnId, crate::subscription::SubId)> {
+    match crate::thread_fork::authorized_parent_channel_for_event(state, community_id, stored).await
+    {
+        Ok(Some(authorized_parent)) if authorized_parent == parent_channel_id => {}
+        Ok(_) => return Vec::new(),
+        Err(e) => {
+            warn!(
+                event_id = %stored.event.id.to_hex(),
+                "thread-fork fan-out authorization failed closed: {e}"
+            );
+            return Vec::new();
+        }
+    }
+
+    let fork_matches =
+        state
+            .sub_registry
+            .fan_out_thread_fork_scoped(community_id, parent_channel_id, stored);
+    if fork_matches.is_empty() {
+        return Vec::new();
+    }
+
+    let mut parent_scoped = stored.clone();
+    parent_scoped.channel_id = Some(parent_channel_id);
+    filter_fanout_by_access(state, community_id, &parent_scoped, fork_matches, None).await
+}
+
+async fn fanout_matches_for_pubsub_topic(
+    state: &AppState,
+    community_id: CommunityId,
+    topic_channel_id: Option<uuid::Uuid>,
+    stored: &StoredEvent,
+) -> Vec<(crate::subscription::ConnId, crate::subscription::SubId)> {
+    if let (Some(topic_channel_id), Some(actual_channel_id)) = (topic_channel_id, stored.channel_id)
+    {
+        if topic_channel_id != actual_channel_id {
+            return fanout_thread_fork_matches_for_parent(
+                state,
+                community_id,
+                stored,
+                topic_channel_id,
+            )
+            .await;
+        }
+    }
+
+    let matches = state.sub_registry.fan_out_scoped(community_id, stored);
+    filter_fanout_by_access(state, community_id, stored, matches, None).await
+}
+
 /// Deliver one event to this relay's local subscribers through the access gate.
 ///
 /// This is the single guarded send path for relay-local EVENT delivery. It runs
@@ -219,8 +324,7 @@ pub(crate) async fn fan_out_event_to_local_subscribers(
     community_id: CommunityId,
     stored: &StoredEvent,
 ) {
-    let matches = state.sub_registry.fan_out_scoped(community_id, stored);
-    let matches = filter_fanout_by_access(state, community_id, stored, matches, None).await;
+    let matches = fanout_matches_with_thread_forks(state, community_id, stored, None).await;
     metrics::histogram!("buzz_fanout_recipients").record(matches.len() as f64);
     if matches.is_empty() {
         return;
@@ -260,12 +364,14 @@ pub async fn fan_out_pubsub_event(state: &Arc<AppState>, channel_event: buzz_pub
     // `Channel(id)` for a per-channel event, `Global` for a channel-less one.
     // Convert back to the `Option<Uuid>` channel id `fan_out()` indexes on —
     // `Global` selects the global subscriber index.
-    let channel_id = match channel_event.topic {
+    let topic_channel_id = match channel_event.topic {
         buzz_pubsub::EventTopic::Channel(id) => Some(id),
         buzz_pubsub::EventTopic::Global => None,
     };
     let community_id = channel_event.community_id;
-    let stored = StoredEvent::new(channel_event.event, channel_id);
+    let event_channel_id = topic_channel_id
+        .and_then(|topic| super::ingest::extract_channel_id(&channel_event.event).or(Some(topic)));
+    let stored = StoredEvent::new(channel_event.event, event_channel_id);
 
     // Skip events that were already fanned out in-process (local echo). The
     // dedup key is `(community_id, event_id)` — a same-id event arriving for a
@@ -275,12 +381,11 @@ pub async fn fan_out_pubsub_event(state: &Arc<AppState>, channel_event: buzz_pub
     let event_id_bytes = stored.event.id.to_bytes();
     let echo_key = (community_id, event_id_bytes);
     if state.local_event_ids.get(&echo_key).is_some() {
-        state.local_event_ids.invalidate(&echo_key);
         return;
     }
 
-    let matches = state.sub_registry.fan_out_scoped(community_id, &stored);
-    let matches = filter_fanout_by_access(state, community_id, &stored, matches, None).await;
+    let matches =
+        fanout_matches_for_pubsub_topic(state, community_id, topic_channel_id, &stored).await;
     metrics::counter!("buzz_multinode_fanout_total").increment(1);
     if matches.is_empty() {
         return;
@@ -390,26 +495,45 @@ async fn dispatch_persistent_event_inner(
         Some(channel_id) => EventTopic::Channel(channel_id),
         None => EventTopic::Global,
     };
+    let fork_parent_topic = match crate::thread_fork::authorized_parent_channel_for_event(
+        state,
+        tenant.community(),
+        stored_event,
+    )
+    .await
+    {
+        Ok(Some(parent_channel_id)) => Some(EventTopic::Channel(parent_channel_id)),
+        Ok(None) => None,
+        Err(e) => {
+            warn!(
+                event_id = %stored_event.event.id.to_hex(),
+                "thread-fork publish authorization failed closed: {e}"
+            );
+            None
+        }
+    };
     state.mark_local_event(tenant.community(), &stored_event.event.id);
     if let Err(e) = state
         .pubsub
         .publish_event(tenant, topic, &stored_event.event)
         .await
     {
-        state
-            .local_event_ids
-            .invalidate(&(tenant.community(), stored_event.event.id.to_bytes()));
         warn!(event_id = %event_id_hex, "Redis publish failed: {e}");
     }
+    if let Some(parent_topic) = fork_parent_topic {
+        if let Err(e) = state
+            .pubsub
+            .publish_event(tenant, parent_topic, &stored_event.event)
+            .await
+        {
+            warn!(event_id = %event_id_hex, "Redis thread-fork parent publish failed: {e}");
+        }
+    }
 
-    let matches = state
-        .sub_registry
-        .fan_out_scoped(tenant.community(), stored_event);
-    let matches = filter_fanout_by_access(
+    let matches = fanout_matches_with_thread_forks(
         state,
         tenant.community(),
         stored_event,
-        matches,
         threaded_visibility.as_ref(),
     )
     .await;
@@ -1353,9 +1477,14 @@ mod tests {
         use std::sync::Arc;
 
         use axum::extract::ws::Message;
-        use buzz_core::kind::{KIND_MEMBER_ADDED_NOTIFICATION, KIND_PRESENCE_UPDATE};
+        use buzz_core::kind::{
+            KIND_MEMBER_ADDED_NOTIFICATION, KIND_PRESENCE_UPDATE, KIND_THREAD_FORK_ENDED,
+            KIND_THREAD_FORK_STARTED,
+        };
+        use buzz_core::tenant::{CommunityId, TenantContext};
+        use buzz_db::channel::{ChannelType, ChannelVisibility};
         use buzz_pubsub::{ChannelEvent, EventTopic};
-        use nostr::{EventBuilder, Filter, Keys, Kind};
+        use nostr::{Alphabet, EventBuilder, Filter, Keys, Kind, SingleLetterTag, Tag};
         use tokio::sync::{mpsc, Mutex};
         use tokio_util::sync::CancellationToken;
         use uuid::Uuid;
@@ -1392,6 +1521,40 @@ mod tests {
             state
                 .sub_registry
                 .register(conn_id, sub_id.to_string(), vec![filter], None);
+            (conn_id, rx)
+        }
+
+        fn register_channel_sub(
+            state: &AppState,
+            community_id: CommunityId,
+            channel_id: Uuid,
+            sub_id: &str,
+            filter: Filter,
+            pubkey: Option<Vec<u8>>,
+        ) -> (Uuid, mpsc::Receiver<Message>) {
+            let conn_id = Uuid::new_v4();
+            let (tx, rx) = mpsc::channel(10);
+            let (ctrl_tx, _ctrl_rx) = mpsc::channel(10);
+            state.conn_manager.register(
+                conn_id,
+                tx,
+                ctrl_tx,
+                CancellationToken::new(),
+                community_id,
+                Arc::new(AtomicU8::new(0)),
+                Arc::new(Mutex::new(HashMap::new())),
+                3,
+            );
+            if let Some(pubkey) = pubkey {
+                state.conn_manager.set_authenticated_pubkey(conn_id, pubkey);
+            }
+            state.sub_registry.register_scoped(
+                community_id,
+                conn_id,
+                sub_id.to_string(),
+                vec![filter],
+                Some(channel_id),
+            );
             (conn_id, rx)
         }
 
@@ -1445,6 +1608,220 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(&text).expect("EVENT frame JSON");
             assert_eq!(v[0], "EVENT");
             serde_json::from_value(v[2].clone()).expect("nostr event")
+        }
+
+        fn thread_reply_filter(channel_id: Uuid, root_id_hex: &str) -> Filter {
+            Filter::new()
+                .kind(Kind::Custom(9))
+                .custom_tags(
+                    SingleLetterTag::lowercase(Alphabet::H),
+                    [channel_id.to_string()],
+                )
+                .custom_tags(
+                    SingleLetterTag::lowercase(Alphabet::E),
+                    [root_id_hex.to_string()],
+                )
+        }
+
+        fn child_thread_reply(
+            keys: &Keys,
+            child_channel_id: Uuid,
+            root_id_hex: &str,
+        ) -> nostr::Event {
+            EventBuilder::new(
+                Kind::Custom(9),
+                format!("forked child reply {}", Uuid::new_v4()),
+            )
+            .tags([
+                Tag::parse(["h", &child_channel_id.to_string()]).expect("h tag"),
+                Tag::parse(["e", root_id_hex, "", "root"]).expect("root tag"),
+                Tag::parse(["e", root_id_hex, "", "reply"]).expect("reply tag"),
+            ])
+            .sign_with_keys(keys)
+            .expect("sign child reply")
+        }
+
+        fn child_root_only_event(
+            keys: &Keys,
+            child_channel_id: Uuid,
+            root_id_hex: &str,
+        ) -> nostr::Event {
+            EventBuilder::new(
+                Kind::Custom(9),
+                format!("root-only child event {}", Uuid::new_v4()),
+            )
+            .tags([
+                Tag::parse(["h", &child_channel_id.to_string()]).expect("h tag"),
+                Tag::parse(["e", root_id_hex, "", "root"]).expect("root tag"),
+            ])
+            .sign_with_keys(keys)
+            .expect("sign root-only child event")
+        }
+
+        fn thread_fork_lifecycle_link(
+            signer: &Keys,
+            kind: u32,
+            parent_channel_id: Uuid,
+            child_channel_id: Uuid,
+            root_id_hex: &str,
+        ) -> nostr::Event {
+            let content = serde_json::json!({
+                "child_channel_id": child_channel_id,
+                "root_event_id": root_id_hex,
+            })
+            .to_string();
+            EventBuilder::new(Kind::Custom(kind as u16), content)
+                .tags([Tag::parse(["h", &parent_channel_id.to_string()]).expect("h tag")])
+                .sign_with_keys(signer)
+                .expect("sign thread fork link")
+        }
+
+        fn thread_fork_link(
+            signer: &Keys,
+            parent_channel_id: Uuid,
+            child_channel_id: Uuid,
+            root_id_hex: &str,
+        ) -> nostr::Event {
+            thread_fork_lifecycle_link(
+                signer,
+                KIND_THREAD_FORK_STARTED,
+                parent_channel_id,
+                child_channel_id,
+                root_id_hex,
+            )
+        }
+
+        fn thread_fork_end(
+            signer: &Keys,
+            parent_channel_id: Uuid,
+            child_channel_id: Uuid,
+            root_id_hex: &str,
+        ) -> nostr::Event {
+            thread_fork_lifecycle_link(
+                signer,
+                KIND_THREAD_FORK_ENDED,
+                parent_channel_id,
+                child_channel_id,
+                root_id_hex,
+            )
+        }
+
+        async fn seed_thread_fork_channels(
+            state: &AppState,
+        ) -> Option<(
+            TenantContext,
+            Keys,
+            Uuid,
+            Keys,
+            Uuid,
+            Keys,
+            Uuid,
+            nostr::Event,
+        )> {
+            let host = format!("thread-fork-{}.example", Uuid::new_v4().simple());
+            let community = state.db.ensure_configured_community(&host).await.ok()?;
+            let tenant = TenantContext::resolved(community.id, community.host);
+
+            let parent_owner = Keys::generate();
+            let child_creator = Keys::generate();
+            let bad_child_creator = Keys::generate();
+            let wrong_link_signer = Keys::generate();
+            let parent_channel_id = Uuid::new_v4();
+            let child_channel_id = Uuid::new_v4();
+            let bad_child_channel_id = Uuid::new_v4();
+
+            state
+                .db
+                .create_channel_with_id(
+                    tenant.community(),
+                    parent_channel_id,
+                    "fork parent",
+                    ChannelType::Stream,
+                    ChannelVisibility::Private,
+                    None,
+                    &parent_owner.public_key().to_bytes(),
+                    None,
+                )
+                .await
+                .ok()?;
+            state
+                .db
+                .create_channel_with_id(
+                    tenant.community(),
+                    child_channel_id,
+                    "fork child",
+                    ChannelType::Stream,
+                    ChannelVisibility::Open,
+                    None,
+                    &child_creator.public_key().to_bytes(),
+                    None,
+                )
+                .await
+                .ok()?;
+            state
+                .db
+                .create_channel_with_id(
+                    tenant.community(),
+                    bad_child_channel_id,
+                    "untrusted fork child",
+                    ChannelType::Stream,
+                    ChannelVisibility::Open,
+                    None,
+                    &bad_child_creator.public_key().to_bytes(),
+                    None,
+                )
+                .await
+                .ok()?;
+
+            let root = EventBuilder::new(Kind::Custom(9), "fork root")
+                .tags([Tag::parse(["h", &parent_channel_id.to_string()]).expect("h tag")])
+                .sign_with_keys(&parent_owner)
+                .expect("sign root");
+            state
+                .db
+                .insert_event(tenant.community(), &root, Some(parent_channel_id))
+                .await
+                .ok()?;
+
+            let root_id_hex = root.id.to_hex();
+            let valid_link = thread_fork_link(
+                &child_creator,
+                parent_channel_id,
+                child_channel_id,
+                &root_id_hex,
+            );
+            state
+                .db
+                .insert_event(tenant.community(), &valid_link, Some(parent_channel_id))
+                .await
+                .ok()?;
+
+            let wrong_signed_link = thread_fork_link(
+                &wrong_link_signer,
+                parent_channel_id,
+                bad_child_channel_id,
+                &root_id_hex,
+            );
+            state
+                .db
+                .insert_event(
+                    tenant.community(),
+                    &wrong_signed_link,
+                    Some(parent_channel_id),
+                )
+                .await
+                .ok()?;
+
+            Some((
+                tenant,
+                parent_owner,
+                parent_channel_id,
+                child_creator,
+                child_channel_id,
+                bad_child_creator,
+                bad_child_channel_id,
+                root,
+            ))
         }
 
         #[tokio::test]
@@ -1668,6 +2045,365 @@ mod tests {
             receiver_subscriber.abort();
             origin_fanout.abort();
             receiver_fanout.abort();
+        }
+
+        #[tokio::test]
+        async fn redis_thread_fork_dual_topic_delivery_is_gated_and_echo_deduped() {
+            let Some(redis_url) = redis_url_if_available().await else {
+                eprintln!("skipping Redis thread-fork fan-out test: Redis unavailable");
+                return;
+            };
+
+            let origin = super::fanout_access::test_state_with_redis_url(&redis_url).await;
+            let receiver = super::fanout_access::test_state_with_redis_url(&redis_url).await;
+            let Some((
+                tenant,
+                parent_owner,
+                parent_channel_id,
+                child_creator,
+                child_channel_id,
+                bad_child_creator,
+                bad_child_channel_id,
+                root,
+            )) = seed_thread_fork_channels(&origin).await
+            else {
+                eprintln!("skipping Redis thread-fork fan-out test: Postgres unavailable");
+                return;
+            };
+
+            let origin_subscriber = tokio::spawn(origin.pubsub.clone().run_subscriber());
+            let receiver_subscriber = tokio::spawn(receiver.pubsub.clone().run_subscriber());
+            let origin_fanout = spawn_pubsub_fanout_loop(origin.clone());
+            let receiver_fanout = spawn_pubsub_fanout_loop(receiver.clone());
+
+            let root_id_hex = root.id.to_hex();
+            let outsider = Keys::generate();
+            let (_origin_parent_conn, mut origin_parent_rx) = register_channel_sub(
+                &origin,
+                tenant.community(),
+                parent_channel_id,
+                "origin-parent-thread",
+                thread_reply_filter(parent_channel_id, &root_id_hex),
+                Some(parent_owner.public_key().to_bytes().to_vec()),
+            );
+            let (_receiver_child_conn, mut receiver_child_rx) = register_channel_sub(
+                &receiver,
+                tenant.community(),
+                child_channel_id,
+                "receiver-child-thread",
+                thread_reply_filter(child_channel_id, &root_id_hex),
+                Some(child_creator.public_key().to_bytes().to_vec()),
+            );
+            let (_receiver_parent_conn, mut receiver_parent_rx) = register_channel_sub(
+                &receiver,
+                tenant.community(),
+                parent_channel_id,
+                "receiver-parent-thread",
+                thread_reply_filter(parent_channel_id, &root_id_hex),
+                Some(parent_owner.public_key().to_bytes().to_vec()),
+            );
+            let (_receiver_outsider_conn, mut receiver_outsider_rx) = register_channel_sub(
+                &receiver,
+                tenant.community(),
+                parent_channel_id,
+                "receiver-outsider-parent-thread",
+                thread_reply_filter(parent_channel_id, &root_id_hex),
+                Some(outsider.public_key().to_bytes().to_vec()),
+            );
+            origin
+                .pubsub
+                .retain_topic(&tenant, EventTopic::Channel(child_channel_id))
+                .await;
+            origin
+                .pubsub
+                .retain_topic(&tenant, EventTopic::Channel(parent_channel_id))
+                .await;
+            receiver
+                .pubsub
+                .retain_topic(&tenant, EventTopic::Channel(child_channel_id))
+                .await;
+            receiver
+                .pubsub
+                .retain_topic(&tenant, EventTopic::Channel(parent_channel_id))
+                .await;
+
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            let authorized_reply =
+                child_thread_reply(&child_creator, child_channel_id, &root_id_hex);
+            let authorized_id = authorized_reply.id;
+            let (authorized_stored, inserted) = origin
+                .db
+                .insert_event(
+                    tenant.community(),
+                    &authorized_reply,
+                    Some(child_channel_id),
+                )
+                .await
+                .expect("insert authorized child reply");
+            assert!(inserted, "authorized child reply should be newly inserted");
+            super::super::dispatch_persistent_event_inner(
+                &tenant,
+                &origin,
+                &authorized_stored,
+                9,
+                &child_creator.public_key().to_hex(),
+                false,
+                None,
+            )
+            .await;
+
+            let delivered =
+                tokio::time::timeout(std::time::Duration::from_secs(2), receiver_child_rx.recv())
+                    .await
+                    .expect("fork-linked child reply reached remote child subscriber")
+                    .expect("receiver child connection still open");
+            let delivered = event_from_ws_message(delivered);
+            assert_eq!(delivered.id, authorized_id);
+
+            let delivered =
+                tokio::time::timeout(std::time::Duration::from_secs(2), receiver_parent_rx.recv())
+                    .await
+                    .expect("fork-linked child reply reached remote parent subscriber")
+                    .expect("receiver parent connection still open");
+            let delivered = event_from_ws_message(delivered);
+            assert_eq!(delivered.id, authorized_id);
+
+            let delivered =
+                tokio::time::timeout(std::time::Duration::from_secs(2), origin_parent_rx.recv())
+                    .await
+                    .expect("fork-linked child reply reached origin parent subscriber")
+                    .expect("origin parent connection still open");
+            let delivered = event_from_ws_message(delivered);
+            assert_eq!(delivered.id, authorized_id);
+
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    origin_parent_rx.recv(),
+                )
+                .await
+                .is_err(),
+                "origin parent subscriber receives the dual-topic fork reply exactly once"
+            );
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(150),
+                    receiver_child_rx.recv(),
+                )
+                .await
+                .is_err(),
+                "remote child subscriber receives the child-topic fork reply exactly once"
+            );
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(150),
+                    receiver_outsider_rx.recv(),
+                )
+                .await
+                .is_err(),
+                "remote non-member parent-thread subscriber must not receive fork fan-out"
+            );
+
+            let unauthorized_reply =
+                child_thread_reply(&bad_child_creator, bad_child_channel_id, &root_id_hex);
+            let unauthorized_id = unauthorized_reply.id;
+            origin
+                .pubsub
+                .publish_event(
+                    &tenant,
+                    EventTopic::Channel(parent_channel_id),
+                    &unauthorized_reply,
+                )
+                .await
+                .expect("publish forged parent-topic child event");
+
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    receiver_parent_rx.recv(),
+                )
+                .await
+                .is_err(),
+                "parent-topic Redis fan-out must fail closed without a creator-signed fork link"
+            );
+            assert_ne!(
+                authorized_id, unauthorized_id,
+                "test precondition: positive and negative events must differ"
+            );
+
+            let ended_link = thread_fork_end(
+                &child_creator,
+                parent_channel_id,
+                child_channel_id,
+                &root_id_hex,
+            );
+            origin
+                .db
+                .insert_event(tenant.community(), &ended_link, Some(parent_channel_id))
+                .await
+                .expect("insert thread fork end");
+
+            let ended_reply = child_thread_reply(&child_creator, child_channel_id, &root_id_hex);
+            let (ended_stored, inserted) = origin
+                .db
+                .insert_event(tenant.community(), &ended_reply, Some(child_channel_id))
+                .await
+                .expect("insert child reply after de-fork");
+            assert!(
+                inserted,
+                "post-de-fork child reply should be newly inserted"
+            );
+            super::super::dispatch_persistent_event_inner(
+                &tenant,
+                &origin,
+                &ended_stored,
+                9,
+                &child_creator.public_key().to_hex(),
+                false,
+                None,
+            )
+            .await;
+
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    receiver_parent_rx.recv(),
+                )
+                .await
+                .is_err(),
+                "post-de-fork child replies must not publish to parent-channel subscribers"
+            );
+
+            origin_subscriber.abort();
+            receiver_subscriber.abort();
+            origin_fanout.abort();
+            receiver_fanout.abort();
+        }
+
+        #[tokio::test]
+        async fn thread_fork_ingest_and_delivery_derive_same_parent_root() {
+            let state = test_state().await;
+            let Some((
+                tenant,
+                _parent_owner,
+                parent_channel_id,
+                child_creator,
+                child_channel_id,
+                _bad_child_creator,
+                _bad_child_channel_id,
+                root,
+            )) = seed_thread_fork_channels(&state).await
+            else {
+                eprintln!("skipping thread-fork root derivation test: Postgres unavailable");
+                return;
+            };
+
+            let root_id_hex = root.id.to_hex();
+            let child_reply = child_thread_reply(&child_creator, child_channel_id, &root_id_hex);
+            let ingest_meta = crate::handlers::ingest::resolve_nip10_thread_meta(
+                tenant.community(),
+                &child_reply,
+                child_channel_id,
+                &state,
+            )
+            .await
+            .expect("ingest should resolve forked thread meta")
+            .expect("reply should have thread metadata");
+            assert_eq!(
+                ingest_meta.parent_event_id,
+                root.id.as_bytes().to_vec(),
+                "depth-1 fork reply should target the root as its parent"
+            );
+            assert_eq!(
+                ingest_meta.root_event_id,
+                root.id.as_bytes().to_vec(),
+                "ingest root must match the stored parent-thread root"
+            );
+
+            let (stored, inserted) = state
+                .db
+                .insert_event(tenant.community(), &child_reply, Some(child_channel_id))
+                .await
+                .expect("insert child fork reply");
+            assert!(inserted, "child fork reply should be newly inserted");
+            let delivery_parent = crate::thread_fork::authorized_parent_channel_for_event(
+                &state,
+                tenant.community(),
+                &stored,
+            )
+            .await
+            .expect("delivery authorization should not error");
+            assert_eq!(
+                delivery_parent,
+                Some(parent_channel_id),
+                "delivery must derive the same parent channel from the stored root event"
+            );
+        }
+
+        #[tokio::test]
+        async fn thread_fork_root_only_event_is_not_delivery_authorized_or_backfilled() {
+            let state = test_state().await;
+            let Some((
+                tenant,
+                _parent_owner,
+                _parent_channel_id,
+                child_creator,
+                child_channel_id,
+                _bad_child_creator,
+                _bad_child_channel_id,
+                root,
+            )) = seed_thread_fork_channels(&state).await
+            else {
+                eprintln!("skipping thread-fork root-only test: Postgres unavailable");
+                return;
+            };
+
+            let root_id_hex = root.id.to_hex();
+            let root_only = child_root_only_event(&child_creator, child_channel_id, &root_id_hex);
+            let ingest_meta = crate::handlers::ingest::resolve_nip10_thread_meta(
+                tenant.community(),
+                &root_only,
+                child_channel_id,
+                &state,
+            )
+            .await
+            .expect("root-only event should not error during thread parsing");
+            assert!(
+                ingest_meta.is_none(),
+                "root-only event must not be stored as a thread reply"
+            );
+
+            let (stored, inserted) = state
+                .db
+                .insert_event(tenant.community(), &root_only, Some(child_channel_id))
+                .await
+                .expect("insert root-only child event");
+            assert!(inserted, "root-only child event should be newly inserted");
+
+            let delivery_parent = crate::thread_fork::authorized_parent_channel_for_event(
+                &state,
+                tenant.community(),
+                &stored,
+            )
+            .await
+            .expect("delivery authorization should not error");
+            assert_eq!(
+                delivery_parent, None,
+                "root-only child events must not authorize parent-thread delivery"
+            );
+
+            let backfill = state
+                .db
+                .get_thread_replies(tenant.community(), root.id.as_bytes(), None, 10, None)
+                .await
+                .expect("load thread backfill");
+            assert!(
+                !backfill
+                    .iter()
+                    .any(|reply| reply.stored_event.event.id == root_only.id),
+                "root-only child events must not appear in parent-thread backfill"
+            );
         }
 
         /// Regression guard: the `EventCreated` audit entry must record the

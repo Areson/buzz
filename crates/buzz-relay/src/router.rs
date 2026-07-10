@@ -61,6 +61,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/query", post(api::bridge::query_events))
         .route("/count", post(api::bridge::count_events))
         .route(
+            "/thread-forks/{parent_channel_id}/{root_event_id}/active",
+            get(api::bridge::thread_fork_active_state),
+        )
+        .route(
             "/operator/communities",
             get(api::operator::list_owned_communities).post(api::operator::provision_community),
         )

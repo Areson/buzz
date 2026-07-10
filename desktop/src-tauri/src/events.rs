@@ -9,7 +9,10 @@
 //! Each function validates inputs and returns a nostr::EventBuilder.
 //! Signing and submission happen in relay::submit_event.
 
-use buzz_core_pkg::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
+use buzz_core_pkg::kind::{
+    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_THREAD_FORK_ENDED,
+    KIND_THREAD_FORK_STARTED,
+};
 use nostr::{EventBuilder, EventId, Kind, Tag};
 use uuid::Uuid;
 
@@ -544,6 +547,58 @@ pub fn build_huddle_guidelines(
     check_content(guidelines_text)?;
     let tags = vec![tag(vec!["h", ephemeral_channel_id])?];
     Ok(EventBuilder::new(Kind::Custom(48106), guidelines_text).tags(tags))
+}
+
+// ── Thread Forks ─────────────────────────────────────────────────────────────
+
+fn validate_event_id_hex(id: &str) -> Result<String, String> {
+    EventId::from_hex(id).map_err(|e| format!("invalid event ID: {e}"))?;
+    Ok(id.to_ascii_lowercase())
+}
+
+fn build_thread_fork_event(
+    kind: u32,
+    parent_channel_id: &str,
+    child_channel_id: &str,
+    root_event_id: &str,
+) -> Result<EventBuilder, String> {
+    validate_channel_id(parent_channel_id)?;
+    validate_channel_id(child_channel_id)?;
+    let root_event_id = validate_event_id_hex(root_event_id)?;
+    let content = serde_json::json!({
+        "child_channel_id": child_channel_id,
+        "root_event_id": root_event_id,
+    });
+    let tags = vec![tag(vec!["h", parent_channel_id])?];
+    Ok(EventBuilder::new(Kind::Custom(kind as u16), content.to_string()).tags(tags))
+}
+
+/// Kind 48110 — thread fork started, posted to the parent channel.
+pub fn build_thread_fork_started(
+    parent_channel_id: &str,
+    child_channel_id: &str,
+    root_event_id: &str,
+) -> Result<EventBuilder, String> {
+    build_thread_fork_event(
+        KIND_THREAD_FORK_STARTED,
+        parent_channel_id,
+        child_channel_id,
+        root_event_id,
+    )
+}
+
+/// Kind 48111 — thread fork ended, posted to the parent channel.
+pub fn build_thread_fork_ended(
+    parent_channel_id: &str,
+    child_channel_id: &str,
+    root_event_id: &str,
+) -> Result<EventBuilder, String> {
+    build_thread_fork_event(
+        KIND_THREAD_FORK_ENDED,
+        parent_channel_id,
+        child_channel_id,
+        root_event_id,
+    )
 }
 
 // ── Social notes ────────────────────────────────────────────────────────────

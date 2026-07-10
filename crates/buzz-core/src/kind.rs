@@ -472,6 +472,10 @@ pub const KIND_HUDDLE_PARTICIPANT_LEFT: u32 = 48102;
 pub const KIND_HUDDLE_ENDED: u32 = 48103;
 /// Huddle channel guidelines/rules document.
 pub const KIND_HUDDLE_GUIDELINES: u32 = 48106;
+/// A user-initiated thread fork links a parent-channel thread root to a child channel.
+pub const KIND_THREAD_FORK_STARTED: u32 = 48110;
+/// A user-initiated thread fork was ended for a parent-channel thread root.
+pub const KIND_THREAD_FORK_ENDED: u32 = 48111;
 
 // Media (49000–49999)
 /// Internal kind for media upload audit entries. Not a relay event kind.
@@ -619,6 +623,8 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_HUDDLE_PARTICIPANT_LEFT,
     KIND_HUDDLE_ENDED,
     KIND_HUDDLE_GUIDELINES,
+    KIND_THREAD_FORK_STARTED,
+    KIND_THREAD_FORK_ENDED,
     KIND_MEDIA_UPLOAD,
     KIND_GIT_REPO_ANNOUNCEMENT,
     KIND_GIT_REPO_STATE,
@@ -744,6 +750,7 @@ const _: () = assert!(
 const _: () = assert!(KIND_AUTH <= u16::MAX as u32);
 const _: () = assert!(KIND_CANVAS <= u16::MAX as u32);
 const _: () = assert!(KIND_HUDDLE_GUIDELINES <= u16::MAX as u32);
+const _: () = assert!(KIND_THREAD_FORK_ENDED <= u16::MAX as u32);
 const _: () = assert!(EPHEMERAL_KIND_MIN < EPHEMERAL_KIND_MAX);
 // Compile-time: KIND_AGENT_TURN_METRIC is a regular stored kind (not ephemeral, not replaceable).
 const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));

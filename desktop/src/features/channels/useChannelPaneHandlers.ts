@@ -8,6 +8,19 @@ import type {
 } from "@/features/messages/hooks";
 import { resolveThreadReplyTarget } from "@/features/messages/hooks";
 
+type ThreadReplySendInput = {
+  channelId?: string | null;
+  content: string;
+  mediaTags?: string[][];
+  mentionPubkeys: string[];
+  parentEventId: string;
+  threadHeadId: string | null;
+};
+
+type ThreadReplySender = (
+  input: ThreadReplySendInput,
+) => Promise<{ id: string }>;
+
 /**
  * Stable callback references for ChannelPane so that keystroke-driven
  * re-renders of ChannelScreen don't cascade into the timeline and composer.
@@ -27,6 +40,7 @@ export function useChannelPaneHandlers({
   onOptimisticOpenThreadHeadIdChange,
   openThreadHeadId,
   sendMessageMutation,
+  sendThreadReply,
   setExpandedThreadReplyIds,
   setEditTargetId,
   setOpenThreadHeadId,
@@ -47,6 +61,7 @@ export function useChannelPaneHandlers({
   >;
   openThreadHeadId: string | null;
   sendMessageMutation: ReturnType<typeof useSendMessageMutation>;
+  sendThreadReply?: ThreadReplySender;
   setExpandedThreadReplyIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   setEditTargetId: React.Dispatch<React.SetStateAction<string | null>>;
   setOpenThreadHeadId: (value: string | null) => void;
@@ -70,6 +85,11 @@ export function useChannelPaneHandlers({
 
   const sendMutateRef = React.useRef(sendMessageMutation.mutateAsync);
   sendMutateRef.current = sendMessageMutation.mutateAsync;
+
+  const sendThreadReplyRef = React.useRef<ThreadReplySender | undefined>(
+    sendThreadReply,
+  );
+  sendThreadReplyRef.current = sendThreadReply;
 
   const deleteMutateRef = React.useRef(deleteMessageMutation.mutateAsync);
   deleteMutateRef.current = deleteMessageMutation.mutateAsync;
@@ -291,13 +311,22 @@ export function useChannelPaneHandlers({
         });
       }
 
-      const sentMessage = await sendMutateRef.current({
-        content,
-        mentionPubkeys,
-        parentEventId,
-        mediaTags,
-        channelId: channelId ?? undefined,
-      });
+      const sentMessage = sendThreadReplyRef.current
+        ? await sendThreadReplyRef.current({
+            channelId,
+            content,
+            mediaTags,
+            mentionPubkeys,
+            parentEventId,
+            threadHeadId: activeThreadHeadId,
+          })
+        : await sendMutateRef.current({
+            content,
+            mentionPubkeys,
+            parentEventId,
+            mediaTags,
+            channelId: channelId ?? undefined,
+          });
 
       // Only update thread UI state if the user is still viewing the same
       // thread. If they navigated away during the async send, don't disrupt

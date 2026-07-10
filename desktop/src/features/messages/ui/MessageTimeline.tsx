@@ -29,6 +29,8 @@ export type MessageTimelineHandle = {
 };
 
 type MessageTimelineProps = {
+  /** Root event id of the thread currently running in a forked child channel. */
+  activeThreadForkRootId?: string | null;
   agentPubkeys?: ReadonlySet<string>;
   channelId?: string | null;
   channelIntro?: ChannelIntro | null;
@@ -141,6 +143,7 @@ const MessageTimelineBase = React.forwardRef<
   MessageTimelineProps
 >(function MessageTimeline(
   {
+    activeThreadForkRootId = null,
     agentPubkeys,
     channelId,
     channelIntro = null,
@@ -581,6 +584,7 @@ const MessageTimelineBase = React.forwardRef<
                 >
                   <TimelineMessageList
                     key={scrollContainerDomKey}
+                    activeThreadForkRootId={activeThreadForkRootId}
                     agentPubkeys={agentPubkeys}
                     channelId={channelId}
                     channelName={channelName}

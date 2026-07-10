@@ -31,8 +31,9 @@ use buzz_core::kind::{
     KIND_PRESENCE_UPDATE, KIND_PROFILE, KIND_REACTION, KIND_READ_STATE, KIND_REPORT,
     KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF,
     KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED,
-    KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM, KIND_TEXT_NOTE, KIND_USER_STATUS,
-    KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
+    KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM, KIND_TEXT_NOTE,
+    KIND_THREAD_FORK_ENDED, KIND_THREAD_FORK_STARTED, KIND_USER_STATUS, KIND_WORKFLOW_DEF,
+    KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
     RELAY_ADMIN_REMOVE_MEMBER, RELAY_ADMIN_SET_WORKSPACE_PROFILE,
 };
 use buzz_core::tenant::TenantContext;
@@ -238,7 +239,9 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_HUDDLE_PARTICIPANT_JOINED
         | KIND_HUDDLE_PARTICIPANT_LEFT
         | KIND_HUDDLE_ENDED
-        | KIND_HUDDLE_GUIDELINES => Ok(Scope::ChannelsWrite),
+        | KIND_HUDDLE_GUIDELINES
+        | KIND_THREAD_FORK_STARTED
+        | KIND_THREAD_FORK_ENDED => Ok(Scope::ChannelsWrite),
         // NIP-34: Git repository events
         KIND_GIT_REPO_ANNOUNCEMENT | KIND_GIT_REPO_STATE => Ok(Scope::ReposWrite),
         KIND_GIT_PATCH
@@ -434,6 +437,8 @@ pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
             | KIND_HUDDLE_PARTICIPANT_LEFT
             | KIND_HUDDLE_ENDED
             | KIND_HUDDLE_GUIDELINES
+            | KIND_THREAD_FORK_STARTED
+            | KIND_THREAD_FORK_ENDED
     )
 }
 
@@ -551,6 +556,8 @@ pub(crate) async fn resolve_nip10_thread_meta(
 
     let parent_bytes =
         hex::decode(&parent_hex).map_err(|_| "invalid parent event ID hex".to_string())?;
+    let client_root_bytes =
+        hex::decode(&root_hex).map_err(|_| "invalid root event ID hex".to_string())?;
 
     let (parent_event_result, parent_meta_result) = tokio::join!(
         state.db.get_event_by_id(community_id, &parent_bytes),
@@ -565,7 +572,18 @@ pub(crate) async fn resolve_nip10_thread_meta(
 
     match parent_event.channel_id {
         Some(parent_ch) if parent_ch != channel_id => {
-            return Err("parent event belongs to a different channel".to_string());
+            let linked = crate::thread_fork::fork_link_authorizes(
+                state,
+                community_id,
+                parent_ch,
+                channel_id,
+                &client_root_bytes,
+            )
+            .await
+            .map_err(|e| format!("db error checking thread fork link: {e}"))?;
+            if !linked {
+                return Err("parent event belongs to a different channel".to_string());
+            }
         }
         None => return Err("parent event has no channel association".to_string()),
         _ => {}
@@ -574,9 +592,6 @@ pub(crate) async fn resolve_nip10_thread_meta(
     let parent_created =
         chrono::DateTime::from_timestamp(parent_event.event.created_at.as_secs() as i64, 0)
             .unwrap_or_else(Utc::now);
-
-    let client_root_bytes =
-        hex::decode(&root_hex).map_err(|_| "invalid root event ID hex".to_string())?;
 
     let parent_meta =
         parent_meta_result.map_err(|e| format!("db error looking up thread metadata: {e}"))?;

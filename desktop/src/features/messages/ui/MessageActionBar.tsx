@@ -10,6 +10,7 @@ import {
   MailCheck,
   MailOpen,
   Pencil,
+  Route,
   SmilePlus,
   Trash2,
 } from "lucide-react";
@@ -66,13 +67,16 @@ function MoreActionsMenu({
   onDelete,
   onEdit,
   onFollowThread,
+  onEndThreadFork,
   onMarkUnread,
   onMarkRead,
   onOpenChange,
   onRemindLater,
+  onStartThreadFork,
   onUnfollowThread,
   open,
   isFollowingThread,
+  isThreadForkActive,
   isUnread,
 }: {
   /** Channel UUID for the "Copy link" action. When null/undefined, the
@@ -82,13 +86,16 @@ function MoreActionsMenu({
   onDelete?: (message: TimelineMessage) => void;
   onEdit?: (message: TimelineMessage) => void;
   onFollowThread?: (message: TimelineMessage) => void;
+  onEndThreadFork?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
   onOpenChange: (open: boolean) => void;
   onRemindLater?: (message: TimelineMessage) => void;
+  onStartThreadFork?: (message: TimelineMessage) => void;
   onUnfollowThread?: (message: TimelineMessage) => void;
   open: boolean;
   isFollowingThread?: boolean;
+  isThreadForkActive?: boolean;
   isUnread?: boolean;
 }) {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
@@ -194,6 +201,22 @@ function MoreActionsMenu({
                 <BellRing className="h-4 w-4" />
               )}
               {isFollowingThread ? "Unfollow thread" : "Follow thread"}
+            </DropdownMenuItem>
+          ) : null}
+
+          {onStartThreadFork || onEndThreadFork ? (
+            <DropdownMenuItem
+              data-testid={`thread-fork-toggle-${message.id}`}
+              onClick={() => {
+                if (isThreadForkActive) {
+                  onEndThreadFork?.(message);
+                } else {
+                  onStartThreadFork?.(message);
+                }
+              }}
+            >
+              <Route className="h-4 w-4" />
+              {isThreadForkActive ? "End lane" : "Start lane"}
             </DropdownMenuItem>
           ) : null}
 
@@ -371,16 +394,19 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onDelete,
   onEdit,
   onFollowThread,
+  onEndThreadFork,
   onMarkUnread,
   onMarkRead,
   onReactionBadgeBurstRequest,
   onReactionSelect,
   onRemindLater,
   onReply,
+  onStartThreadFork,
   onUnfollowThread,
   reactionErrorMessage = null,
   reactions,
   isFollowingThread,
+  isThreadForkActive,
   isUnread,
 }: {
   /** Channel UUID — required for the "Copy link" action; when omitted the
@@ -390,16 +416,19 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onDelete?: (message: TimelineMessage) => void;
   onEdit?: (message: TimelineMessage) => void;
   onFollowThread?: (message: TimelineMessage) => void;
+  onEndThreadFork?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
   onReactionBadgeBurstRequest?: (emoji: string) => void;
   onReactionSelect?: (emoji: string) => Promise<void>;
   onRemindLater?: (message: TimelineMessage) => void;
   onReply?: (message: TimelineMessage) => void;
+  onStartThreadFork?: (message: TimelineMessage) => void;
   onUnfollowThread?: (message: TimelineMessage) => void;
   reactionErrorMessage?: string | null;
   reactions: TimelineReaction[];
   isFollowingThread?: boolean;
+  isThreadForkActive?: boolean;
   /** Current read state of the clicked message, from the same predicate the
    *  unread badge uses. Drives the single mark-read/unread toggle label. */
   isUnread?: boolean;
@@ -429,7 +458,9 @@ export const MessageActionBar = React.memo(function MessageActionBar({
     Boolean(onMarkUnread) ||
     Boolean(onMarkRead) ||
     Boolean(onFollowThread) ||
+    Boolean(onEndThreadFork) ||
     Boolean(onUnfollowThread) ||
+    Boolean(onStartThreadFork) ||
     Boolean(onRemindLater) ||
     !message.pending;
 
@@ -574,13 +605,16 @@ export const MessageActionBar = React.memo(function MessageActionBar({
               onDelete={onDelete}
               onEdit={onEdit}
               onFollowThread={onFollowThread}
+              onEndThreadFork={onEndThreadFork}
               onMarkUnread={onMarkUnread}
               onMarkRead={onMarkRead}
               onOpenChange={setIsDropdownOpen}
               onRemindLater={onRemindLater}
+              onStartThreadFork={onStartThreadFork}
               onUnfollowThread={onUnfollowThread}
               open={isDropdownOpen}
               isFollowingThread={isFollowingThread}
+              isThreadForkActive={isThreadForkActive}
               isUnread={isUnread}
             />
           ) : null}

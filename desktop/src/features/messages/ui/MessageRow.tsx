@@ -73,6 +73,7 @@ export const MessageRow = React.memo(
     actionBarPlacement = "floating",
     collapseDescendantsLabel,
     isFollowingThread,
+    isThreadForkActive,
     isContinuation = false,
     isUnread,
     layoutVariant = "default",
@@ -83,11 +84,13 @@ export const MessageRow = React.memo(
     onCollapseDescendantsHoverChange,
     onDelete,
     onEdit,
+    onEndThreadFork,
     onFollowThread,
     onMarkUnread,
     onMarkRead,
     onToggleReaction,
     onReply,
+    onStartThreadFork,
     onUnfollowThread,
     profiles,
     searchQuery,
@@ -110,6 +113,7 @@ export const MessageRow = React.memo(
     actionBarPlacement?: "floating" | "inside";
     collapseDescendantsLabel?: string;
     isFollowingThread?: boolean;
+    isThreadForkActive?: boolean;
     isContinuation?: boolean;
     isUnread?: boolean;
     layoutVariant?: "default" | "thread-reply";
@@ -126,6 +130,7 @@ export const MessageRow = React.memo(
     ) => void;
     onDelete?: (message: TimelineMessage) => void;
     onEdit?: (message: TimelineMessage) => void;
+    onEndThreadFork?: (message: TimelineMessage) => void;
     onFollowThread?: (message: TimelineMessage) => void;
     onMarkUnread?: (message: TimelineMessage) => void;
     onMarkRead?: (message: TimelineMessage) => void;
@@ -135,6 +140,7 @@ export const MessageRow = React.memo(
       remove: boolean,
     ) => Promise<void>;
     onReply?: (message: TimelineMessage) => void;
+    onStartThreadFork?: (message: TimelineMessage) => void;
     onUnfollowThread?: (message: TimelineMessage) => void;
     profiles?: UserProfileLookup;
     searchQuery?: string;
@@ -443,10 +449,12 @@ export const MessageRow = React.memo(
         <MessageActionBar
           channelId={channelId}
           isFollowingThread={isFollowingThread}
+          isThreadForkActive={isThreadForkActive}
           isUnread={isUnread}
           message={message}
           onDelete={onDelete}
           onEdit={onEdit}
+          onEndThreadFork={onEndThreadFork}
           onFollowThread={onFollowThread}
           onMarkUnread={onMarkUnread}
           onMarkRead={onMarkRead}
@@ -458,6 +466,7 @@ export const MessageRow = React.memo(
           }
           onRemindLater={handleRemindLater}
           onReply={onReply}
+          onStartThreadFork={onStartThreadFork}
           onUnfollowThread={onUnfollowThread}
           reactionErrorMessage={reactionErrorMessage}
           reactions={reactions}
@@ -744,11 +753,13 @@ export const MessageRow = React.memo(
             "flex gap-2.5",
             isContinuation ? "items-center" : "items-start",
             hasActiveReminder ? "bg-blue-500/10" : "",
+            isThreadForkActive ? "bg-primary/5 ring-1 ring-primary/25" : "",
             highlighted
               ? "-mx-4 rounded-none px-6 before:absolute before:-inset-y-1.5 before:inset-x-0 before:animate-[route-target-highlight-fade_2s_ease-out_forwards] before:bg-primary/10 before:content-[''] motion-reduce:before:animate-none sm:-mx-6 sm:px-8"
               : "",
           )}
           data-message-id={message.id}
+          data-thread-fork-active={isThreadForkActive ? "true" : undefined}
           data-testid="message-row"
         >
           {isThreadReplyLayout ? (
@@ -815,6 +826,7 @@ export const MessageRow = React.memo(
     prev.huddleMemberPubkeysPending === next.huddleMemberPubkeysPending &&
     prev.isContinuation === next.isContinuation &&
     prev.isFollowingThread === next.isFollowingThread &&
+    prev.isThreadForkActive === next.isThreadForkActive &&
     prev.isUnread === next.isUnread &&
     prev.layoutVariant === next.layoutVariant &&
     prev.onCollapseDepthGuide === next.onCollapseDepthGuide &&
@@ -823,6 +835,8 @@ export const MessageRow = React.memo(
     prev.onCollapseDescendants === next.onCollapseDescendants &&
     prev.onCollapseDescendantsHoverChange ===
       next.onCollapseDescendantsHoverChange &&
+    prev.onEndThreadFork === next.onEndThreadFork &&
+    prev.onStartThreadFork === next.onStartThreadFork &&
     prev.profiles === next.profiles &&
     prev.searchQuery === next.searchQuery &&
     prev.videoReviewContext === next.videoReviewContext,

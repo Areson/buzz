@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, Route } from "lucide-react";
 
 import {
   buildThreadSummaryFromVisibleEntries,
@@ -96,8 +96,11 @@ type MessageThreadPanelProps = {
   widthPx: number;
   transparentChrome?: boolean;
   isFollowingThread?: boolean;
+  isThreadForkActive?: boolean;
   isMessageUnreadById?: (messageId: string) => boolean;
   onFollowThread?: () => void;
+  onEndThreadFork?: () => void;
+  onStartThreadFork?: () => void;
   onUnfollowThread?: () => void;
   /**
    * When set to `thread:<threadHead.id>`, the thread composer auto-submits
@@ -309,6 +312,7 @@ export function MessageThreadPanel({
   isSending,
   isSinglePanelView = false,
   isFollowingThread,
+  isThreadForkActive,
   isMessageUnreadById,
   onCancelEdit,
   onCancelReply,
@@ -317,6 +321,7 @@ export function MessageThreadPanel({
   onEdit,
   onEditLastOwnMessage,
   onEditSave,
+  onEndThreadFork,
   onFollowThread,
   onMarkUnread,
   onMarkRead,
@@ -324,6 +329,7 @@ export function MessageThreadPanel({
   onScrollTargetResolved,
   onSelectReplyTarget,
   onSend,
+  onStartThreadFork,
   onToggleReaction,
   onUnfollowThread,
   profiles,
@@ -647,12 +653,19 @@ export function MessageThreadPanel({
               onFollowThread={
                 onFollowThread ? (_msg) => onFollowThread() : undefined
               }
+              onEndThreadFork={
+                onEndThreadFork ? (_msg) => onEndThreadFork() : undefined
+              }
               onMarkUnread={onMarkUnread}
               onMarkRead={onMarkRead}
+              onStartThreadFork={
+                onStartThreadFork ? (_msg) => onStartThreadFork() : undefined
+              }
               onToggleReaction={onToggleReaction}
               onUnfollowThread={
                 onUnfollowThread ? (_msg) => onUnfollowThread() : undefined
               }
+              isThreadForkActive={isThreadForkActive}
               profiles={profiles}
               showDepthGuides={shouldShowThreadBranchGuides}
               videoReviewContext={threadHeadVideoReviewContext}
@@ -933,7 +946,14 @@ export function MessageThreadPanel({
         backButtonTestId="message-thread-back"
         onBack={isSinglePanelView ? onClose : undefined}
       >
-        <AuxiliaryPanelTitle>Thread</AuxiliaryPanelTitle>
+        <AuxiliaryPanelTitle>
+          <span className="inline-flex items-center gap-2">
+            Thread
+            {isThreadForkActive ? (
+              <Route className="h-3.5 w-3.5 text-primary" aria-hidden />
+            ) : null}
+          </span>
+        </AuxiliaryPanelTitle>
       </AuxiliaryPanelHeaderGroup>
     </>
   );

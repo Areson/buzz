@@ -147,7 +147,10 @@ export type ChannelPaneProps = {
   targetMessageId: string | null;
   typingPubkeys: string[];
   isFollowingThread?: boolean;
+  isThreadForkActive?: boolean;
+  onEndThreadFork?: () => void;
   onFollowThread?: () => void;
+  onStartThreadFork?: () => void;
   onUnfollowThread?: () => void;
   followThreadById?: (rootId: string) => void;
   unfollowThreadById?: (rootId: string) => void;

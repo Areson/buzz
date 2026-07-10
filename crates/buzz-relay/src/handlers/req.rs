@@ -261,7 +261,7 @@ pub async fn handle_req(
     let viewer_hex = hex::encode(&pubkey_bytes);
 
     // Phase 1 — pure query construction, in filter order.
-    let filter_queries: Vec<(usize, Option<uuid::Uuid>, EventQuery)> = filters
+    let filter_queries: Vec<(usize, Option<uuid::Uuid>, Option<Vec<u8>>, EventQuery)> = filters
         .iter()
         .enumerate()
         .map(|(idx, filter)| {
@@ -283,9 +283,10 @@ pub async fn handle_req(
                     })
                     .or(channel_id)
             };
+            let fork_thread_root = per_filter_channel.and_then(|_| single_e_tag_bytes(filter));
             let params =
                 filter_to_query_params(filter, per_filter_channel, conn.tenant.community());
-            (idx, per_filter_channel, params)
+            (idx, per_filter_channel, fork_thread_root, params)
         })
         .collect();
 
@@ -296,20 +297,22 @@ pub async fn handle_req(
     use futures_util::stream::{self, StreamExt};
     let db = state.db.clone();
     let mut results = stream::iter(filter_queries.into_iter().map(
-        |(idx, per_filter_channel, params)| {
+        |(idx, per_filter_channel, fork_thread_root, params)| {
             let db = db.clone();
             async move {
                 let filter_events = db.query_events(&params).await;
-                (idx, per_filter_channel, filter_events)
+                (idx, per_filter_channel, fork_thread_root, filter_events)
             }
         },
     ))
     .buffered(FILTER_QUERY_CONCURRENCY);
 
     // Phase 3 — post-processing, strictly in filter order.
-    while let Some((idx, per_filter_channel, filter_events)) = results.next().await {
+    while let Some((idx, per_filter_channel, fork_thread_root, filter_events)) =
+        results.next().await
+    {
         let filter = &filters[idx];
-        let events = match filter_events {
+        let mut events = match filter_events {
             Ok(evs) => evs,
             Err(e) => {
                 warn!(conn_id = %conn_id, sub_id = %sub_id, "Historical query failed: {e}");
@@ -317,6 +320,26 @@ pub async fn handle_req(
                 return;
             }
         };
+        if let (Some(_parent_channel_id), Some(root_event_id)) =
+            (per_filter_channel, fork_thread_root.as_deref())
+        {
+            let limit = filter
+                .limit
+                .map(|l| (l as u32).min(MAX_HISTORICAL_LIMIT as u32))
+                .unwrap_or(MAX_HISTORICAL_LIMIT as u32);
+            match state
+                .db
+                .get_thread_replies(conn.tenant.community(), root_event_id, None, limit, None)
+                .await
+            {
+                Ok(replies) => events.extend(replies.into_iter().map(|reply| reply.stored_event)),
+                Err(e) => {
+                    warn!(conn_id = %conn_id, sub_id = %sub_id, "Thread-fork historical query failed: {e}");
+                    conn.send(RelayMessage::eose(&sub_id));
+                    return;
+                }
+            }
+        }
 
         // Conformance read-seam emit (non-search lane). Project each row's
         // true community label via a per-channel lookup independent of the
@@ -358,12 +381,41 @@ pub async fn handle_req(
             // Per-filter NIP-01 matching — use the current filter only, not the
             // full filter set. OR semantics across filters are handled by the outer
             // loop (each filter gets its own DB query).
-            if !filters_match(std::slice::from_ref(filter), stored) {
+            let mut fork_parent_match = false;
+            let direct_match = filters_match(std::slice::from_ref(filter), stored);
+            if !direct_match {
+                if let Some(parent_channel_id) = per_filter_channel {
+                    match crate::thread_fork::event_accessible_via_thread_fork(
+                        state.as_ref(),
+                        conn.tenant.community(),
+                        stored,
+                        &accessible_channels,
+                    )
+                    .await
+                    {
+                        Ok(true) => {
+                            fork_parent_match = crate::subscription::filters_match_thread_fork(
+                                std::slice::from_ref(filter),
+                                stored,
+                                parent_channel_id,
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(
+                                event_id = %stored.event.id.to_hex(),
+                                "thread-fork historical authorization failed closed: {e}"
+                            );
+                        }
+                    }
+                }
+            }
+            if !direct_match && !fork_parent_match {
                 continue;
             }
 
             if let Some(ch_id) = stored.channel_id {
-                if !accessible_channels.contains(&ch_id) {
+                if !accessible_channels.contains(&ch_id) && !fork_parent_match {
                     continue;
                 }
             }
@@ -829,6 +881,16 @@ fn extract_channel_id_from_filter(filter: &Filter) -> Option<uuid::Uuid> {
         }
     }
     None
+}
+
+fn single_e_tag_bytes(filter: &Filter) -> Option<Vec<u8>> {
+    let e = nostr::SingleLetterTag::lowercase(nostr::Alphabet::E);
+    let values = filter.generic_tags.get(&e)?;
+    if values.len() != 1 {
+        return None;
+    }
+    let value = values.iter().next()?;
+    hex::decode(value).ok().filter(|bytes| bytes.len() == 32)
 }
 
 /// Convert a single NIP-01 filter into an [`EventQuery`] for the database.

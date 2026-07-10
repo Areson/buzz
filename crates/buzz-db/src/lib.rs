@@ -647,6 +647,44 @@ impl Db {
         .await
     }
 
+    /// Return whether the creator-signed thread-fork lifecycle is the
+    /// canonical active lane for a parent-channel thread root.
+    pub async fn thread_fork_link_is_active(
+        &self,
+        community_id: CommunityId,
+        parent_channel_id: Uuid,
+        child_channel_id: Uuid,
+        root_event_id: &[u8],
+        creator_pubkey: &[u8],
+    ) -> Result<bool> {
+        event::thread_fork_link_is_active(
+            &self.pool,
+            community_id,
+            parent_channel_id,
+            child_channel_id,
+            root_event_id,
+            creator_pubkey,
+        )
+        .await
+    }
+
+    /// Return the canonical active thread-fork lane for a parent-channel thread
+    /// root, if any.
+    pub async fn active_thread_fork_session(
+        &self,
+        community_id: CommunityId,
+        parent_channel_id: Uuid,
+        root_event_id: &[u8],
+    ) -> Result<Option<event::ThreadForkActiveSession>> {
+        event::active_thread_fork_session(
+            &self.pool,
+            community_id,
+            parent_channel_id,
+            root_event_id,
+        )
+        .await
+    }
+
     /// Fetch the latest replaceable event for a (kind, pubkey) pair.
     ///
     /// Uses canonical NIP-16 ordering: `created_at DESC, id ASC`.

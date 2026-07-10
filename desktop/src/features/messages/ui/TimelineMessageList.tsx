@@ -29,6 +29,7 @@ import { SystemMessageRow } from "./SystemMessageRow";
 import { UnreadDivider } from "./UnreadDivider";
 
 type TimelineMessageListProps = {
+  activeThreadForkRootId?: string | null;
   agentPubkeys?: ReadonlySet<string>;
   channelId?: string | null;
   channelName?: string;
@@ -84,6 +85,7 @@ type TimelineMessageListProps = {
 };
 
 export const TimelineMessageList = React.memo(function TimelineMessageList({
+  activeThreadForkRootId = null,
   agentPubkeys,
   channelId,
   channelName,
@@ -197,6 +199,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
           return (
             <MessageRowItem
               agentPubkeys={agentPubkeys}
+              activeThreadForkRootId={activeThreadForkRootId}
               channelId={channelId}
               currentPubkey={currentPubkey}
               entry={item.entry}
@@ -230,6 +233,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
     },
     [
       agentPubkeys,
+      activeThreadForkRootId,
       channelId,
       currentPubkey,
       followThreadById,
@@ -318,6 +322,7 @@ function SystemRow({
 
 type MessageRowItemProps = Pick<
   TimelineMessageListProps,
+  | "activeThreadForkRootId"
   | "agentPubkeys"
   | "channelId"
   | "currentPubkey"
@@ -348,6 +353,7 @@ type MessageRowItemProps = Pick<
 };
 
 function MessageRowItem({
+  activeThreadForkRootId = null,
   agentPubkeys,
   channelId,
   currentPubkey,
@@ -376,6 +382,7 @@ function MessageRowItem({
   videoReviewContext,
 }: MessageRowItemProps) {
   const { message, summary } = entry;
+  const isThreadForkActive = activeThreadForkRootId === message.id;
   const canManage = canManageMessageForCurrentUser(
     message,
     currentPubkey,
@@ -401,6 +408,7 @@ function MessageRowItem({
           hoverBackground={false}
           huddleMemberPubkeys={huddleMemberPubkeys}
           huddleMemberPubkeysPending={huddleMemberPubkeysPending}
+          isThreadForkActive={isThreadForkActive}
           isFollowingThread={
             isFollowingThreadById
               ? isFollowingThreadById(message.id)
@@ -457,6 +465,7 @@ function MessageRowItem({
         highlighted={message.id === highlightedMessageId || isSearchActive}
         huddleMemberPubkeys={huddleMemberPubkeys}
         huddleMemberPubkeysPending={huddleMemberPubkeysPending}
+        isThreadForkActive={isThreadForkActive}
         isContinuation={isContinuation}
         isUnread={isUnread}
         message={message}

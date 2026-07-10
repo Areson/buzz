@@ -30,6 +30,7 @@ import type {
   SetChannelPurposeInput,
   SetChannelTopicInput,
   ThreadCursor,
+  ThreadForkInfo,
   ThreadRepliesResponse,
   UpdateChannelInput,
   CreateManagedAgentInput,
@@ -147,6 +148,19 @@ type RawSendChannelMessageResult = {
   root_event_id: string | null;
   depth: number;
   created_at: number;
+};
+
+type RawThreadForkInfo = {
+  parentChannelId: string;
+  childChannelId: string;
+  rootEventId: string;
+  creatorPubkey: string;
+  active: boolean;
+  added: string[];
+  errors: Array<{
+    pubkey: string;
+    error: string;
+  }>;
 };
 
 type RawRelayAgent = {
@@ -643,6 +657,42 @@ export async function getThreadReplies(
         }
       : null,
   };
+}
+
+export async function getThreadForkState(
+  parentChannelId: string,
+  rootEventId: string,
+): Promise<ThreadForkInfo | null> {
+  return invokeTauri<RawThreadForkInfo | null>("get_thread_fork_state", {
+    parentChannelId,
+    rootEventId,
+  });
+}
+
+export async function startThreadFork(input: {
+  parentChannelId: string;
+  rootEventId: string;
+  agentPubkeys: string[];
+  channelName?: string | null;
+}): Promise<ThreadForkInfo> {
+  return invokeTauri<RawThreadForkInfo>("start_thread_fork", {
+    parentChannelId: input.parentChannelId,
+    rootEventId: input.rootEventId,
+    agentPubkeys: input.agentPubkeys,
+    channelName: input.channelName ?? null,
+  });
+}
+
+export async function endThreadFork(input: {
+  parentChannelId: string;
+  childChannelId: string;
+  rootEventId: string;
+}): Promise<ThreadForkInfo> {
+  return invokeTauri<RawThreadForkInfo>("end_thread_fork", {
+    parentChannelId: input.parentChannelId,
+    childChannelId: input.childChannelId,
+    rootEventId: input.rootEventId,
+  });
 }
 
 type RawChannelMessagesPageResponse = {
