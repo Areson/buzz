@@ -54,6 +54,7 @@ type TimelineMessageListProps = {
   messages: TimelineMessage[];
   onDelete?: (message: TimelineMessage) => void;
   onEdit?: (message: TimelineMessage) => void;
+  onEndThreadFork?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
   onReply?: (message: TimelineMessage) => void;
@@ -71,6 +72,7 @@ type TimelineMessageListProps = {
     emoji: string,
     remove: boolean,
   ) => Promise<void>;
+  onStartThreadFork?: (message: TimelineMessage) => void;
   /** Map from lowercase pubkey → persona display name for bot members. */
   personaLookup?: Map<string, string>;
   profiles?: UserProfileLookup;
@@ -104,12 +106,14 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   messages,
   onDelete,
   onEdit,
+  onEndThreadFork,
   onMarkUnread,
   onMarkRead,
   onReply,
   isSendingVideoReviewComment = false,
   onSendVideoReviewComment,
   onToggleReaction,
+  onStartThreadFork,
   profiles,
   searchActiveMessageId = null,
   searchMatchingMessageIds,
@@ -214,9 +218,11 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
               isUnread={isMessageUnreadById?.(item.entry.message.id)}
               onDelete={onDelete}
               onEdit={onEdit}
+              onEndThreadFork={onEndThreadFork}
               onMarkRead={onMarkRead}
               onMarkUnread={onMarkUnread}
               onReply={onReply}
+              onStartThreadFork={onStartThreadFork}
               onToggleReaction={onToggleReaction}
               profiles={profiles}
               searchActiveMessageId={searchActiveMessageId}
@@ -245,9 +251,11 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       messageFooters,
       onDelete,
       onEdit,
+      onEndThreadFork,
       onMarkRead,
       onMarkUnread,
       onReply,
+      onStartThreadFork,
       onToggleReaction,
       profiles,
       searchActiveMessageId,
@@ -333,9 +341,11 @@ type MessageRowItemProps = Pick<
   | "isFollowingThreadById"
   | "onDelete"
   | "onEdit"
+  | "onEndThreadFork"
   | "onMarkUnread"
   | "onMarkRead"
   | "onReply"
+  | "onStartThreadFork"
   | "onToggleReaction"
   | "profiles"
   | "searchActiveMessageId"
@@ -369,9 +379,11 @@ function MessageRowItem({
   isUnread,
   onDelete,
   onEdit,
+  onEndThreadFork,
   onMarkUnread,
   onMarkRead,
   onReply,
+  onStartThreadFork,
   onToggleReaction,
   profiles,
   searchActiveMessageId,
@@ -419,6 +431,11 @@ function MessageRowItem({
           message={message}
           onDelete={canDelete}
           onEdit={canEdit}
+          onEndThreadFork={
+            isThreadForkActive && onEndThreadFork
+              ? () => onEndThreadFork(message)
+              : undefined
+          }
           onFollowThread={
             followThreadById ? () => followThreadById(message.id) : undefined
           }
@@ -426,6 +443,11 @@ function MessageRowItem({
           onMarkUnread={onMarkUnread}
           onToggleReaction={onToggleReaction}
           onReply={onReply}
+          onStartThreadFork={
+            !isThreadForkActive && onStartThreadFork
+              ? () => onStartThreadFork(message)
+              : undefined
+          }
           onUnfollowThread={
             unfollowThreadById
               ? () => unfollowThreadById(message.id)

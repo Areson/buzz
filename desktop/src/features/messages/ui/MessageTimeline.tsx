@@ -68,6 +68,7 @@ type MessageTimelineProps = {
   isMessageUnreadById?: (messageId: string) => boolean;
   onDelete?: (message: TimelineMessage) => void;
   onEdit?: (message: TimelineMessage) => void;
+  onEndThreadFork?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
   onReply?: (message: TimelineMessage) => void;
@@ -85,6 +86,7 @@ type MessageTimelineProps = {
     emoji: string,
     remove: boolean,
   ) => Promise<void>;
+  onStartThreadFork?: (message: TimelineMessage) => void;
   /** The message ID of the currently active find-in-channel match. */
   searchActiveMessageId?: string | null;
   /** Set of message IDs that match the current find-in-channel query. */
@@ -169,6 +171,7 @@ const MessageTimelineBase = React.forwardRef<
     profiles,
     onDelete,
     onEdit,
+    onEndThreadFork,
     onMarkUnread,
     onMarkRead,
     onReply,
@@ -177,6 +180,7 @@ const MessageTimelineBase = React.forwardRef<
     isSendingVideoReviewComment = false,
     onSendVideoReviewComment,
     onToggleReaction,
+    onStartThreadFork,
     unfollowThreadById,
     scrollContainerRef: externalScrollRef,
     searchActiveMessageId = null,
@@ -605,12 +609,14 @@ const MessageTimelineBase = React.forwardRef<
                     messages={deferredMessages}
                     onDelete={onDelete}
                     onEdit={onEdit}
+                    onEndThreadFork={onEndThreadFork}
                     onMarkUnread={onMarkUnread}
                     onMarkRead={onMarkRead}
                     onReply={onReply}
                     isSendingVideoReviewComment={isSendingVideoReviewComment}
                     onSendVideoReviewComment={onSendVideoReviewComment}
                     onToggleReaction={onToggleReaction}
+                    onStartThreadFork={onStartThreadFork}
                     personaLookup={personaLookup}
                     profiles={profiles}
                     searchActiveMessageId={searchActiveMessageId}

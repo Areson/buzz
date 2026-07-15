@@ -64,7 +64,12 @@ import {
   mergeCurrentProfileIntoLookup,
   profileLookupsEqual,
 } from "@/features/profile/lib/identity";
-import type { RelayEvent, RespondToMode, SearchHit } from "@/shared/api/types";
+import type {
+  RelayEvent,
+  RespondToMode,
+  SearchHit,
+  ThreadForkInfo,
+} from "@/shared/api/types";
 import { sendChannelMessage } from "@/shared/api/tauri";
 import { useChannelFind } from "@/features/search/useChannelFind";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
@@ -168,6 +173,8 @@ export function ChannelScreen({
   const mainInsetRef = useMainInsetRef();
   const currentPubkey = currentIdentity?.pubkey;
   const activeChannelId = activeChannel?.id ?? null;
+  const [localThreadFork, setLocalThreadFork] =
+    React.useState<ThreadForkInfo | null>(null);
   const effectiveOpenThreadHeadId =
     optimisticOpenThreadHeadId === undefined
       ? openThreadHeadId
@@ -189,6 +196,9 @@ export function ChannelScreen({
         ? undefined
         : current;
     });
+    if (didChangeChannel) {
+      setLocalThreadFork(null);
+    }
   }, [activeChannelId, openThreadHeadId]);
   const messagesQuery = useChannelMessagesQuery(activeChannel);
   const windowQuery = useChannelWindowQuery(activeChannel);
@@ -410,14 +420,31 @@ export function ChannelScreen({
     effectiveOpenThreadHeadId,
     Boolean(activeChannelId && effectiveOpenThreadHeadId),
   );
-  const activeThreadFork =
+  const openThreadFork =
     threadForkStateQuery.data?.active === true
       ? threadForkStateQuery.data
       : null;
-  const canEndActiveThreadFork = Boolean(
-    activeThreadFork &&
+  React.useEffect(() => {
+    const queryFork = threadForkStateQuery.data;
+    if (!queryFork) {
+      return;
+    }
+    setLocalThreadFork((current) =>
+      current?.rootEventId === queryFork.rootEventId
+        ? queryFork.active
+          ? queryFork
+          : null
+        : current,
+    );
+  }, [threadForkStateQuery.data]);
+  const activeTimelineThreadFork =
+    openThreadFork ??
+    (localThreadFork?.active === true ? localThreadFork : null);
+  const activeThreadForkRootId = activeTimelineThreadFork?.rootEventId ?? null;
+  const canEndTimelineThreadFork = Boolean(
+    activeTimelineThreadFork &&
       currentPubkey &&
-      normalizePubkey(activeThreadFork.creatorPubkey) ===
+      normalizePubkey(activeTimelineThreadFork.creatorPubkey) ===
         normalizePubkey(currentPubkey),
   );
   const startThreadForkMutation = useStartThreadForkMutation(
@@ -428,19 +455,60 @@ export function ChannelScreen({
     activeChannelId,
     effectiveOpenThreadHeadId,
   );
-  const handleStartThreadFork = React.useCallback(async () => {
-    await startThreadForkMutation.mutateAsync({
-      agentPubkeys: forkAgentPubkeys,
-    });
-  }, [forkAgentPubkeys, startThreadForkMutation]);
-  const handleEndThreadFork = React.useCallback(async () => {
-    if (!activeThreadFork || !canEndActiveThreadFork) {
-      return;
-    }
-    await endThreadForkMutation.mutateAsync({
-      childChannelId: activeThreadFork.childChannelId,
-    });
-  }, [activeThreadFork, canEndActiveThreadFork, endThreadForkMutation]);
+  const handleStartThreadFork = React.useCallback(
+    async (message?: TimelineMessage) => {
+      const info = await startThreadForkMutation
+        .mutateAsync({
+          agentPubkeys: forkAgentPubkeys,
+          rootEventId: message?.id,
+        })
+        .catch(() => null);
+      if (info) {
+        setLocalThreadFork(info.active ? info : null);
+      }
+    },
+    [forkAgentPubkeys, startThreadForkMutation],
+  );
+  const handleEndThreadFork = React.useCallback(
+    async (message?: TimelineMessage) => {
+      const rootEventId = message?.id ?? effectiveOpenThreadHeadId;
+      const threadFork =
+        rootEventId && activeTimelineThreadFork?.rootEventId === rootEventId
+          ? activeTimelineThreadFork
+          : openThreadFork;
+      const canEndThreadFork = Boolean(
+        threadFork &&
+          currentPubkey &&
+          normalizePubkey(threadFork.creatorPubkey) ===
+            normalizePubkey(currentPubkey),
+      );
+      if (!threadFork || !canEndThreadFork) {
+        return;
+      }
+      const info = await endThreadForkMutation
+        .mutateAsync({
+          childChannelId: threadFork.childChannelId,
+          rootEventId: threadFork.rootEventId,
+        })
+        .catch(() => null);
+      if (info) {
+        setLocalThreadFork((current) =>
+          current?.rootEventId === info.rootEventId
+            ? info.active
+              ? info
+              : null
+            : current,
+        );
+      }
+    },
+    [
+      activeTimelineThreadFork,
+      currentPubkey,
+      effectiveOpenThreadHeadId,
+      endThreadForkMutation,
+      openThreadFork,
+    ],
+  );
   const handleForkAwareThreadReply = React.useCallback(
     async ({
       channelId,
@@ -458,9 +526,9 @@ export function ChannelScreen({
       threadHeadId: string | null;
     }) => {
       if (
-        activeThreadFork &&
-        threadHeadId === activeThreadFork.rootEventId &&
-        activeThreadFork.childChannelId
+        openThreadFork &&
+        threadHeadId === openThreadFork.rootEventId &&
+        openThreadFork.childChannelId
       ) {
         const {
           mediaTags: imetaTags,
@@ -468,7 +536,7 @@ export function ChannelScreen({
           mentionTags,
         } = splitOutgoingTags(mediaTags);
         const result = await sendChannelMessage(
-          activeThreadFork.childChannelId,
+          openThreadFork.childChannelId,
           content,
           parentEventId,
           imetaTags,
@@ -489,7 +557,7 @@ export function ChannelScreen({
       });
       return { id: sent.id };
     },
-    [activeThreadFork, sendMessageMutation],
+    [openThreadFork, sendMessageMutation],
   );
   const personasQuery = usePersonasQuery();
   const { personaLookup, respondToLookup } = React.useMemo(() => {
@@ -1000,7 +1068,8 @@ export function ChannelScreen({
                   isFollowingThreadById={isFollowingThread}
                   isMessageUnreadById={isMessageUnread}
                   isFollowingThread={isNotifiedForEffectiveThread}
-                  isThreadForkActive={Boolean(activeThreadFork)}
+                  activeThreadForkRootId={activeThreadForkRootId}
+                  isThreadForkActive={Boolean(openThreadFork)}
                   isSending={sendMessageMutation.isPending}
                   isSinglePanelView={isSinglePanelView}
                   isTimelineLoading={isTimelineLoading}
@@ -1038,8 +1107,8 @@ export function ChannelScreen({
                   }
                   onEndThreadFork={
                     activeChannel?.archivedAt ||
-                    !activeThreadFork ||
-                    !canEndActiveThreadFork
+                    !activeTimelineThreadFork ||
+                    !canEndTimelineThreadFork
                       ? undefined
                       : handleEndThreadFork
                   }
@@ -1057,9 +1126,7 @@ export function ChannelScreen({
                   onSendVideoReviewComment={effectiveSendVideoReviewComment}
                   onSendThreadReply={handleSendThreadReply}
                   onStartThreadFork={
-                    activeChannel?.archivedAt ||
-                    activeThreadFork ||
-                    forkAgentPubkeys.length === 0
+                    activeChannel?.archivedAt || forkAgentPubkeys.length === 0
                       ? undefined
                       : handleStartThreadFork
                   }

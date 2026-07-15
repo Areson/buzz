@@ -277,7 +277,10 @@ const overrides = new Map([
   // split with the rest of this list.
   // thread-forks: active fork state wiring, fork-aware thread open/close
   // handlers, and fork controls. Load-bearing UI flow; queued to split.
-  ["src/features/channels/ui/ChannelScreen.tsx", 1117],
+  // lane follow-ups: channel-row "Start lane" surface (root-bound to the
+  // thread-head row) + visible Sonner error feedback on start/end mint
+  // failures. Load-bearing UI flow; queued to split with the rest of this list.
+  ["src/features/channels/ui/ChannelScreen.tsx", 1184],
   // Shared UI was added to this guard after splitting globals/markdown so
   // large shared renderers cannot grow further while follow-up splits land.
   // +33 for config-nudge detect-and-render + author-auth gate (normalizePubkey guard).

@@ -146,11 +146,12 @@ export type ChannelPaneProps = {
   threadFirstUnreadReplyId?: string | null;
   targetMessageId: string | null;
   typingPubkeys: string[];
+  activeThreadForkRootId?: string | null;
   isFollowingThread?: boolean;
   isThreadForkActive?: boolean;
-  onEndThreadFork?: () => void;
+  onEndThreadFork?: (message: TimelineMessage) => void;
   onFollowThread?: () => void;
-  onStartThreadFork?: () => void;
+  onStartThreadFork?: (message: TimelineMessage) => void;
   onUnfollowThread?: () => void;
   followThreadById?: (rootId: string) => void;
   unfollowThreadById?: (rootId: string) => void;

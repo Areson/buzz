@@ -77,6 +77,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   header,
   hasOlderMessages,
   isFetchingOlder,
+  activeThreadForkRootId = null,
   followThreadById,
   isFollowingThread,
   isThreadForkActive,
@@ -609,11 +610,7 @@ export const ChannelPane = React.memo(function ChannelPane({
           ) : null}
           <MessageTimeline
             ref={messageTimelineRef}
-            activeThreadForkRootId={
-              isThreadForkActive && threadHeadMessage
-                ? threadHeadMessage.id
-                : null
-            }
+            activeThreadForkRootId={activeThreadForkRootId}
             agentPubkeys={agentPubkeys}
             channelId={activeChannel?.id}
             channelIntro={channelIntro}
@@ -655,6 +652,7 @@ export const ChannelPane = React.memo(function ChannelPane({
             onMarkUnread={onMarkUnread}
             onMarkRead={onMarkRead}
             onReply={activeChannel?.archivedAt ? undefined : onOpenThread}
+            onEndThreadFork={onEndThreadFork}
             channelName={activeChannel?.name}
             channelType={activeChannel?.channelType ?? null}
             isSendingVideoReviewComment={isSending}
@@ -663,6 +661,7 @@ export const ChannelPane = React.memo(function ChannelPane({
             }
             onTargetReached={onTargetReached}
             onToggleReaction={onToggleReaction}
+            onStartThreadFork={onStartThreadFork}
             searchActiveMessageId={channelFind.activeMatch?.messageId ?? null}
             searchMatchingMessageIds={channelFind.matchingMessageIds}
             searchQuery={channelFind.query}
@@ -824,14 +823,22 @@ export const ChannelPane = React.memo(function ChannelPane({
               onEdit={onEdit}
               onEditLastOwnMessage={handleEditLastOwnThreadMessage}
               onEditSave={onEditSave}
-              onEndThreadFork={onEndThreadFork}
+              onEndThreadFork={
+                isThreadForkActive && onEndThreadFork
+                  ? () => onEndThreadFork(threadHeadMessage)
+                  : undefined
+              }
               onFollowThread={onFollowThread}
               onMarkUnread={onMarkUnread}
               onMarkRead={onMarkRead}
               onExpandReplies={onExpandThreadReplies}
               onSelectReplyTarget={onSelectThreadReplyTarget}
               onSend={onSendThreadReply}
-              onStartThreadFork={onStartThreadFork}
+              onStartThreadFork={
+                isThreadForkActive || !onStartThreadFork
+                  ? undefined
+                  : () => onStartThreadFork(threadHeadMessage)
+              }
               onScrollTargetResolved={onThreadScrollTargetResolved}
               onToggleReaction={onToggleReaction}
               onUnfollowThread={onUnfollowThread}

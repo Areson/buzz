@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import {
   addChannelMembers,
@@ -566,23 +567,31 @@ export function useStartThreadForkMutation(
     mutationFn: (input: {
       agentPubkeys: string[];
       channelName?: string | null;
+      rootEventId?: string | null;
     }) => {
-      if (!parentChannelId || !rootEventId) {
+      const resolvedRootEventId = input.rootEventId ?? rootEventId;
+      if (!parentChannelId || !resolvedRootEventId) {
         return Promise.reject(new Error("No thread selected"));
       }
       return startThreadFork({
         parentChannelId,
-        rootEventId,
+        rootEventId: resolvedRootEventId,
         agentPubkeys: input.agentPubkeys,
         channelName: input.channelName ?? null,
       });
     },
     onSuccess: (info: ThreadForkInfo) => {
       queryClient.setQueryData(
-        threadForkQueryKey(parentChannelId, rootEventId),
+        threadForkQueryKey(parentChannelId, info.rootEventId),
         info,
       );
       void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
+    },
+    onError: (error) => {
+      toast.error("Failed to start lane", {
+        description:
+          error instanceof Error ? error.message : "Could not create the lane.",
+      });
     },
   });
 }
@@ -594,22 +603,29 @@ export function useEndThreadForkMutation(
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: { childChannelId: string }) => {
-      if (!parentChannelId || !rootEventId) {
+    mutationFn: (input: { childChannelId: string; rootEventId?: string }) => {
+      const resolvedRootEventId = input.rootEventId ?? rootEventId;
+      if (!parentChannelId || !resolvedRootEventId) {
         return Promise.reject(new Error("No thread selected"));
       }
       return endThreadFork({
         parentChannelId,
-        rootEventId,
+        rootEventId: resolvedRootEventId,
         childChannelId: input.childChannelId,
       });
     },
     onSuccess: (info: ThreadForkInfo) => {
       queryClient.setQueryData(
-        threadForkQueryKey(parentChannelId, rootEventId),
+        threadForkQueryKey(parentChannelId, info.rootEventId),
         info,
       );
       void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
+    },
+    onError: (error) => {
+      toast.error("Failed to end lane", {
+        description:
+          error instanceof Error ? error.message : "Could not end the lane.",
+      });
     },
   });
 }
