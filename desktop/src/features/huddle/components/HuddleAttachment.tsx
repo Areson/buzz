@@ -20,9 +20,9 @@ import {
 import { useHuddle } from "../HuddleContext";
 import {
   HUDDLE_EVENT_HISTORY_LIMIT,
-  huddleEventChannelId,
   type HuddleLifecycleState,
   huddleStalenessDelayMs,
+  recordHuddleSubscriptionEvent,
   reconstructHuddleState,
 } from "../lib/huddleLifecycleState";
 
@@ -99,6 +99,7 @@ export function HuddleAttachment({
     let disposed = false;
     let cleanup: (() => void) | null = null;
     let staleTimeout: ReturnType<typeof setTimeout> | null = null;
+    const seenChannelEventIds = new Set<string>();
     const seenEvents = new Map<string, RelayEvent>([
       [
         message.id,
@@ -121,7 +122,8 @@ export function HuddleAttachment({
         seenEvents.values(),
         huddleChannelId,
         {
-          historyMayBeTruncated: seenEvents.size >= HUDDLE_EVENT_HISTORY_LIMIT,
+          historyMayBeTruncated:
+            seenChannelEventIds.size >= HUDDLE_EVENT_HISTORY_LIMIT,
           isCurrentHuddle,
         },
       );
@@ -136,9 +138,16 @@ export function HuddleAttachment({
     updateState();
     relayClient
       .subscribeToHuddleEvents(channelId, (event) => {
-        if (disposed || seenEvents.has(event.id)) return;
-        if (huddleEventChannelId(event) !== huddleChannelId) return;
-        seenEvents.set(event.id, event);
+        if (
+          disposed ||
+          !recordHuddleSubscriptionEvent(
+            seenChannelEventIds,
+            seenEvents,
+            huddleChannelId,
+            event,
+          )
+        )
+          return;
         updateState();
       })
       .then((dispose) => {

@@ -46,6 +46,25 @@ export function huddleEventChannelId(event: RelayEvent): string | null {
   }
 }
 
+/**
+ * Record one channel-wide subscription event while retaining only the target
+ * huddle's events for reconstruction. The channel-wide IDs preserve whether
+ * the relay history query reached its limit before per-huddle filtering.
+ */
+export function recordHuddleSubscriptionEvent(
+  seenChannelEventIds: Set<string>,
+  seenHuddleEvents: Map<string, RelayEvent>,
+  ephemeralChannelId: string,
+  event: RelayEvent,
+): boolean {
+  if (seenChannelEventIds.has(event.id)) return false;
+  seenChannelEventIds.add(event.id);
+  if (huddleEventChannelId(event) === ephemeralChannelId) {
+    seenHuddleEvents.set(event.id, event);
+  }
+  return true;
+}
+
 function lifecycleParticipant(event: RelayEvent): string | null {
   return (
     event.tags.find(
@@ -173,11 +192,10 @@ export function selectActiveHuddleState(
 
   const candidates = [...eventsByHuddle.entries()].map(
     ([ephemeralChannelId, huddleEvents]) => {
-      const relayLifecycleEvents = huddleEvents.filter(
+      const relayParticipantEvents = huddleEvents.filter(
         (event) =>
           event.kind === KIND_HUDDLE_PARTICIPANT_JOINED ||
-          event.kind === KIND_HUDDLE_PARTICIPANT_LEFT ||
-          event.kind === KIND_HUDDLE_ENDED,
+          event.kind === KIND_HUDDLE_PARTICIPANT_LEFT,
       );
       const state = reconstructHuddleState(huddleEvents, ephemeralChannelId, {
         historyMayBeTruncated,
@@ -190,14 +208,16 @@ export function selectActiveHuddleState(
         state,
         hasPresentRelayParticipant:
           !state.ended &&
-          relayLifecycleEvents.some(
+          relayParticipantEvents.some(
             (event) =>
               event.kind === KIND_HUDDLE_PARTICIPANT_JOINED &&
               state.participants.has(lifecycleParticipant(event) ?? ""),
           ),
         latestRelayCreatedAt:
-          relayLifecycleEvents.length > 0
-            ? Math.max(...relayLifecycleEvents.map((event) => event.created_at))
+          relayParticipantEvents.length > 0
+            ? Math.max(
+                ...relayParticipantEvents.map((event) => event.created_at),
+              )
             : null,
       };
     },
@@ -214,11 +234,13 @@ export function selectActiveHuddleState(
     };
   }
 
-  // Relay-signed JOIN/LEFT/END events share one clock across huddles, so only
-  // the newest relay-backed session may be shown. If it is terminal, do not
-  // resurrect an older relay-backed session. A currently present participant
-  // gives that newest relay-backed session priority over every START-only
-  // candidate without comparing relay and client clocks numerically.
+  // Relay-signed JOIN/LEFT events share one clock across huddles, so only the
+  // newest relay-backed session may be shown. END is also client-emitted and
+  // stays room-local terminal evidence; it must not order different rooms. If
+  // the newest relay-backed session is terminal, do not resurrect an older
+  // relay-backed session. A currently present participant gives that newest
+  // relay-backed session priority over every START-only candidate without
+  // comparing relay and client clocks numerically.
   const newestRelayCandidate = candidates
     .filter(({ latestRelayCreatedAt }) => latestRelayCreatedAt !== null)
     .sort(

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   huddleStalenessDelayMs,
+  recordHuddleSubscriptionEvent,
   reconstructHuddleState,
   selectActiveHuddleState,
 } from "./huddleLifecycleState.ts";
@@ -256,6 +257,52 @@ test("reconstructHuddleState keeps a skew-retained START inconclusive when histo
   assert.equal(state.participants.size, 0);
 });
 
+test("recordHuddleSubscriptionEvent preserves channel-wide truncation before huddle filtering", () => {
+  const seenChannelEventIds = new Set();
+  const seenHuddleEvents = new Map();
+  const start = lifecycleEvent(48100);
+  seenHuddleEvents.set(start.id, start);
+
+  for (let index = 0; index < 99; index += 1) {
+    const event = eventForHuddle(48101, `unrelated-huddle-${index}`, {
+      id: `unrelated-event-${index}`,
+      created_at: NOW_SECONDS - 100 + index,
+      tags: [["p", `participant-${index}`]],
+    });
+    assert.equal(
+      recordHuddleSubscriptionEvent(
+        seenChannelEventIds,
+        seenHuddleEvents,
+        HUDDLE_ID,
+        event,
+      ),
+      true,
+    );
+  }
+
+  const retainedLeft = lifecycleEvent(48102, {
+    id: "retained-left",
+    created_at: NOW_SECONDS - 1,
+    tags: [["p", CREATOR]],
+  });
+  recordHuddleSubscriptionEvent(
+    seenChannelEventIds,
+    seenHuddleEvents,
+    HUDDLE_ID,
+    retainedLeft,
+  );
+
+  const state = reconstructHuddleState(seenHuddleEvents.values(), HUDDLE_ID, {
+    historyMayBeTruncated: seenChannelEventIds.size >= 100,
+    nowMs: NOW_SECONDS * 1000,
+  });
+
+  assert.equal(seenChannelEventIds.size, 100);
+  assert.equal(seenHuddleEvents.size, 2);
+  assert.equal(state.ended, false);
+  assert.equal(state.participants.size, 0);
+});
+
 test("selectActiveHuddleState does not resurrect an older incomplete huddle", () => {
   const olderHuddleId = "older-huddle";
   const newerHuddleId = "newer-huddle";
@@ -313,6 +360,36 @@ test("selectActiveHuddleState orders relay lifecycle evidence across skewed STAR
   );
 
   assert.equal(selected, null);
+});
+
+test("selectActiveHuddleState ignores a future-skewed END when ordering rooms", () => {
+  const endedHuddleId = "ended-huddle";
+  const liveHuddleId = "live-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, endedHuddleId, {
+        created_at: NOW_SECONDS - 30,
+      }),
+      eventForHuddle(48101, endedHuddleId, {
+        created_at: NOW_SECONDS - 20,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48103, endedHuddleId, {
+        created_at: NOW_SECONDS + 15 * 60,
+      }),
+      eventForHuddle(48100, liveHuddleId, {
+        created_at: NOW_SECONDS - 10,
+      }),
+      eventForHuddle(48101, liveHuddleId, {
+        created_at: NOW_SECONDS - 5,
+        tags: [["p", PARTICIPANT]],
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected?.ephemeralChannelId, liveHuddleId);
+  assert.equal(selected?.state.ended, false);
 });
 
 test("selectActiveHuddleState prefers live relay evidence over a future-skewed START-only session", () => {
