@@ -25,6 +25,13 @@ function lifecycleEvent(kind, overrides = {}) {
   };
 }
 
+function eventForHuddle(kind, ephemeralChannelId, overrides = {}) {
+  return lifecycleEvent(kind, {
+    content: JSON.stringify({ ephemeral_channel_id: ephemeralChannelId }),
+    ...overrides,
+  });
+}
+
 test("reconstructHuddleState ends an explicitly ended huddle", () => {
   const state = reconstructHuddleState(
     [lifecycleEvent(48100), lifecycleEvent(48103)],
@@ -69,6 +76,19 @@ test("reconstructHuddleState ends a stale huddle and retains its start time", ()
   assert.equal(state.ended, true);
   assert.equal(state.startCreatedAt, startCreatedAt);
   assert.deepEqual([...state.participants], [CREATOR]);
+});
+
+test("reconstructHuddleState documents bounded staleness extension under maximum future skew", () => {
+  const maxClientClockSkewSeconds = 15 * 60;
+  const startCreatedAt = NOW_SECONDS + maxClientClockSkewSeconds;
+  const state = reconstructHuddleState(
+    [lifecycleEvent(48100, { created_at: startCreatedAt })],
+    HUDDLE_ID,
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(state.ended, false);
+  assert.equal(state.staleDeadlineMs, (startCreatedAt + 60 * 60) * 1000 + 1);
 });
 
 test("reconstructHuddleState keeps an old START active after a recent JOIN", () => {
@@ -239,13 +259,6 @@ test("reconstructHuddleState keeps a skew-retained START inconclusive when histo
 test("selectActiveHuddleState does not resurrect an older incomplete huddle", () => {
   const olderHuddleId = "older-huddle";
   const newerHuddleId = "newer-huddle";
-  const eventForHuddle = (kind, ephemeralChannelId, overrides = {}) =>
-    lifecycleEvent(kind, {
-      content: JSON.stringify({
-        ephemeral_channel_id: ephemeralChannelId,
-      }),
-      ...overrides,
-    });
 
   const selected = selectActiveHuddleState(
     [
@@ -271,6 +284,139 @@ test("selectActiveHuddleState does not resurrect an older incomplete huddle", ()
   );
 
   assert.equal(selected, null);
+});
+
+test("selectActiveHuddleState orders relay lifecycle evidence across skewed START clocks", () => {
+  const olderHuddleId = "older-huddle";
+  const newerHuddleId = "newer-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, olderHuddleId, {
+        created_at: NOW_SECONDS + 10,
+      }),
+      eventForHuddle(48101, olderHuddleId, {
+        created_at: NOW_SECONDS - 20,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48100, newerHuddleId, {
+        created_at: NOW_SECONDS - 10,
+      }),
+      eventForHuddle(48101, newerHuddleId, {
+        created_at: NOW_SECONDS - 9,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48103, newerHuddleId, {
+        created_at: NOW_SECONDS - 3,
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected, null);
+});
+
+test("selectActiveHuddleState prefers live relay evidence over a future-skewed START-only session", () => {
+  const startOnlyHuddleId = "start-only-huddle";
+  const relayActiveHuddleId = "relay-active-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, startOnlyHuddleId, {
+        created_at: NOW_SECONDS + 15 * 60,
+      }),
+      eventForHuddle(48100, relayActiveHuddleId, {
+        created_at: NOW_SECONDS - 10,
+      }),
+      eventForHuddle(48101, relayActiveHuddleId, {
+        created_at: NOW_SECONDS - 5,
+        tags: [["p", PARTICIPANT]],
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected?.ephemeralChannelId, relayActiveHuddleId);
+  assert.equal(selected?.state.ended, false);
+});
+
+test("selectActiveHuddleState preserves live relay evidence when its START aged out", () => {
+  const startOnlyHuddleId = "start-only-huddle";
+  const relayActiveHuddleId = "relay-active-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, startOnlyHuddleId, {
+        created_at: NOW_SECONDS + 15 * 60,
+      }),
+      eventForHuddle(48101, relayActiveHuddleId, {
+        created_at: NOW_SECONDS - 5,
+        tags: [["p", PARTICIPANT]],
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected?.ephemeralChannelId, relayActiveHuddleId);
+  assert.equal(selected?.state.ended, false);
+});
+
+test("selectActiveHuddleState prefers a fresh START-only session over terminal relay history", () => {
+  const endedHuddleId = "ended-huddle";
+  const drainedHuddleId = "drained-huddle";
+  const startOnlyHuddleId = "start-only-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, endedHuddleId, {
+        created_at: NOW_SECONDS - 20,
+      }),
+      eventForHuddle(48101, endedHuddleId, {
+        created_at: NOW_SECONDS - 19,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48103, endedHuddleId, {
+        created_at: NOW_SECONDS - 18,
+      }),
+      eventForHuddle(48100, drainedHuddleId, {
+        created_at: NOW_SECONDS - 10,
+      }),
+      eventForHuddle(48102, drainedHuddleId, {
+        created_at: NOW_SECONDS - 9,
+        tags: [["p", CREATOR]],
+      }),
+      eventForHuddle(48100, startOnlyHuddleId, {
+        created_at: NOW_SECONDS - 1,
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected?.ephemeralChannelId, startOnlyHuddleId);
+  assert.equal(selected?.state.ended, false);
+});
+
+test("selectActiveHuddleState does not tier a departed JOIN participant as present", () => {
+  const relayHistoryHuddleId = "relay-history-huddle";
+  const startOnlyHuddleId = "start-only-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, relayHistoryHuddleId, {
+        created_at: NOW_SECONDS - 20,
+      }),
+      eventForHuddle(48101, relayHistoryHuddleId, {
+        created_at: NOW_SECONDS - 19,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48102, relayHistoryHuddleId, {
+        created_at: NOW_SECONDS - 18,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48100, startOnlyHuddleId, {
+        created_at: NOW_SECONDS - 1,
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected?.ephemeralChannelId, startOnlyHuddleId);
+  assert.equal(selected?.state.ended, false);
 });
 
 test("reconstructHuddleState does not resurrect after an end event", () => {

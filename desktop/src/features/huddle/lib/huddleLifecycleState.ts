@@ -172,18 +172,35 @@ export function selectActiveHuddleState(
   }
 
   const candidates = [...eventsByHuddle.entries()].map(
-    ([ephemeralChannelId, huddleEvents]) => ({
-      ephemeralChannelId,
-      state: reconstructHuddleState(huddleEvents, ephemeralChannelId, {
+    ([ephemeralChannelId, huddleEvents]) => {
+      const relayLifecycleEvents = huddleEvents.filter(
+        (event) =>
+          event.kind === KIND_HUDDLE_PARTICIPANT_JOINED ||
+          event.kind === KIND_HUDDLE_PARTICIPANT_LEFT ||
+          event.kind === KIND_HUDDLE_ENDED,
+      );
+      const state = reconstructHuddleState(huddleEvents, ephemeralChannelId, {
         historyMayBeTruncated,
         isCurrentHuddle:
           options.activeEphemeralChannelId === ephemeralChannelId,
         nowMs: options.nowMs,
-      }),
-      lastEventCreatedAt: Math.max(
-        ...huddleEvents.map((event) => event.created_at),
-      ),
-    }),
+      });
+      return {
+        ephemeralChannelId,
+        state,
+        hasPresentRelayParticipant:
+          !state.ended &&
+          relayLifecycleEvents.some(
+            (event) =>
+              event.kind === KIND_HUDDLE_PARTICIPANT_JOINED &&
+              state.participants.has(lifecycleParticipant(event) ?? ""),
+          ),
+        latestRelayCreatedAt:
+          relayLifecycleEvents.length > 0
+            ? Math.max(...relayLifecycleEvents.map((event) => event.created_at))
+            : null,
+      };
+    },
   );
 
   const current = candidates.find(
@@ -197,24 +214,42 @@ export function selectActiveHuddleState(
     };
   }
 
-  // A retained START is a session boundary. Choose the newest session before
-  // applying terminal state so an older incomplete history cannot reappear
-  // after a newer huddle ends. Only use relay activity as a fallback when the
-  // subscription window contains no START at all.
-  const startedCandidates = candidates.filter(
-    ({ state }) => state.startCreatedAt !== null,
-  );
-  const candidatePool =
-    startedCandidates.length > 0 ? startedCandidates : candidates;
-  candidatePool.sort(
-    (left, right) =>
-      (right.state.startCreatedAt ?? right.lastEventCreatedAt) -
-        (left.state.startCreatedAt ?? left.lastEventCreatedAt) ||
-      right.ephemeralChannelId.localeCompare(left.ephemeralChannelId),
-  );
+  // Relay-signed JOIN/LEFT/END events share one clock across huddles, so only
+  // the newest relay-backed session may be shown. If it is terminal, do not
+  // resurrect an older relay-backed session. A currently present participant
+  // gives that newest relay-backed session priority over every START-only
+  // candidate without comparing relay and client clocks numerically.
+  const newestRelayCandidate = candidates
+    .filter(({ latestRelayCreatedAt }) => latestRelayCreatedAt !== null)
+    .sort(
+      (left, right) =>
+        (right.latestRelayCreatedAt ?? 0) - (left.latestRelayCreatedAt ?? 0) ||
+        right.ephemeralChannelId.localeCompare(left.ephemeralChannelId),
+    )[0];
+  if (newestRelayCandidate?.hasPresentRelayParticipant) {
+    return {
+      ephemeralChannelId: newestRelayCandidate.ephemeralChannelId,
+      state: newestRelayCandidate.state,
+    };
+  }
 
-  const selected = candidatePool[0];
-  if (!selected || selected.state.ended) return null;
+  // A START-only session has no relay-clock evidence to compare with a
+  // terminal relay-backed session. Prefer the newest non-terminal START-only
+  // candidate instead of letting END/LEFT-only history displace a fresh room.
+  const selected = candidates
+    .filter(
+      ({ latestRelayCreatedAt, state }) =>
+        latestRelayCreatedAt === null &&
+        state.startCreatedAt !== null &&
+        !state.ended,
+    )
+    .sort(
+      (left, right) =>
+        (right.state.startCreatedAt ?? 0) - (left.state.startCreatedAt ?? 0) ||
+        right.ephemeralChannelId.localeCompare(left.ephemeralChannelId),
+    )[0];
+
+  if (!selected) return null;
   return {
     ephemeralChannelId: selected.ephemeralChannelId,
     state: selected.state,
