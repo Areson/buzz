@@ -44,6 +44,32 @@ test("reconstructHuddleState ends an explicitly ended huddle", () => {
   assert.equal(state.startCreatedAt, NOW_SECONDS);
 });
 
+test("reconstructHuddleState folds the participant roster for an ended huddle", () => {
+  const state = reconstructHuddleState(
+    [
+      lifecycleEvent(48100, { created_at: NOW_SECONDS - 4 }),
+      lifecycleEvent(48101, {
+        created_at: NOW_SECONDS - 3,
+        tags: [["p", PARTICIPANT]],
+      }),
+      lifecycleEvent(48102, {
+        created_at: NOW_SECONDS - 2,
+        tags: [["p", PARTICIPANT]],
+      }),
+      lifecycleEvent(48102, {
+        created_at: NOW_SECONDS - 1,
+        tags: [["p", CREATOR]],
+      }),
+      lifecycleEvent(48103),
+    ],
+    HUDDLE_ID,
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(state.ended, true);
+  assert.equal(state.participants.size, 0);
+});
+
 test("reconstructHuddleState ends a fully drained huddle", () => {
   const state = reconstructHuddleState(
     [
@@ -333,6 +359,43 @@ test("selectActiveHuddleState does not resurrect an older incomplete huddle", ()
   assert.equal(selected, null);
 });
 
+test("selectActiveHuddleState keeps a newer ended-room barrier after an older room LEFT", () => {
+  const olderHuddleId = "older-huddle";
+  const newerHuddleId = "newer-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, olderHuddleId, {
+        created_at: NOW_SECONDS - 20,
+      }),
+      eventForHuddle(48101, olderHuddleId, {
+        created_at: NOW_SECONDS - 19,
+        tags: [["p", CREATOR]],
+      }),
+      eventForHuddle(48101, olderHuddleId, {
+        created_at: NOW_SECONDS - 18,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48100, newerHuddleId, {
+        created_at: NOW_SECONDS - 10,
+      }),
+      eventForHuddle(48101, newerHuddleId, {
+        created_at: NOW_SECONDS - 9,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48103, newerHuddleId, {
+        created_at: NOW_SECONDS - 8,
+      }),
+      eventForHuddle(48102, olderHuddleId, {
+        created_at: NOW_SECONDS - 1,
+        tags: [["p", PARTICIPANT]],
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected, null);
+});
+
 test("selectActiveHuddleState orders relay lifecycle evidence across skewed START clocks", () => {
   const olderHuddleId = "older-huddle";
   const newerHuddleId = "newer-huddle";
@@ -382,6 +445,40 @@ test("selectActiveHuddleState ignores a future-skewed END when ordering rooms", 
       }),
       eventForHuddle(48101, liveHuddleId, {
         created_at: NOW_SECONDS - 5,
+        tags: [["p", PARTICIPANT]],
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected?.ephemeralChannelId, liveHuddleId);
+  assert.equal(selected?.state.ended, false);
+});
+
+test("selectActiveHuddleState ignores a delayed LEFT from an ended room", () => {
+  const endedHuddleId = "ended-huddle";
+  const liveHuddleId = "live-huddle";
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, endedHuddleId, {
+        created_at: NOW_SECONDS - 6,
+      }),
+      eventForHuddle(48101, endedHuddleId, {
+        created_at: NOW_SECONDS - 5,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48103, endedHuddleId, {
+        created_at: NOW_SECONDS - 4,
+      }),
+      eventForHuddle(48100, liveHuddleId, {
+        created_at: NOW_SECONDS - 3,
+      }),
+      eventForHuddle(48101, liveHuddleId, {
+        created_at: NOW_SECONDS - 2,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48102, endedHuddleId, {
+        created_at: NOW_SECONDS - 1,
         tags: [["p", PARTICIPANT]],
       }),
     ],
@@ -511,7 +608,7 @@ test("reconstructHuddleState does not resurrect after an end event", () => {
   );
 
   assert.equal(state.ended, true);
-  assert.deepEqual([...state.participants], [CREATOR]);
+  assert.deepEqual([...state.participants], [CREATOR, PARTICIPANT]);
 });
 
 test("huddleStalenessDelayMs schedules just past the stale boundary", () => {

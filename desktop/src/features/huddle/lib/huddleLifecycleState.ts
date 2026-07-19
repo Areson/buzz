@@ -120,19 +120,17 @@ export function reconstructHuddleState(
   // START is client-signed while participant transitions are relay-signed, so
   // their created_at values are not one causal clock. Seed the creator from
   // START, then fold only relay participant transitions in their own order.
-  if (!explicitlyEnded) {
-    for (const event of participantEvents) {
-      switch (event.kind) {
-        case KIND_HUDDLE_PARTICIPANT_JOINED: {
-          const pubkey = lifecycleParticipant(event);
-          if (pubkey) participants.add(pubkey);
-          break;
-        }
-        case KIND_HUDDLE_PARTICIPANT_LEFT: {
-          const pubkey = lifecycleParticipant(event);
-          if (pubkey) participants.delete(pubkey);
-          break;
-        }
+  for (const event of participantEvents) {
+    switch (event.kind) {
+      case KIND_HUDDLE_PARTICIPANT_JOINED: {
+        const pubkey = lifecycleParticipant(event);
+        if (pubkey) participants.add(pubkey);
+        break;
+      }
+      case KIND_HUDDLE_PARTICIPANT_LEFT: {
+        const pubkey = lifecycleParticipant(event);
+        if (pubkey) participants.delete(pubkey);
+        break;
       }
     }
   }
@@ -197,6 +195,9 @@ export function selectActiveHuddleState(
           event.kind === KIND_HUDDLE_PARTICIPANT_JOINED ||
           event.kind === KIND_HUDDLE_PARTICIPANT_LEFT,
       );
+      const relayJoinEvents = relayParticipantEvents.filter(
+        (event) => event.kind === KIND_HUDDLE_PARTICIPANT_JOINED,
+      );
       const state = reconstructHuddleState(huddleEvents, ephemeralChannelId, {
         historyMayBeTruncated,
         isCurrentHuddle:
@@ -208,16 +209,12 @@ export function selectActiveHuddleState(
         state,
         hasPresentRelayParticipant:
           !state.ended &&
-          relayParticipantEvents.some(
-            (event) =>
-              event.kind === KIND_HUDDLE_PARTICIPANT_JOINED &&
-              state.participants.has(lifecycleParticipant(event) ?? ""),
+          relayJoinEvents.some((event) =>
+            state.participants.has(lifecycleParticipant(event) ?? ""),
           ),
-        latestRelayCreatedAt:
-          relayParticipantEvents.length > 0
-            ? Math.max(
-                ...relayParticipantEvents.map((event) => event.created_at),
-              )
+        latestRelayJoinCreatedAt:
+          relayJoinEvents.length > 0
+            ? Math.max(...relayJoinEvents.map((event) => event.created_at))
             : null,
       };
     },
@@ -234,18 +231,19 @@ export function selectActiveHuddleState(
     };
   }
 
-  // Relay-signed JOIN/LEFT events share one clock across huddles, so only the
-  // newest relay-backed session may be shown. END is also client-emitted and
-  // stays room-local terminal evidence; it must not order different rooms. If
-  // the newest relay-backed session is terminal, do not resurrect an older
-  // relay-backed session. A currently present participant gives that newest
-  // relay-backed session priority over every START-only candidate without
-  // comparing relay and client clocks numerically.
+  // Relay-signed JOIN events share one clock across huddles, so only the newest
+  // relay-backed session may be shown. LEFT is a departure transition within a
+  // session, while END is client-emitted room-local evidence; neither may make
+  // an older room outrank a newer session. If the newest relay-backed session
+  // is terminal, do not resurrect an older relay-backed session. A currently
+  // present participant gives that newest relay-backed session priority over
+  // every START-only candidate without comparing relay and client clocks.
   const newestRelayCandidate = candidates
-    .filter(({ latestRelayCreatedAt }) => latestRelayCreatedAt !== null)
+    .filter(({ latestRelayJoinCreatedAt }) => latestRelayJoinCreatedAt !== null)
     .sort(
       (left, right) =>
-        (right.latestRelayCreatedAt ?? 0) - (left.latestRelayCreatedAt ?? 0) ||
+        (right.latestRelayJoinCreatedAt ?? 0) -
+          (left.latestRelayJoinCreatedAt ?? 0) ||
         right.ephemeralChannelId.localeCompare(left.ephemeralChannelId),
     )[0];
   if (newestRelayCandidate?.hasPresentRelayParticipant) {
@@ -260,8 +258,8 @@ export function selectActiveHuddleState(
   // candidate instead of letting END/LEFT-only history displace a fresh room.
   const selected = candidates
     .filter(
-      ({ latestRelayCreatedAt, state }) =>
-        latestRelayCreatedAt === null &&
+      ({ latestRelayJoinCreatedAt, state }) =>
+        latestRelayJoinCreatedAt === null &&
         state.startCreatedAt !== null &&
         !state.ended,
     )
