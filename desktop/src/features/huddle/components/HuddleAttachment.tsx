@@ -6,12 +6,7 @@ import { toast } from "sonner";
 import type { TimelineMessage } from "@/features/messages/types";
 import { relayClient } from "@/shared/api/relayClient";
 import type { RelayEvent } from "@/shared/api/types";
-import {
-  KIND_HUDDLE_ENDED,
-  KIND_HUDDLE_PARTICIPANT_JOINED,
-  KIND_HUDDLE_PARTICIPANT_LEFT,
-  KIND_HUDDLE_STARTED,
-} from "@/shared/constants/kinds";
+import { KIND_HUDDLE_STARTED } from "@/shared/constants/kinds";
 import { cn } from "@/shared/lib/cn";
 import {
   Attachment,
@@ -23,18 +18,18 @@ import {
   AttachmentTitle,
 } from "@/shared/ui/attachment";
 import { useHuddle } from "../HuddleContext";
-import { isHuddleStartStale } from "../lib/huddleCardState";
+import {
+  huddleEventChannelId,
+  type HuddleLifecycleState,
+  huddleStalenessDelayMs,
+  reconstructHuddleState,
+} from "../lib/huddleLifecycleState";
 
 type HuddleAttachmentProps = {
   channelId: string | null;
   className?: string;
   message: TimelineMessage;
   onOpenThread?: (message: TimelineMessage) => void;
-};
-
-type HuddleLifecycleState = {
-  ended: boolean;
-  participants: Set<string>;
 };
 
 function parseEphemeralChannelId(content: string): string | null {
@@ -48,69 +43,20 @@ function parseEphemeralChannelId(content: string): string | null {
   }
 }
 
-function lifecycleEventChannelId(event: RelayEvent): string | null {
-  return parseEphemeralChannelId(event.content);
-}
-
-function lifecycleParticipant(event: RelayEvent): string | null {
-  return (
-    event.tags.find(
-      (tag) => tag[0] === "p" && typeof tag[1] === "string",
-    )?.[1] ??
-    event.pubkey ??
-    null
-  );
-}
-
-function reconstructHuddleLifecycle(
-  events: Iterable<RelayEvent>,
-  fallbackCreatorPubkey: string | undefined,
-  ephemeralChannelId: string,
-): HuddleLifecycleState {
-  const sorted = [...events]
-    .filter((event) => lifecycleEventChannelId(event) === ephemeralChannelId)
-    .sort(
-      (left, right) =>
-        left.created_at - right.created_at ||
-        left.kind - right.kind ||
-        left.id.localeCompare(right.id),
-    );
-  const participants = new Set<string>();
-  let ended = false;
-
-  if (fallbackCreatorPubkey) {
-    participants.add(fallbackCreatorPubkey);
-  }
-
-  for (const event of sorted) {
-    switch (event.kind) {
-      case KIND_HUDDLE_STARTED:
-        ended = false;
-        if (event.pubkey) participants.add(event.pubkey);
-        break;
-      case KIND_HUDDLE_PARTICIPANT_JOINED: {
-        if (ended) break;
-        const pubkey = lifecycleParticipant(event);
-        if (pubkey) participants.add(pubkey);
-        break;
-      }
-      case KIND_HUDDLE_PARTICIPANT_LEFT: {
-        if (ended) break;
-        const pubkey = lifecycleParticipant(event);
-        if (pubkey) participants.delete(pubkey);
-        break;
-      }
-      case KIND_HUDDLE_ENDED:
-        ended = true;
-        break;
-    }
-  }
-
-  return { ended, participants };
-}
-
 function participantLabel(count: number) {
   return `${count} participant${count === 1 ? "" : "s"}`;
+}
+
+function messageLifecycleEvent(message: TimelineMessage): RelayEvent {
+  return {
+    id: message.id,
+    pubkey: message.pubkey ?? "",
+    kind: message.kind ?? KIND_HUDDLE_STARTED,
+    created_at: message.createdAt,
+    content: message.body,
+    tags: message.tags ?? [],
+    sig: "",
+  };
 }
 
 export function HuddleAttachment({
@@ -127,10 +73,18 @@ export function HuddleAttachment({
   const queryClient = useQueryClient();
   const [isJoining, setIsJoining] = React.useState(false);
   const [lifecycleState, setLifecycleState] =
-    React.useState<HuddleLifecycleState>(() => ({
-      ended: false,
-      participants: new Set(message.pubkey ? [message.pubkey] : []),
-    }));
+    React.useState<HuddleLifecycleState>(() =>
+      ephemeralChannelId
+        ? reconstructHuddleState(
+            [messageLifecycleEvent(message)],
+            ephemeralChannelId,
+          )
+        : {
+            ended: true,
+            participants: new Set(),
+            startCreatedAt: null,
+          },
+    );
 
   React.useEffect(() => {
     if (!channelId || !ephemeralChannelId) return;
@@ -138,6 +92,7 @@ export function HuddleAttachment({
     const huddleChannelId = ephemeralChannelId;
     let disposed = false;
     let cleanup: (() => void) | null = null;
+    let staleTimeout: ReturnType<typeof setTimeout> | null = null;
     const seenEvents = new Map<string, RelayEvent>([
       [
         message.id,
@@ -155,20 +110,24 @@ export function HuddleAttachment({
 
     function updateState() {
       if (disposed) return;
-      setLifecycleState(
-        reconstructHuddleLifecycle(
-          seenEvents.values(),
-          message.pubkey,
-          huddleChannelId,
-        ),
+      if (staleTimeout) clearTimeout(staleTimeout);
+      const state = reconstructHuddleState(
+        seenEvents.values(),
+        huddleChannelId,
       );
+      setLifecycleState(state);
+      const staleDelay = state.ended
+        ? null
+        : huddleStalenessDelayMs(state.startCreatedAt);
+      if (staleDelay !== null)
+        staleTimeout = setTimeout(updateState, staleDelay);
     }
 
     updateState();
     relayClient
       .subscribeToHuddleEvents(channelId, (event) => {
         if (disposed || seenEvents.has(event.id)) return;
-        if (lifecycleEventChannelId(event) !== huddleChannelId) return;
+        if (huddleEventChannelId(event) !== huddleChannelId) return;
         seenEvents.set(event.id, event);
         updateState();
       })
@@ -185,6 +144,7 @@ export function HuddleAttachment({
 
     return () => {
       disposed = true;
+      if (staleTimeout) clearTimeout(staleTimeout);
       cleanup?.();
     };
   }, [
@@ -198,21 +158,15 @@ export function HuddleAttachment({
     message.tags,
   ]);
 
-  const participantCount = Math.max(1, lifecycleState.participants.size);
+  const participantCount = lifecycleState.participants.size;
   const isEnded = lifecycleState.ended;
   const isCurrentHuddle =
     Boolean(ephemeralChannelId) &&
     activeEphemeralChannelId === ephemeralChannelId;
-  const isStaleUnconfirmedHuddle =
-    !isCurrentHuddle && isHuddleStartStale(message.createdAt);
   const canJoin = Boolean(
-    channelId &&
-      ephemeralChannelId &&
-      !isEnded &&
-      !isCurrentHuddle &&
-      !isStaleUnconfirmedHuddle,
+    channelId && ephemeralChannelId && !isEnded && !isCurrentHuddle,
   );
-  const displayEnded = isEnded || isStaleUnconfirmedHuddle;
+  const displayEnded = isEnded;
 
   async function handleJoin() {
     if (!channelId || !ephemeralChannelId || isJoining || isStarting) return;
