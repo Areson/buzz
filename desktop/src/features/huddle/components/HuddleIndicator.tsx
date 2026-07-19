@@ -11,9 +11,9 @@ import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { useHuddle } from "../HuddleContext";
 import {
-  huddleEventChannelId,
+  HUDDLE_EVENT_HISTORY_LIMIT,
   huddleStalenessDelayMs,
-  reconstructHuddleState,
+  selectActiveHuddleState,
 } from "../lib/huddleLifecycleState";
 
 type ActiveHuddle = {
@@ -63,38 +63,15 @@ export function HuddleIndicator({
 
     function reconstruct() {
       if (staleTimeout) clearTimeout(staleTimeout);
-      const eventsByHuddle = new Map<string, RelayEvent[]>();
-      for (const event of seenEvents.values()) {
-        const ephemeralChannelId = huddleEventChannelId(event);
-        if (!ephemeralChannelId) continue;
-        const events = eventsByHuddle.get(ephemeralChannelId) ?? [];
-        events.push(event);
-        eventsByHuddle.set(ephemeralChannelId, events);
-      }
-
-      const activeHuddles = [...eventsByHuddle.entries()]
-        .map(([ephemeralChannelId, events]) => ({
-          ephemeralChannelId,
-          events,
-          state: reconstructHuddleState(events, ephemeralChannelId, {
-            isCurrentHuddle: activeEphemeralChannelId === ephemeralChannelId,
-          }),
-          lastEventCreatedAt: Math.max(
-            ...events.map((event) => event.created_at),
-          ),
-        }))
-        .filter(({ state }) => !state.ended)
-        .sort(
-          (left, right) =>
-            right.lastEventCreatedAt - left.lastEventCreatedAt ||
-            right.ephemeralChannelId.localeCompare(left.ephemeralChannelId),
-        );
-      const latest = activeHuddles[0];
-      const huddle: ActiveHuddle | null = latest
+      const selected = selectActiveHuddleState(seenEvents.values(), {
+        activeEphemeralChannelId,
+        historyMayBeTruncated: seenEvents.size >= HUDDLE_EVENT_HISTORY_LIMIT,
+      });
+      const huddle: ActiveHuddle | null = selected
         ? {
-            ephemeralChannelId: latest.ephemeralChannelId,
-            participants: latest.state.participants,
-            staleDeadlineMs: latest.state.staleDeadlineMs,
+            ephemeralChannelId: selected.ephemeralChannelId,
+            participants: selected.state.participants,
+            staleDeadlineMs: selected.state.staleDeadlineMs,
           }
         : null;
 

@@ -15,8 +15,22 @@ export type HuddleLifecycleState = {
 };
 
 type ReconstructHuddleOptions = {
+  historyMayBeTruncated?: boolean;
   isCurrentHuddle?: boolean;
   nowMs?: number;
+};
+
+type SelectActiveHuddleOptions = {
+  activeEphemeralChannelId?: string | null;
+  historyMayBeTruncated?: boolean;
+  nowMs?: number;
+};
+
+export const HUDDLE_EVENT_HISTORY_LIMIT = 100;
+
+export type ActiveHuddleLifecycleState = {
+  ephemeralChannelId: string;
+  state: HuddleLifecycleState;
 };
 
 export function huddleEventChannelId(event: RelayEvent): string | null {
@@ -54,56 +68,69 @@ export function reconstructHuddleState(
   ephemeralChannelId: string,
   options: ReconstructHuddleOptions = {},
 ): HuddleLifecycleState {
-  const sorted = [...events]
-    .filter((event) => huddleEventChannelId(event) === ephemeralChannelId)
+  const matchingEvents = [...events].filter(
+    (event) => huddleEventChannelId(event) === ephemeralChannelId,
+  );
+  const startEvent = matchingEvents
+    .filter((event) => event.kind === KIND_HUDDLE_STARTED)
+    .sort(
+      (left, right) =>
+        left.created_at - right.created_at || left.id.localeCompare(right.id),
+    )
+    .at(-1);
+  const participantEvents = matchingEvents
+    .filter(
+      (event) =>
+        event.kind === KIND_HUDDLE_PARTICIPANT_JOINED ||
+        event.kind === KIND_HUDDLE_PARTICIPANT_LEFT,
+    )
     .sort(
       (left, right) =>
         left.created_at - right.created_at ||
         left.kind - right.kind ||
         left.id.localeCompare(right.id),
     );
-  let participants = new Set<string>();
-  let explicitlyEnded = false;
-  let startCreatedAt: number | null = null;
-  let sawParticipantEventAfterStart = false;
+  const participants = new Set<string>(
+    startEvent?.pubkey ? [startEvent.pubkey] : [],
+  );
+  const explicitlyEnded = matchingEvents.some(
+    (event) => event.kind === KIND_HUDDLE_ENDED,
+  );
+  const startCreatedAt = startEvent?.created_at ?? null;
 
-  for (const event of sorted) {
-    switch (event.kind) {
-      case KIND_HUDDLE_STARTED:
-        if (explicitlyEnded) break;
-        startCreatedAt = event.created_at;
-        participants = new Set(event.pubkey ? [event.pubkey] : []);
-        sawParticipantEventAfterStart = false;
-        break;
-      case KIND_HUDDLE_PARTICIPANT_JOINED: {
-        if (explicitlyEnded) break;
-        if (startCreatedAt !== null) sawParticipantEventAfterStart = true;
-        const pubkey = lifecycleParticipant(event);
-        if (pubkey) participants.add(pubkey);
-        break;
+  // START is client-signed while participant transitions are relay-signed, so
+  // their created_at values are not one causal clock. Seed the creator from
+  // START, then fold only relay participant transitions in their own order.
+  if (!explicitlyEnded) {
+    for (const event of participantEvents) {
+      switch (event.kind) {
+        case KIND_HUDDLE_PARTICIPANT_JOINED: {
+          const pubkey = lifecycleParticipant(event);
+          if (pubkey) participants.add(pubkey);
+          break;
+        }
+        case KIND_HUDDLE_PARTICIPANT_LEFT: {
+          const pubkey = lifecycleParticipant(event);
+          if (pubkey) participants.delete(pubkey);
+          break;
+        }
       }
-      case KIND_HUDDLE_PARTICIPANT_LEFT: {
-        if (explicitlyEnded) break;
-        if (startCreatedAt !== null) sawParticipantEventAfterStart = true;
-        const pubkey = lifecycleParticipant(event);
-        if (pubkey) participants.delete(pubkey);
-        break;
-      }
-      case KIND_HUDDLE_ENDED:
-        explicitlyEnded = true;
-        break;
     }
   }
 
-  // An empty set is conclusive only when START is retained: without START,
-  // the subscription's 100-event window may have truncated an older JOIN.
-  const drained = startCreatedAt !== null && participants.size === 0;
+  // An empty set is conclusive only when START is retained and the replay did
+  // not hit its limit. Under clock skew, START can survive in a truncated
+  // window even when an earlier relay-signed JOIN did not.
+  const drained =
+    startCreatedAt !== null &&
+    !options.historyMayBeTruncated &&
+    participants.size === 0;
   // START age is only a fallback for a huddle that never produced newer
   // lifecycle evidence. The relay TTL is renewable, so a later JOIN/LEFT or
   // the locally current huddle must not be expired from START time alone.
   const staleDeadlineMs =
     startCreatedAt !== null &&
-    !sawParticipantEventAfterStart &&
+    participantEvents.length === 0 &&
     !options.isCurrentHuddle &&
     !explicitlyEnded &&
     !drained
@@ -119,6 +146,78 @@ export function reconstructHuddleState(
     participants,
     startCreatedAt,
     staleDeadlineMs,
+  };
+}
+
+/**
+ * Select the channel header's huddle without falling back past a newer ended
+ * session. Retained START events are the session boundaries; participant and
+ * END timestamps never compete with a different client's START timestamp.
+ */
+export function selectActiveHuddleState(
+  events: Iterable<RelayEvent>,
+  options: SelectActiveHuddleOptions = {},
+): ActiveHuddleLifecycleState | null {
+  const allEvents = [...events];
+  const historyMayBeTruncated =
+    options.historyMayBeTruncated ??
+    allEvents.length >= HUDDLE_EVENT_HISTORY_LIMIT;
+  const eventsByHuddle = new Map<string, RelayEvent[]>();
+  for (const event of allEvents) {
+    const ephemeralChannelId = huddleEventChannelId(event);
+    if (!ephemeralChannelId) continue;
+    const huddleEvents = eventsByHuddle.get(ephemeralChannelId) ?? [];
+    huddleEvents.push(event);
+    eventsByHuddle.set(ephemeralChannelId, huddleEvents);
+  }
+
+  const candidates = [...eventsByHuddle.entries()].map(
+    ([ephemeralChannelId, huddleEvents]) => ({
+      ephemeralChannelId,
+      state: reconstructHuddleState(huddleEvents, ephemeralChannelId, {
+        historyMayBeTruncated,
+        isCurrentHuddle:
+          options.activeEphemeralChannelId === ephemeralChannelId,
+        nowMs: options.nowMs,
+      }),
+      lastEventCreatedAt: Math.max(
+        ...huddleEvents.map((event) => event.created_at),
+      ),
+    }),
+  );
+
+  const current = candidates.find(
+    ({ ephemeralChannelId, state }) =>
+      ephemeralChannelId === options.activeEphemeralChannelId && !state.ended,
+  );
+  if (current) {
+    return {
+      ephemeralChannelId: current.ephemeralChannelId,
+      state: current.state,
+    };
+  }
+
+  // A retained START is a session boundary. Choose the newest session before
+  // applying terminal state so an older incomplete history cannot reappear
+  // after a newer huddle ends. Only use relay activity as a fallback when the
+  // subscription window contains no START at all.
+  const startedCandidates = candidates.filter(
+    ({ state }) => state.startCreatedAt !== null,
+  );
+  const candidatePool =
+    startedCandidates.length > 0 ? startedCandidates : candidates;
+  candidatePool.sort(
+    (left, right) =>
+      (right.state.startCreatedAt ?? right.lastEventCreatedAt) -
+        (left.state.startCreatedAt ?? left.lastEventCreatedAt) ||
+      right.ephemeralChannelId.localeCompare(left.ephemeralChannelId),
+  );
+
+  const selected = candidatePool[0];
+  if (!selected || selected.state.ended) return null;
+  return {
+    ephemeralChannelId: selected.ephemeralChannelId,
+    state: selected.state,
   };
 }
 

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   huddleStalenessDelayMs,
   reconstructHuddleState,
+  selectActiveHuddleState,
 } from "./huddleLifecycleState.ts";
 
 const HUDDLE_ID = "huddle-id";
@@ -86,6 +87,67 @@ test("reconstructHuddleState keeps an old START active after a recent JOIN", () 
   assert.deepEqual([...state.participants], [CREATOR, PARTICIPANT]);
 });
 
+test("reconstructHuddleState preserves a JOIN timestamped before START", () => {
+  const startCreatedAt = NOW_SECONDS - 60 * 60 - 1;
+  const state = reconstructHuddleState(
+    [
+      lifecycleEvent(48100, { created_at: startCreatedAt }),
+      lifecycleEvent(48101, {
+        created_at: startCreatedAt - 5,
+        tags: [["p", PARTICIPANT]],
+      }),
+    ],
+    HUDDLE_ID,
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(state.ended, false);
+  assert.equal(state.staleDeadlineMs, null);
+  assert.deepEqual([...state.participants], [CREATOR, PARTICIPANT]);
+});
+
+test("reconstructHuddleState applies a LEFT timestamped before START", () => {
+  const state = reconstructHuddleState(
+    [
+      lifecycleEvent(48100),
+      lifecycleEvent(48102, {
+        created_at: NOW_SECONDS - 5,
+        tags: [["p", CREATOR]],
+      }),
+    ],
+    HUDDLE_ID,
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(state.ended, true);
+  assert.equal(state.participants.size, 0);
+});
+
+test("reconstructHuddleState drains participants under START clock skew", () => {
+  const state = reconstructHuddleState(
+    [
+      lifecycleEvent(48100),
+      lifecycleEvent(48101, {
+        created_at: NOW_SECONDS - 5,
+        tags: [["p", PARTICIPANT]],
+      }),
+      lifecycleEvent(48102, {
+        created_at: NOW_SECONDS - 4,
+        tags: [["p", PARTICIPANT]],
+      }),
+      lifecycleEvent(48102, {
+        created_at: NOW_SECONDS - 3,
+        tags: [["p", CREATOR]],
+      }),
+    ],
+    HUDDLE_ID,
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(state.ended, true);
+  assert.equal(state.participants.size, 0);
+});
+
 test("reconstructHuddleState keeps the current huddle active past START age", () => {
   const startCreatedAt = NOW_SECONDS - 60 * 60 - 1;
   const state = reconstructHuddleState(
@@ -140,6 +202,75 @@ test("reconstructHuddleState treats empty truncated history as inconclusive", ()
   assert.equal(state.ended, false);
   assert.equal(state.startCreatedAt, null);
   assert.equal(state.participants.size, 0);
+});
+
+test("reconstructHuddleState keeps a skew-retained START inconclusive when history is truncated", () => {
+  const events = [lifecycleEvent(48100)];
+  for (let index = 0; index < 49; index += 1) {
+    const participant = `participant-${index}`;
+    events.push(
+      lifecycleEvent(48101, {
+        created_at: NOW_SECONDS - 100 + index * 2,
+        tags: [["p", participant]],
+      }),
+      lifecycleEvent(48102, {
+        created_at: NOW_SECONDS - 99 + index * 2,
+        tags: [["p", participant]],
+      }),
+    );
+  }
+  events.push(
+    lifecycleEvent(48102, {
+      created_at: NOW_SECONDS - 1,
+      tags: [["p", CREATOR]],
+    }),
+  );
+
+  const state = reconstructHuddleState(events, HUDDLE_ID, {
+    historyMayBeTruncated: true,
+    nowMs: NOW_SECONDS * 1000,
+  });
+
+  assert.equal(events.length, 100);
+  assert.equal(state.ended, false);
+  assert.equal(state.participants.size, 0);
+});
+
+test("selectActiveHuddleState does not resurrect an older incomplete huddle", () => {
+  const olderHuddleId = "older-huddle";
+  const newerHuddleId = "newer-huddle";
+  const eventForHuddle = (kind, ephemeralChannelId, overrides = {}) =>
+    lifecycleEvent(kind, {
+      content: JSON.stringify({
+        ephemeral_channel_id: ephemeralChannelId,
+      }),
+      ...overrides,
+    });
+
+  const selected = selectActiveHuddleState(
+    [
+      eventForHuddle(48100, olderHuddleId, {
+        created_at: NOW_SECONDS - 20,
+      }),
+      eventForHuddle(48101, olderHuddleId, {
+        created_at: NOW_SECONDS - 19,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48100, newerHuddleId, {
+        created_at: NOW_SECONDS - 10,
+      }),
+      eventForHuddle(48101, newerHuddleId, {
+        created_at: NOW_SECONDS - 9,
+        tags: [["p", PARTICIPANT]],
+      }),
+      eventForHuddle(48103, newerHuddleId, {
+        created_at: NOW_SECONDS - 8,
+      }),
+    ],
+    { nowMs: NOW_SECONDS * 1000 },
+  );
+
+  assert.equal(selected, null);
 });
 
 test("reconstructHuddleState does not resurrect after an end event", () => {

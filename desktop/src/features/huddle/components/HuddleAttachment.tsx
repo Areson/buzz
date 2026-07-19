@@ -19,6 +19,7 @@ import {
 } from "@/shared/ui/attachment";
 import { useHuddle } from "../HuddleContext";
 import {
+  HUDDLE_EVENT_HISTORY_LIMIT,
   huddleEventChannelId,
   type HuddleLifecycleState,
   huddleStalenessDelayMs,
@@ -119,7 +120,10 @@ export function HuddleAttachment({
       const state = reconstructHuddleState(
         seenEvents.values(),
         huddleChannelId,
-        { isCurrentHuddle },
+        {
+          historyMayBeTruncated: seenEvents.size >= HUDDLE_EVENT_HISTORY_LIMIT,
+          isCurrentHuddle,
+        },
       );
       setLifecycleState(state);
       const staleDelay = state.ended
