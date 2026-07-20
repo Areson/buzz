@@ -7,6 +7,7 @@ import {
   REPLAY_BATCH_SIZE,
 } from "./relayReconnectReplay.ts";
 import { buildChannelFilter } from "./relayChannelFilters.ts";
+import { prepareSubscriptionEvent } from "./relayClosedRecovery.ts";
 
 // ── Fake-timer + Date.now setup for gate tests ────────────────────────────────
 
@@ -179,6 +180,7 @@ test("replay sends all subs in one batch when count equals REPLAY_BATCH_SIZE", a
     subscriptions,
     sendRaw: async (payload) => {
       sentIds.push(payload[1]);
+      subscriptions.get(payload[1])?.resolveReconnectEose?.();
     },
     requestHistory: async () => [],
     setTimeoutFn: (fn, _ms) => {
@@ -215,6 +217,7 @@ test("replay splits subscriptions into batches of REPLAY_BATCH_SIZE", async () =
     subscriptions,
     sendRaw: async (payload) => {
       sentIds.push(payload[1]);
+      subscriptions.get(payload[1])?.resolveReconnectEose?.();
     },
     requestHistory: async () => [],
     setTimeoutFn: (fn, _ms) => {
@@ -271,6 +274,7 @@ test("visible channel subscription is sent first", async () => {
     subscriptions,
     sendRaw: async (payload) => {
       sentOrder.push(payload[1]);
+      subscriptions.get(payload[1])?.resolveReconnectEose?.();
     },
     requestHistory: async () => [],
     visibleChannelId: "ch-visible",
@@ -287,21 +291,23 @@ test("replay waits for rate-limit gate before sending REQs", async () => {
   activateRateLimit(5); // gate active for 5 seconds
 
   const sentIds = [];
+  const subscriptions = new Map([
+    [
+      "sub-1",
+      {
+        mode: "live",
+        filter: { kinds: [9], "#h": ["ch-1"], limit: 50 },
+        onEvent: () => {},
+        lastSeenCreatedAt: undefined,
+      },
+    ],
+  ]);
 
   const replayPromise = replayLiveSubscriptions({
-    subscriptions: new Map([
-      [
-        "sub-1",
-        {
-          mode: "live",
-          filter: { kinds: [9], "#h": ["ch-1"], limit: 50 },
-          onEvent: () => {},
-          lastSeenCreatedAt: undefined,
-        },
-      ],
-    ]),
+    subscriptions,
     sendRaw: async (payload) => {
       sentIds.push(payload[1]);
+      subscriptions.get(payload[1])?.resolveReconnectEose?.();
     },
     requestHistory: async () => [],
     setTimeoutFn: (fn, _ms) => {
@@ -316,6 +322,42 @@ test("replay waits for rate-limit gate before sending REQs", async () => {
   await replayPromise;
 
   assert.equal(sentIds.length, 1, "REQ sent after gate expired");
+});
+
+test("replay lifecycle starts before waiting for the rate-limit gate", async () => {
+  resetGate(0);
+  activateRateLimit(5);
+
+  const lifecycle = [];
+  const subscriptions = new Map([
+    [
+      "sub-1",
+      {
+        mode: "live",
+        filter: { kinds: [9], "#h": ["ch-1"], limit: 50 },
+        onEvent: () => {},
+        lastSeenCreatedAt: undefined,
+        onClosedRecoveryStateChange: (replaying) => lifecycle.push(replaying),
+      },
+    ],
+  ]);
+
+  const replayPromise = replayLiveSubscriptions({
+    subscriptions,
+    sendRaw: async (payload) => {
+      subscriptions.get(payload[1])?.resolveReconnectEose?.();
+    },
+    requestHistory: async () => [],
+    setTimeoutFn: (fn, _ms) => {
+      fn();
+      return 0;
+    },
+  });
+
+  assert.deepEqual(lifecycle, [true]);
+  tickTo(5_001);
+  await replayPromise;
+  assert.deepEqual(lifecycle, [true, false]);
 });
 
 // ── Connection-generation guard ───────────────────────────────────────────────
@@ -357,6 +399,29 @@ test("stale replay sends no REQs when generation advances while gate was active"
   assert.equal(sentIds.length, 0, "no REQs sent for a stale replay");
 });
 
+test("generation advancing during REQ send leaves no stale EOSE deadline", async () => {
+  resetGate();
+  let generationActive = true;
+  const subscription = {
+    mode: "live",
+    filter: { kinds: [9], "#h": ["ch-1"], limit: 50 },
+    onEvent: () => {},
+    lastSeenCreatedAt: undefined,
+  };
+
+  await replayLiveSubscriptions({
+    subscriptions: new Map([["sub-1", subscription]]),
+    sendRaw: async () => {
+      generationActive = false;
+    },
+    requestHistory: async () => [],
+    isActive: () => generationActive,
+    eoseTimeoutMs: 5,
+  });
+
+  assert.equal(subscription.resolveReconnectEose, undefined);
+});
+
 // ── Paged replay (existing behaviour) ────────────────────────────────────────
 
 test("channel reconnect replay pages the missed window until a short page", async () => {
@@ -369,7 +434,10 @@ test("channel reconnect replay pages the missed window until a short page", asyn
     eventRange("middle", 1002, 500),
     eventRange("oldest", 995, 8),
   ];
-  const filter = buildChannelFilter("channel-1", 50);
+  const filter = {
+    ...buildChannelFilter("channel-1", 1_000),
+    since: 900,
+  };
   const subscriptions = new Map([
     [
       "live-1",
@@ -387,6 +455,7 @@ test("channel reconnect replay pages the missed window until a short page", asyn
     now: 2000,
     sendRaw: async (payload) => {
       sentPayloads.push(payload);
+      subscriptions.get(payload[1])?.resolveReconnectEose?.();
     },
     requestHistory: async (filter) => {
       historyFilters.push(filter);
@@ -401,7 +470,8 @@ test("channel reconnect replay pages the missed window until a short page", asyn
       {
         kinds: filter.kinds,
         "#h": ["channel-1"],
-        limit: 50,
+        limit: 1_000,
+        since: 900,
       },
     ],
   ]);
@@ -429,6 +499,163 @@ test("channel reconnect replay pages the missed window until a short page", asyn
     },
   ]);
   assert.equal(delivered.length, 1008);
+});
+
+test("reconnect replay waits for restored live EOSE before completing", async () => {
+  const subscription = {
+    mode: "live",
+    filter: {
+      ...buildChannelFilter("channel-1", 1_000),
+      since: 900,
+    },
+    onEvent: () => {},
+    lastSeenCreatedAt: 1_000,
+  };
+  const subscriptions = new Map([["live-1", subscription]]);
+  let replayCompleted = false;
+
+  const replayPromise = replayLiveSubscriptions({
+    subscriptions,
+    now: 2_000,
+    sendRaw: async () => {},
+    requestHistory: async () => [],
+  }).then(() => {
+    replayCompleted = true;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(replayCompleted, false);
+  assert.equal(typeof subscription.resolveReconnectEose, "function");
+
+  subscription.resolveReconnectEose();
+  await replayPromise;
+  assert.equal(replayCompleted, true);
+});
+
+test("restored live filter delivers post-EOSE events below the catch-up floor", async () => {
+  const delivered = [];
+  const subscription = {
+    mode: "live",
+    filter: {
+      ...buildChannelFilter("channel-1", 1_000),
+      since: 900,
+    },
+    onEvent: (received) => delivered.push(received.id),
+    lastSeenCreatedAt: 1_000,
+  };
+  const subscriptions = new Map([["live-1", subscription]]);
+  let restoredFilter;
+
+  await replayLiveSubscriptions({
+    subscriptions,
+    now: 2_000,
+    sendRaw: async (payload) => {
+      restoredFilter = payload[2];
+      subscription.resolveReconnectEose?.();
+    },
+    requestHistory: async () => [],
+  });
+
+  const delayedEvent = event("delayed", 950);
+  if (
+    restoredFilter.since === undefined ||
+    delayedEvent.created_at >= restoredFilter.since
+  ) {
+    subscription.onEvent(delayedEvent);
+  }
+
+  assert.equal(restoredFilter.since, 900);
+  assert.deepEqual(delivered, ["delayed"]);
+});
+
+test("reconnect replay rejects instead of hanging when EOSE is missing", async () => {
+  const subscription = {
+    mode: "live",
+    filter: buildChannelFilter("channel-1", 50),
+    onEvent: () => {},
+    lastSeenCreatedAt: 1_000,
+  };
+  const subscriptions = new Map([["live-1", subscription]]);
+
+  const outcome = await Promise.race([
+    replayLiveSubscriptions({
+      subscriptions,
+      now: 2_000,
+      eoseTimeoutMs: 5,
+      sendRaw: async () => {},
+      requestHistory: () => new Promise(() => {}),
+    }).then(
+      () => "resolved",
+      (error) => error,
+    ),
+    new Promise((resolve) => setTimeout(() => resolve("still-pending"), 50)),
+  ]);
+
+  assert.equal(outcome instanceof Error, true);
+  assert.match(outcome.message, /EOSE/);
+  assert.equal(subscription.resolveReconnectEose, undefined);
+});
+
+test("reconnect replay refreshes the EOSE deadline while restored events arrive", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nowMs = 0;
+  let nextId = 1;
+  const timers = new Map();
+  globalThis.setTimeout = (callback, ms) => {
+    const id = nextId++;
+    timers.set(id, { callback, fireAt: nowMs + ms });
+    return id;
+  };
+  globalThis.clearTimeout = (id) => {
+    timers.delete(id);
+  };
+  const tickToMs = (nextMs) => {
+    nowMs = nextMs;
+    for (const [id, timer] of [...timers.entries()].sort(
+      (left, right) => left[1].fireAt - right[1].fireAt,
+    )) {
+      if (timer.fireAt <= nowMs) {
+        timers.delete(id);
+        timer.callback();
+      }
+    }
+  };
+
+  try {
+    const subscription = {
+      mode: "live",
+      filter: buildChannelFilter("channel-1", 50),
+      onEvent: () => {},
+      lastSeenCreatedAt: 1_000,
+    };
+    const subscriptions = new Map([["live-1", subscription]]);
+    const replayOutcome = replayLiveSubscriptions({
+      subscriptions,
+      now: 2_000,
+      eoseTimeoutMs: 10,
+      sendRaw: async () => {},
+      requestHistory: async () => [],
+    }).then(
+      () => "resolved",
+      (error) => error,
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+    tickToMs(9);
+    prepareSubscriptionEvent(subscription, event("restored-1", 1_001));
+    tickToMs(18);
+    prepareSubscriptionEvent(subscription, event("restored-2", 1_002));
+    tickToMs(27);
+
+    subscription.resolveReconnectEose();
+    assert.equal(await replayOutcome, "resolved");
+    assert.equal(subscription.refreshReconnectEoseTimeout, undefined);
+    assert.equal(timers.size, 0);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
 });
 
 test("reconnect replay starts live REQs in parallel and preserves per-sub page order", async () => {
@@ -477,7 +704,10 @@ test("reconnect replay starts live REQs in parallel and preserves per-sub page o
     sendRaw: (payload) => {
       sentPayloads.push(payload);
       return new Promise((resolve) => {
-        sendResolvers.push(resolve);
+        sendResolvers.push(() => {
+          resolve();
+          subscriptions.get(payload[1])?.resolveReconnectEose?.();
+        });
       });
     },
     requestHistory: async (filter) => {
@@ -539,6 +769,7 @@ test("batch-1 arms gate mid-replay: batch-2 is withheld until gate expires", asy
     subscriptions,
     sendRaw: async (payload) => {
       sentAtMs.push({ id: payload[1], ms: fakeNow });
+      subscriptions.get(payload[1])?.resolveReconnectEose?.();
       // After the first full batch is sent, arm the gate for 5 s.
       // This simulates the relay responding to batch-1 traffic with back-pressure.
       if (sentAtMs.length === BATCH) {
