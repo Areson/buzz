@@ -122,7 +122,7 @@ async function expectAtBottom(
     .toBeLessThanOrEqual(1);
 }
 
-async function expectInsideScrollRegion(
+async function expectNearScrollRegionTop(
   target: import("@playwright/test").Locator,
   scrollRegion: import("@playwright/test").Locator,
 ) {
@@ -132,14 +132,18 @@ async function expectInsideScrollRegion(
         target.boundingBox(),
         scrollRegion.boundingBox(),
       ]);
-      return Boolean(
-        targetBox &&
-          regionBox &&
-          targetBox.y >= regionBox.y &&
-          targetBox.y + targetBox.height <= regionBox.y + regionBox.height,
-      );
+      if (!targetBox || !regionBox) {
+        return { nearTop: false, regionBox, targetBox, topOffset: null };
+      }
+      const topOffset = targetBox.y - regionBox.y;
+      return {
+        nearTop: topOffset >= 0 && topOffset <= 24,
+        regionBox,
+        targetBox,
+        topOffset,
+      };
     })
-    .toBe(true);
+    .toMatchObject({ nearTop: true });
 }
 
 test.describe("thread unread indicator", () => {
@@ -227,9 +231,22 @@ test.describe("thread unread indicator", () => {
     await page.getByTestId("auxiliary-panel-close").click();
     await expect(page.getByTestId("message-thread-panel")).not.toBeVisible();
 
-    // Re-opening with every reply read keeps the existing bottom behavior.
+    // Re-opening with every reply read targets the last reply through the
+    // race-safe id path and lands at the physical bottom.
     await threadSummary.click();
     const threadBody = page.getByTestId("message-thread-body");
+    await expectAtBottom(threadBody);
+
+    // Model a late image/embed expansion after the target resolves. The
+    // all-read anchor must remain bottom-glued through ResizeObserver rather
+    // than freezing at the old floor.
+    await threadBody.evaluate((element) => {
+      const lastRow =
+        element.querySelectorAll<HTMLElement>("[data-message-id]");
+      const row = lastRow.item(lastRow.length - 1);
+      if (!row) throw new Error("Expected a rendered thread reply");
+      row.style.minHeight = `${row.getBoundingClientRect().height + 800}px`;
+    });
     await expectAtBottom(threadBody);
     await page.getByTestId("auxiliary-panel-close").click();
     await expect(page.getByTestId("message-thread-panel")).not.toBeVisible();
@@ -254,11 +271,12 @@ test.describe("thread unread indicator", () => {
     await page.getByTestId("message-thread-summary").first().click();
     await expect(page.getByTestId("message-thread-panel")).toBeVisible();
 
-    // The unread divider should already be visible above the first unread
-    // reply. Do not scroll it into view: that would hide a bottom-pin failure.
+    // The unread divider should already be visible near the top above the
+    // first unread reply. Do not scroll it into view: that would hide an
+    // alignment failure.
     const divider = page.getByTestId("message-unread-divider");
     await expect(divider).toBeVisible();
-    await expectInsideScrollRegion(divider, threadBody);
+    await expectNearScrollRegionTop(divider, threadBody);
   });
 
   test("03-thread-badge-casual-browse", async ({ page }) => {

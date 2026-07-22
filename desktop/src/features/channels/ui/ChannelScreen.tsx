@@ -474,10 +474,11 @@ export function ChannelScreen({
     isThreadMuted,
     readStateVersion,
   });
-  const [threadScrollTargetId, setThreadScrollTargetId, clearThreadTarget] =
+  const [threadScrollTarget, setThreadScrollTargetId, clearThreadTarget] =
     useThreadOpenScrollTarget(
       effectiveOpenThreadHeadId,
       threadFirstUnreadReplyId,
+      threadPanelData.visibleReplies,
       threadRepliesQuery.isFetching,
     );
   const editTargetMessage = React.useMemo(
@@ -949,7 +950,7 @@ export function ChannelScreen({
                   threadPanelWidthPx={threadPanelWidthPx}
                   threadTypingPubkeys={threadTypingPubkeys}
                   threadReplyTargetMessage={displayedThreadReplyTargetMessage}
-                  threadScrollTargetId={threadScrollTargetId}
+                  threadScrollTarget={threadScrollTarget}
                   threadUnreadCounts={threadUnreadCounts}
                   threadReplyUnreadCounts={threadReplyUnreadCounts}
                   threadFirstUnreadReplyId={displayedThreadFirstUnreadReplyId}
