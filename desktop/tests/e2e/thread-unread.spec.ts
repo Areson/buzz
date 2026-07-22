@@ -109,6 +109,39 @@ async function expandReply(
   await expect.poll(() => replies.count()).toBeGreaterThan(before);
 }
 
+async function expectAtBottom(
+  scrollRegion: import("@playwright/test").Locator,
+) {
+  await expect
+    .poll(() =>
+      scrollRegion.evaluate(
+        (element) =>
+          element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    )
+    .toBeLessThanOrEqual(1);
+}
+
+async function expectInsideScrollRegion(
+  target: import("@playwright/test").Locator,
+  scrollRegion: import("@playwright/test").Locator,
+) {
+  await expect
+    .poll(async () => {
+      const [targetBox, regionBox] = await Promise.all([
+        target.boundingBox(),
+        scrollRegion.boundingBox(),
+      ]);
+      return Boolean(
+        targetBox &&
+          regionBox &&
+          targetBox.y >= regionBox.y &&
+          targetBox.y + targetBox.height <= regionBox.y + regionBox.height,
+      );
+    })
+    .toBe(true);
+}
+
 test.describe("thread unread indicator", () => {
   test("01-thread-unread-badge", async ({ page }) => {
     await installMockBridge(page);
@@ -175,12 +208,16 @@ test.describe("thread unread indicator", () => {
     await expect(page.getByTestId("chat-title")).toHaveText("general");
     await waitForMockLiveSubscription(page, "general");
 
-    // Emit an initial reply so the thread summary appears
-    await emitMockMessage(page, "general", "Earlier reply", {
-      parentEventId: "mock-general-welcome",
-      pubkey: TEST_IDENTITIES.alice.pubkey,
-      createdAt: Math.floor(Date.now() / 1000) - 10,
-    });
+    // Fill more than one panel so first-unread and bottom are observably
+    // different positions.
+    const earlierBase = Math.floor(Date.now() / 1000) - 30;
+    for (let i = 0; i < 12; i++) {
+      await emitMockMessage(page, "general", `Earlier reply ${i + 1}`, {
+        parentEventId: "mock-general-welcome",
+        pubkey: TEST_IDENTITIES.alice.pubkey,
+        createdAt: earlierBase + i,
+      });
+    }
 
     // Open thread to establish frontier, then close
     const threadSummary = page.getByTestId("message-thread-summary").first();
@@ -190,13 +227,20 @@ test.describe("thread unread indicator", () => {
     await page.getByTestId("auxiliary-panel-close").click();
     await expect(page.getByTestId("message-thread-panel")).not.toBeVisible();
 
+    // Re-opening with every reply read keeps the existing bottom behavior.
+    await threadSummary.click();
+    const threadBody = page.getByTestId("message-thread-body");
+    await expectAtBottom(threadBody);
+    await page.getByTestId("auxiliary-panel-close").click();
+    await expect(page.getByTestId("message-thread-panel")).not.toBeVisible();
+
     // Switch away
     await page.getByTestId("channel-random").click();
     await expect(page.getByTestId("chat-title")).toHaveText("random");
 
     // Emit new unread replies
     const base = unreadTimestamp();
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 12; i++) {
       await emitMockMessage(page, "general", `New reply ${i + 1}`, {
         parentEventId: "mock-general-welcome",
         pubkey: TEST_IDENTITIES.alice.pubkey,
@@ -210,12 +254,11 @@ test.describe("thread unread indicator", () => {
     await page.getByTestId("message-thread-summary").first().click();
     await expect(page.getByTestId("message-thread-panel")).toBeVisible();
 
-    // The unread divider should appear above the first unread reply
-    // (not at index 0 since there's a read reply before the unread ones)
+    // The unread divider should already be visible above the first unread
+    // reply. Do not scroll it into view: that would hide a bottom-pin failure.
     const divider = page.getByTestId("message-unread-divider");
     await expect(divider).toBeVisible();
-    await divider.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(300);
+    await expectInsideScrollRegion(divider, threadBody);
   });
 
   test("03-thread-badge-casual-browse", async ({ page }) => {

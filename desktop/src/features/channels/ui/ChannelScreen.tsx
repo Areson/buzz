@@ -78,6 +78,7 @@ import { useMessageProfiles } from "./useMessageProfiles";
 import { useChannelPanelHistoryState } from "./useChannelPanelHistoryState";
 import { useChannelProfilePanel } from "./useChannelProfilePanel";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
+import { useThreadOpenScrollTarget } from "./useThreadOpenScrollTarget";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
 const HEADER_ACTIONS_COMPACT_BREAKPOINT_PX = 760,
@@ -143,9 +144,6 @@ export function ChannelScreen({
   const [expandedThreadReplyIds, setExpandedThreadReplyIds] = React.useState(
     () => new Set<string>(),
   );
-  const [threadScrollTargetId, setThreadScrollTargetId] = React.useState<
-    string | null
-  >(null);
   const [threadReplyTargetId, setThreadReplyTargetId] = React.useState<
     string | null
   >(null);
@@ -476,6 +474,12 @@ export function ChannelScreen({
     isThreadMuted,
     readStateVersion,
   });
+  const [threadScrollTargetId, setThreadScrollTargetId, clearThreadTarget] =
+    useThreadOpenScrollTarget(
+      effectiveOpenThreadHeadId,
+      threadFirstUnreadReplyId,
+      threadRepliesQuery.isFetching,
+    );
   const editTargetMessage = React.useMemo(
     () =>
       timelineMessages.find((message) => message.id === editTargetId) ?? null,
@@ -642,11 +646,8 @@ export function ChannelScreen({
       setThreadReplyTargetId(null);
       setEditTargetId(null);
     },
-    [],
+    [setThreadScrollTargetId],
   );
-  const handleThreadScrollTargetResolved = React.useCallback(() => {
-    setThreadScrollTargetId(null);
-  }, []);
   const handleTargetReached = React.useCallback(() => {
     clearMessageRouteTarget({ replace: true });
   }, [clearMessageRouteTarget]);
@@ -741,6 +742,7 @@ export function ChannelScreen({
     setOpenThreadHeadId,
     handleCloseAgentSession,
     setProfilePanelPubkey,
+    setThreadScrollTargetId,
   ]);
   const handleToggleMembers = React.useCallback(
     () => setIsMembersSidebarOpen((prev) => !prev),
@@ -922,9 +924,7 @@ export function ChannelScreen({
                   onSendMessage={handleSendMessage}
                   onSendVideoReviewComment={effectiveSendVideoReviewComment}
                   onSendThreadReply={handleSendThreadReply}
-                  onThreadScrollTargetResolved={
-                    handleThreadScrollTargetResolved
-                  }
+                  onThreadScrollTargetResolved={clearThreadTarget}
                   onThreadPanelResizeStart={handleThreadPanelResizeStart}
                   onTargetReached={handleTargetReached}
                   onToggleReaction={effectiveToggleReaction}
