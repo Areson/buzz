@@ -30,7 +30,6 @@ import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { ChannelFindBar } from "@/features/search/ui/ChannelFindBar";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
 import { ChannelManagementAuxiliaryPanel } from "@/features/channels/ui/ChannelManagementAuxiliaryPanel";
-import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { ThreadViewModeToggle } from "@/features/channels/ui/ThreadViewModeToggle";
 import { FocusThreadDrawer } from "@/features/channels/ui/FocusThreadDrawer";
 import { THREAD_SURFACE_KEY } from "@/features/channels/lib/threadFocusLayout";
@@ -53,6 +52,7 @@ import {
   isWelcomeSetupSystemMessage,
   mentionsKnownAgent,
 } from "@/features/channels/ui/ChannelPane.helpers";
+import { renderChannelAuxiliaryPane } from "@/features/channels/ui/ChannelPaneAuxiliary";
 import { useChannelIntro } from "@/features/channels/ui/useChannelIntro";
 import type { ChannelPaneProps } from "@/features/channels/ui/ChannelPane.types";
 import * as agentSessionSelection from "@/features/channels/ui/agentSessionSelection";
@@ -153,7 +153,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   threadMessages,
   threadMessagesPending = false,
   threadPanelWidthPx,
-  threadScrollTargetId,
+  threadScrollTarget,
   threadTypingPubkeys,
   threadReplyTargetMessage,
   threadUnreadCounts,
@@ -524,9 +524,10 @@ export const ChannelPane = React.memo(function ChannelPane({
     useFocusThreadDrawer,
     onCloseThread,
   );
-  const { changeThreadViewMode, layoutScrollTargetId, resolveScrollTarget } =
+  const { changeThreadViewMode, resolveScrollTarget, scrollTarget } =
     useThreadViewModeSwitch({
-      externalScrollTargetId: threadScrollTargetId,
+      externalScrollTargetAlignment: threadScrollTarget.alignment,
+      externalScrollTargetId: threadScrollTarget.id,
       onExternalTargetResolved: onThreadScrollTargetResolved,
       onModeChange: markExitComplete,
     });
@@ -552,20 +553,16 @@ export const ChannelPane = React.memo(function ChannelPane({
     testId: string,
     options: { key?: string } = {},
   ) =>
-    useSplitAuxiliaryPane ? (
-      <RightAuxiliaryPane
-        canResetWidth={canResetThreadPanelWidth}
-        key={options.key ?? testId}
-        onResetWidth={onResetThreadPanelWidth}
-        onResizeStart={onThreadPanelResizeStart}
-        testId={testId}
-        widthPx={threadPanelWidthPx}
-      >
-        {panel}
-      </RightAuxiliaryPane>
-    ) : (
-      <React.Fragment key={options.key ?? testId}>{panel}</React.Fragment>
-    );
+    renderChannelAuxiliaryPane({
+      canResetWidth: canResetThreadPanelWidth,
+      onResetWidth: onResetThreadPanelWidth,
+      onResizeStart: onThreadPanelResizeStart,
+      paneKey: options.key,
+      panel,
+      testId,
+      useSplitAuxiliaryPane,
+      widthPx: threadPanelWidthPx,
+    });
   const wrapThreadPanel = (panel: React.ReactNode) =>
     useFocusThreadDrawer ? (
       <FocusThreadDrawer
@@ -886,8 +883,9 @@ export const ChannelPane = React.memo(function ChannelPane({
                 onUnfollowThread={onUnfollowThread}
                 profiles={profiles}
                 replyTargetMessage={threadReplyTargetMessage}
-                scrollTargetHighlights={!layoutScrollTargetId}
-                scrollTargetId={layoutScrollTargetId ?? threadScrollTargetId}
+                scrollTargetHighlights={!scrollTarget.isLayout}
+                scrollTargetAlignment={scrollTarget.alignment}
+                scrollTargetId={scrollTarget.id}
                 threadHead={threadHeadMessage}
                 threadHeadVideoReviewContext={threadHeadVideoReviewContext}
                 widthPx={threadPanelWidthPx}

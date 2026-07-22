@@ -4,6 +4,15 @@ import {
   classifyTimelineMessageDelta,
   type TimelineMessageDelta,
 } from "@/features/messages/lib/timelineSnapshot";
+import {
+  getTargetScrollPlacement,
+  makeTargetKey,
+  resolveTargetDivider,
+} from "@/features/messages/ui/anchoredScrollTarget";
+import type {
+  UseAnchoredScrollOptions,
+  UseAnchoredScrollResult,
+} from "@/features/messages/ui/useAnchoredScroll.types";
 
 /**
  * Distance (in CSS pixels) below which we consider the scroll position
@@ -12,13 +21,8 @@ import {
  * rounding from the layout engine.
  */
 const AT_BOTTOM_THRESHOLD_PX = 32;
-// Tests and user-visible "pinned" affordances need the view at the physical
-// floor, not merely within the looser UI at-bottom threshold. The loose
-// threshold decides whether the user is close enough to count as reading the
-// latest message; this strict threshold decides when a programmatic bottom pin
-// has actually finished settling.
+// Pinned affordances need the physical floor, not the looser UI threshold.
 const TRUE_BOTTOM_THRESHOLD_PX = 1;
-
 type AnchorState =
   | { kind: "at-bottom" }
   | { kind: "message"; messageId: string; topOffset: number }
@@ -86,67 +90,6 @@ export function shouldSettleVirtualizedBottom({
     (messagesArrived > 0 || messagesChanged)
   );
 }
-
-type UseAnchoredScrollOptions = {
-  /** Scroll container. Owned by the parent so external refs still compose. */
-  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
-  /** Inner content element — must wrap every renderable row, including the
-   *  sentinel and bottom anchor. Used to schedule layout work on resize. */
-  contentRef: React.RefObject<HTMLDivElement | null>;
-  /** Resets when changed; lets us drop anchor + scroll state across channels. */
-  channelId?: string | null;
-  /** Suppresses initial scroll-to-bottom while a skeleton is showing. */
-  isLoading: boolean;
-  /** Source of truth for the rendered list. Used to detect new-at-bottom
-   *  arrivals and to seed/refresh the anchor pre-render. */
-  messages: Array<{ id: string }>;
-  splitPanelOpen?: boolean;
-
-  /** When set, scroll to this message on mount and on change. */
-  targetMessageId?: string | null;
-  /** Whether a targeted message should pulse after scrolling to it. */
-  highlightTargetMessage?: boolean;
-  /** Keeps a targeted message centered until the user deliberately scrolls. */
-  pinTargetCentered?: boolean;
-  onTargetReached?: (messageId: string) => void;
-  virtualCancelBottomIntent?: () => void;
-  virtualScrollToMessage?: (
-    messageId: string,
-    options?: { behavior?: ScrollBehavior },
-  ) => boolean;
-  /** Imperative virtualizer-owned bottom jump, used only when virtualizer mode is active. */
-  virtualScrollToBottom?: (behavior?: ScrollBehavior) => void;
-  virtualSettleAtBottom?: () => void;
-  /** When active, the virtualizer owns prepend compensation and bottom-state synchronization. */
-  virtualizerOwnsPrependAnchoring?: boolean;
-  /** Bumps when a virtualized range changes, so pending target/search retries can re-check newly mounted DOM. */
-  virtualizerRenderVersion?: number;
-};
-
-type UseAnchoredScrollResult = {
-  /** Pass through to the scroll container's `onScroll`. */
-  onScroll: () => void;
-  /** True when the user is within `AT_BOTTOM_THRESHOLD_PX` of the bottom. */
-  isAtBottom: boolean;
-  /** Number of new messages that have arrived while the user is not at the
-   *  bottom. Cleared when the user returns to the bottom. */
-  newMessageCount: number;
-  /** Message id that should pulse a highlight (target/active-search). */
-  highlightedMessageId: string | null;
-  /** Imperative: scroll to bottom. */
-  scrollToBottom: (behavior?: ScrollBehavior) => void;
-  /** Arm a one-shot scroll-to-bottom that fires on the next appended message
-   *  (used by the composer's send flow). */
-  scrollToBottomOnNextUpdate: () => void;
-  /** Imperative: scroll a specific message into view; optionally pulse it.
-   *  Returns true if the row was found and scrolled, false otherwise. */
-  scrollToMessage: (
-    messageId: string,
-    options?: { highlight?: boolean; behavior?: ScrollBehavior },
-  ) => boolean;
-  /** Syncs the hook's bottom affordances from a virtualizer-owned scroller. */
-  onVirtualizerAtBottomStateChange: (atBottom: boolean) => void;
-};
 
 function isAtBottomNow(
   container: Pick<
@@ -227,6 +170,7 @@ export function useAnchoredScroll({
   splitPanelOpen = false,
 
   targetMessageId = null,
+  targetAlignment = "center",
   highlightTargetMessage = true,
   pinTargetCentered = false,
   onTargetReached,
@@ -258,10 +202,10 @@ export function useAnchoredScroll({
   const prevFirstMessageIdRef = React.useRef<string | undefined>(undefined);
   const prevMessageCountRef = React.useRef(0);
   const prevMessagesRef = React.useRef<Array<{ id: string }>>([]);
-  const handledTargetIdRef = React.useRef<string | null>(null);
+  const handledTargetRequestRef = React.useRef<string | null>(null);
+  const targetRequestKey = makeTargetKey(targetMessageId, targetAlignment);
   const highlightTimeoutRef = React.useRef<number | null>(null);
-  // Tracks a pending rAF queued by pinToBottomOnMount so it can be cancelled
-  // on channel switch (the channelId reset effect clears it).
+  // Tracks a pending mount pin so channel switches can cancel it.
   const mountPinRafIdRef = React.useRef<number | null>(null);
   // One-shot: the consumer calls `scrollToBottomOnNextUpdate()` right before
   // it sends a message (see ChannelPane). When the user's own message then
@@ -273,8 +217,7 @@ export function useAnchoredScroll({
   // ignores transient gaps and keeps chasing the floor. A `ref`, not state — the
   // guard runs on a native scroll event, outside React's render cycle.
   const settlingRef = React.useRef(false);
-  // Pinned-center corrections write scroll position themselves. Keep the next
-  // matching scroll event from being mistaken for a user releasing the pin.
+  // Preserve a deliberate anchor across its own programmatic scroll event.
   const programmaticScrollTopRef = React.useRef<number | null>(null);
   const isWritingScrollRef = React.useRef(false);
   const programmaticScrollRafRef = React.useRef<number | null>(null);
@@ -294,7 +237,7 @@ export function useAnchoredScroll({
     prevFirstMessageIdRef.current = undefined;
     prevMessageCountRef.current = 0;
     prevMessagesRef.current = [];
-    handledTargetIdRef.current = null;
+    handledTargetRequestRef.current = null;
     forceBottomOnNextAppendRef.current = false;
     settlingRef.current = false;
     programmaticScrollTopRef.current = null;
@@ -321,9 +264,8 @@ export function useAnchoredScroll({
       if (programmaticScrollRafRef.current !== null) {
         cancelAnimationFrame(programmaticScrollRafRef.current);
       }
-      // A programmatic scroll event is delivered before the next frame. If the
-      // browser does not emit one, expire the guard so a later user scroll is
-      // never swallowed.
+      // Programmatic events are delivered before the next frame. Expire the
+      // exact destination then so a later non-pinned scroll is never swallowed.
       programmaticScrollRafRef.current = requestAnimationFrame(() => {
         if (programmaticScrollTopRef.current === container.scrollTop) {
           programmaticScrollTopRef.current = null;
@@ -478,27 +420,46 @@ export function useAnchoredScroll({
         }
         anchorRef.current = { kind: "message", messageId, topOffset: 0 };
         setIsAtBottom(false);
-        if (el && options.highlight) highlightMessage(messageId);
+        if (el && options.highlight && targetAlignment !== "bottom") {
+          highlightMessage(messageId);
+        }
         return el !== null;
       }
 
       if (!el) return false;
 
+      const targetDivider = resolveTargetDivider({
+        alignment: targetAlignment,
+        container,
+        firstMessageId: messages[0]?.id,
+        targetMessageId: messageId,
+      });
+      if (targetDivider === undefined) return false;
+
+      // A thread-open target can arrive one render after the mount fallback
+      // queued its settling bottom pin. Once the target row is real, that
+      // stale frame and its scroll-event settle guard must not overwrite a
+      // non-bottom placement. A bottom target keeps the guard so it can chase
+      // late row measurements to the physical floor.
+      if (mountPinRafIdRef.current !== null) {
+        cancelAnimationFrame(mountPinRafIdRef.current);
+        mountPinRafIdRef.current = null;
+      }
+      settlingRef.current = targetAlignment === "bottom";
+
       const rect = el.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
-      const currentTopOffset = rect.top - containerRect.top;
-      const centeredTopOffset = (container.clientHeight - rect.height) / 2;
-      const maxScrollTop = Math.max(
-        0,
-        container.scrollHeight - container.clientHeight,
-      );
-      const targetScrollTop = Math.min(
-        maxScrollTop,
-        Math.max(0, container.scrollTop + currentTopOffset - centeredTopOffset),
-      );
-      const targetTopOffset =
-        currentTopOffset - (targetScrollTop - container.scrollTop);
-      const contentTop = rect.top + container.scrollTop - containerRect.top;
+      const { contentTop, maxScrollTop, targetScrollTop, targetTopOffset } =
+        getTargetScrollPlacement({
+          alignment: targetAlignment,
+          containerClientHeight: container.clientHeight,
+          containerScrollHeight: container.scrollHeight,
+          containerScrollTop: container.scrollTop,
+          containerTop: containerRect.top,
+          dividerTop: targetDivider?.getBoundingClientRect().top ?? null,
+          targetHeight: rect.height,
+          targetTop: rect.top,
+        });
 
       if (pinTargetCentered) {
         writePinnedCenterScroll(container, () => {
@@ -514,32 +475,42 @@ export function useAnchoredScroll({
         };
         setIsAtBottom(isAtBottomNow(container));
       } else {
+        const scrollTopBefore = container.scrollTop;
         container.scrollTo({
           top: targetScrollTop,
           behavior: options.behavior ?? "auto",
         });
+        noteProgrammaticScroll(container, scrollTopBefore);
 
         // Smooth scrolling starts an async animation, so measuring after the call can still return the pre-animation position.
         // Save the clamped destination offset instead; otherwise a concurrent
         // render/ResizeObserver restore can fight the smooth scroll back toward
         // where it started.
-        anchorRef.current = {
-          kind: "message",
-          messageId,
-          topOffset: targetTopOffset,
-        };
+        anchorRef.current =
+          targetAlignment === "bottom"
+            ? { kind: "at-bottom" }
+            : {
+                kind: "message",
+                messageId,
+                topOffset: targetTopOffset,
+              };
       }
       if (!pinTargetCentered) {
         setIsAtBottom(maxScrollTop - targetScrollTop <= AT_BOTTOM_THRESHOLD_PX);
       }
 
-      if (options.highlight) highlightMessage(messageId);
+      if (options.highlight && targetAlignment !== "bottom") {
+        highlightMessage(messageId);
+      }
       return true;
     },
     [
       highlightMessage,
+      messages,
+      noteProgrammaticScroll,
       pinTargetCentered,
       scrollContainerRef,
+      targetAlignment,
       virtualCancelBottomIntent,
       virtualizerOwnsPrependAnchoring,
       writePinnedCenterScroll,
@@ -547,57 +518,57 @@ export function useAnchoredScroll({
     ],
   );
 
-  // Scroll handler: recompute anchor + bottom state from the current
-  // scroll position. Cheap enough to run on every scroll event — a single
-  // `getBoundingClientRect` walk plus rect reads.
-  const onScroll = React.useCallback(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    // Virtua owns anchoring and reports bottom state separately. Avoid the
-    // fallback's O(N) DOM walk on every compositor-driven scroll event.
-    if (virtualizerOwnsPrependAnchoring) return;
-    // Row measurement can grow `scrollHeight` after a bottom pin and emit scroll
-    // events while `scrollTop` holds at the old floor — opening a transient gap
-    // above the true bottom. `computeAnchor` would read that as a deliberate
-    // scroll-up and latch a message anchor, freezing the view short of bottom.
-    // While settling, keep the anchor at-bottom and chase the physical floor.
-    if (settlingRef.current) {
-      if (settleProgrammaticBottomPin(container)) {
-        settlingRef.current = false;
-      } else {
-        if (virtualizerOwnsPrependAnchoring) {
+  // Recompute anchor + bottom state from the current scroll position.
+  const onScroll = React.useCallback(
+    (event?: Pick<React.UIEvent<HTMLDivElement>, "currentTarget">) => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      // Ignore a native scroll queued for a keyed-out conversation surface.
+      if (event && event.currentTarget !== container) return;
+      // Virtua owns anchoring and reports bottom state separately. Avoid the
+      // fallback's O(N) DOM walk on every compositor-driven scroll event.
+      if (virtualizerOwnsPrependAnchoring) return;
+      // Row measurement can grow `scrollHeight` after a bottom pin and emit scroll
+      // events while `scrollTop` holds at the old floor — opening a transient gap
+      // above the true bottom. `computeAnchor` would read that as a deliberate
+      // scroll-up and latch a message anchor, freezing the view short of bottom.
+      // While settling, keep the anchor at-bottom and chase the physical floor.
+      if (settlingRef.current) {
+        if (settleProgrammaticBottomPin(container)) {
           settlingRef.current = false;
+        } else {
+          if (virtualizerOwnsPrependAnchoring) {
+            settlingRef.current = false;
+          }
+          return;
         }
-        return;
       }
-    }
-    if (anchorRef.current.kind === "pinned-center") {
       if (
+        anchorRef.current.kind !== "at-bottom" &&
         shouldIgnorePinnedCenterScroll({
           currentScrollTop: container.scrollTop,
           expectedScrollTop: programmaticScrollTopRef.current,
           isWritingScroll: isWritingScrollRef.current,
         })
       ) {
-        if (programmaticScrollTopRef.current === container.scrollTop) {
-          programmaticScrollTopRef.current = null;
-        }
+        // Chromium can emit duplicate events for one programmatic write; keep
+        // its destination armed until noteProgrammaticScroll's rAF expires it.
         return;
       }
-      releasePinnedCenter();
-      return;
-    }
-    anchorRef.current = computeAnchor(container);
-    const atBottom = anchorRef.current.kind === "at-bottom";
-    setIsAtBottom((prev) => (prev === atBottom ? prev : atBottom));
-    if (atBottom) {
-      setNewMessageCount(0);
-    }
-  }, [
-    releasePinnedCenter,
-    scrollContainerRef,
-    virtualizerOwnsPrependAnchoring,
-  ]);
+      if (anchorRef.current.kind === "pinned-center") {
+        // Explicit input releases the pin; bare native scroll events are
+        // ambiguous because programmatic events can arrive after long reflow.
+        return;
+      }
+      anchorRef.current = computeAnchor(container);
+      const atBottom = anchorRef.current.kind === "at-bottom";
+      setIsAtBottom((prev) => (prev === atBottom ? prev : atBottom));
+      if (atBottom) {
+        setNewMessageCount(0);
+      }
+    },
+    [scrollContainerRef, virtualizerOwnsPrependAnchoring],
+  );
 
   // ---------------------------------------------------------------------------
   // Anchor restoration: after every render, stick to the bottom if the user is
@@ -606,6 +577,7 @@ export function useAnchoredScroll({
   // loaded row stays in the DOM, so there is no JS message-anchor restore.
   // ---------------------------------------------------------------------------
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: channelId must rerun initialization after the reset effect even when cached messages and target are referentially unchanged.
   React.useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -642,7 +614,7 @@ export function useAnchoredScroll({
             highlight: highlightTargetMessage,
           })
         ) {
-          handledTargetIdRef.current = targetMessageId;
+          handledTargetRequestRef.current = targetRequestKey;
           onTargetReached?.(targetMessageId);
         } else {
           pinToBottomOnMount();
@@ -748,6 +720,7 @@ export function useAnchoredScroll({
     prevMessageCountRef.current = messages.length;
     prevMessagesRef.current = messages;
   }, [
+    channelId,
     highlightTargetMessage,
     isLoading,
     messages,
@@ -756,6 +729,7 @@ export function useAnchoredScroll({
     scrollToBottomImperative,
     scrollToMessageImperative,
     targetMessageId,
+    targetRequestKey,
     repinPinnedCenter,
     virtualScrollToBottom,
     virtualSettleAtBottom,
@@ -796,8 +770,7 @@ export function useAnchoredScroll({
     virtualizerOwnsPrependAnchoring,
   ]);
 
-  // Pinned centers survive our own corrections but release as soon as the
-  // reader deliberately takes control of the scroll position.
+  // Release pinned centers only when the reader deliberately takes control.
   // biome-ignore lint/correctness/useExhaustiveDependencies: channelId deliberately re-subscribes after a keyed or conditional scroll-container mount replaces ref.current.
   React.useEffect(() => {
     if (!pinTargetCentered) return;
@@ -805,16 +778,23 @@ export function useAnchoredScroll({
     if (!container) return;
 
     const handleUserInteraction = () => releasePinnedCenter();
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target === container) releasePinnedCenter();
+    };
     container.addEventListener("wheel", handleUserInteraction, {
       passive: true,
     });
     container.addEventListener("touchstart", handleUserInteraction, {
       passive: true,
     });
+    container.addEventListener("pointerdown", handlePointerDown, {
+      passive: true,
+    });
     container.addEventListener("keydown", handleUserInteraction);
     return () => {
       container.removeEventListener("wheel", handleUserInteraction);
       container.removeEventListener("touchstart", handleUserInteraction);
+      container.removeEventListener("pointerdown", handlePointerDown);
       container.removeEventListener("keydown", handleUserInteraction);
     };
   }, [channelId, pinTargetCentered, releasePinnedCenter, scrollContainerRef]);
@@ -834,7 +814,7 @@ export function useAnchoredScroll({
   // biome-ignore lint/correctness/useExhaustiveDependencies: `messages` and `virtualizerRenderVersion` are intentional retry triggers, not values read by the effect body — the effect reads the DOM (querySelector), and we need it to re-run each time the message list or virtualized rendered range changes so a target spliced into older history gets centered once its row commits.
   React.useEffect(() => {
     if (!targetMessageId) {
-      handledTargetIdRef.current = null;
+      handledTargetRequestRef.current = null;
       releasePinnedCenter();
       return;
     }
@@ -844,7 +824,8 @@ export function useAnchoredScroll({
     ) {
       releasePinnedCenter();
     }
-    if (handledTargetIdRef.current === targetMessageId || isLoading) return;
+    if (handledTargetRequestRef.current === targetRequestKey || isLoading)
+      return;
     if (!hasInitializedRef.current) return; // initial-mount path will handle.
 
     void virtualizerRenderVersion;
@@ -859,7 +840,7 @@ export function useAnchoredScroll({
           highlight: highlightTargetMessage,
         })
       ) {
-        handledTargetIdRef.current = targetMessageId;
+        handledTargetRequestRef.current = targetRequestKey;
         onTargetReached?.(targetMessageId);
       }
       return;
@@ -870,11 +851,14 @@ export function useAnchoredScroll({
       // each `messages` commit and retries until the row exists.
       return;
     }
-    handledTargetIdRef.current = targetMessageId;
-    scrollToMessageImperative(targetMessageId, {
-      highlight: highlightTargetMessage,
-    });
-    onTargetReached?.(targetMessageId);
+    if (
+      scrollToMessageImperative(targetMessageId, {
+        highlight: highlightTargetMessage,
+      })
+    ) {
+      handledTargetRequestRef.current = targetRequestKey;
+      onTargetReached?.(targetMessageId);
+    }
   }, [
     highlightTargetMessage,
     isLoading,
@@ -884,8 +868,47 @@ export function useAnchoredScroll({
     scrollContainerRef,
     scrollToMessageImperative,
     targetMessageId,
+    targetRequestKey,
     virtualizerOwnsPrependAnchoring,
     virtualizerRenderVersion,
+  ]);
+
+  // Adjacent target chrome can commit after its row without changing messages
+  // or box size. Retry unresolved targets on child-list commits too.
+  React.useEffect(() => {
+    if (
+      !targetMessageId ||
+      handledTargetRequestRef.current === targetRequestKey ||
+      isLoading ||
+      typeof MutationObserver === "undefined"
+    ) {
+      return;
+    }
+    const content = contentRef.current;
+    if (!content) return;
+
+    const observer = new MutationObserver(() => {
+      if (handledTargetRequestRef.current === targetRequestKey) return;
+      if (
+        scrollToMessageImperative(targetMessageId, {
+          highlight: highlightTargetMessage,
+        })
+      ) {
+        handledTargetRequestRef.current = targetRequestKey;
+        onTargetReached?.(targetMessageId);
+        observer.disconnect();
+      }
+    });
+    observer.observe(content, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [
+    contentRef,
+    highlightTargetMessage,
+    isLoading,
+    onTargetReached,
+    scrollToMessageImperative,
+    targetMessageId,
+    targetRequestKey,
   ]);
 
   React.useEffect(() => {

@@ -58,7 +58,6 @@ import { useFetchOlderMessages } from "@/features/messages/useFetchOlderMessages
 import { useIndependentThreadPanel } from "@/features/messages/useIndependentThreadPanel";
 import { useThreadReplies } from "@/features/messages/useThreadReplies";
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
-import type { TimelineMessage } from "@/features/messages/types";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import type { RelayEvent, RespondToMode, SearchHit } from "@/shared/api/types";
@@ -79,6 +78,7 @@ import { useMessageProfiles } from "./useMessageProfiles";
 import { useChannelPanelHistoryState } from "./useChannelPanelHistoryState";
 import { useChannelProfilePanel } from "./useChannelProfilePanel";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
+import { useChannelMessageReadHandlers } from "./useChannelMessageReadHandlers";
 import { useThreadOpenScrollTarget } from "./useThreadOpenScrollTarget";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
@@ -476,10 +476,11 @@ export function ChannelScreen({
     isThreadMuted,
     readStateVersion,
   });
-  const [threadScrollTargetId, setThreadScrollTargetId, clearThreadTarget] =
+  const [threadScrollTarget, setThreadScrollTargetId, clearThreadTarget] =
     useThreadOpenScrollTarget(
       effectiveOpenThreadHeadId,
       threadFirstUnreadReplyId,
+      threadPanelData.visibleReplies,
       threadRepliesQuery.isFetching,
     );
   const editTargetMessage = React.useMemo(
@@ -526,14 +527,11 @@ export function ChannelScreen({
         : undefined,
     [activeChannel, handleToggleReaction],
   );
-  const handleMessageMarkUnread = React.useCallback(
-    (message: TimelineMessage) => handleMarkMessageUnread(message.id),
-    [handleMarkMessageUnread],
-  );
-  const handleMessageMarkRead = React.useCallback(
-    (message: TimelineMessage) => handleMarkMessageRead(message.id),
-    [handleMarkMessageRead],
-  );
+  const { handleMessageMarkRead, handleMessageMarkUnread } =
+    useChannelMessageReadHandlers(
+      handleMarkMessageRead,
+      handleMarkMessageUnread,
+    );
   const sendMessageMutateAsync = sendMessageMutation.mutateAsync;
   const handleSendVideoReviewComment = React.useCallback(
     async (
@@ -950,7 +948,7 @@ export function ChannelScreen({
                   threadPanelWidthPx={threadPanelWidthPx}
                   threadTypingPubkeys={threadTypingPubkeys}
                   threadReplyTargetMessage={displayedThreadReplyTargetMessage}
-                  threadScrollTargetId={threadScrollTargetId}
+                  threadScrollTarget={threadScrollTarget}
                   threadUnreadCounts={threadUnreadCounts}
                   threadReplyUnreadCounts={threadReplyUnreadCounts}
                   threadFirstUnreadReplyId={displayedThreadFirstUnreadReplyId}
