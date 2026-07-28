@@ -250,9 +250,35 @@ function InboxMessageDetailPane({
   const hasAllReadOpenIntent =
     allReadOpenIntent?.conversationId === conversationId &&
     allReadOpenIntent.anchorEventId === selectedEventId;
+  const allReadOpenRequestId = hasAllReadOpenIntent
+    ? allReadOpenIntent.requestId
+    : null;
+  const latestDisplayMessageId = displayMessages.at(-1)?.id ?? selectedEventId;
+  const [latchedAllReadBottomTarget, setLatchedAllReadBottomTarget] =
+    React.useState<{ requestId: number; targetId: string } | null>(null);
+  React.useEffect(() => {
+    if (allReadOpenRequestId === null) {
+      setLatchedAllReadBottomTarget(null);
+      return;
+    }
+
+    if (isThreadContextLoading || !latestDisplayMessageId) {
+      setLatchedAllReadBottomTarget((current) =>
+        current?.requestId === allReadOpenRequestId ? current : null,
+      );
+      return;
+    }
+
+    setLatchedAllReadBottomTarget((current) =>
+      current?.requestId === allReadOpenRequestId
+        ? current
+        : { requestId: allReadOpenRequestId, targetId: latestDisplayMessageId },
+    );
+  }, [allReadOpenRequestId, isThreadContextLoading, latestDisplayMessageId]);
   const allReadBottomTargetId =
-    hasAllReadOpenIntent && !isThreadContextLoading
-      ? (displayMessages.at(-1)?.id ?? selectedEventId)
+    allReadOpenRequestId !== null &&
+    latchedAllReadBottomTarget?.requestId === allReadOpenRequestId
+      ? latchedAllReadBottomTarget.targetId
       : null;
   const { onScroll } = useAnchoredScroll({
     channelId: hasAllReadOpenIntent
