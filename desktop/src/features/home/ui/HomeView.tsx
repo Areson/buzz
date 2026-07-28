@@ -162,6 +162,7 @@ export function HomeView({
     eventId: string;
   } | null>(null);
   const allReadOpenRequestIdRef = React.useRef(0);
+  const lastProcessedSelectionOpenKeyRef = React.useRef<string | null>(null);
   const [allReadOpenIntent, setAllReadOpenIntent] = React.useState<{
     anchorEventId: string;
     conversationId: string;
@@ -510,24 +511,24 @@ export function HomeView({
         selectedConversationId,
       });
 
-      setUnreadBoundary(null);
-      setAllReadOpenIntent(null);
       setSelectedDraftKey(null);
       setSelectedReminderId(null);
       setFilter(nextFilter);
 
-      if (
-        nextFilter === "reminders" ||
-        nextFilter === "drafts" ||
-        selection.preserveSelection
-      ) {
-        if (nextFilter === "reminders" || nextFilter === "drafts") {
-          setAutoSelectedEventId(null);
-          applyInboxSearchPatch({ item: null });
-        }
+      if (nextFilter === "reminders" || nextFilter === "drafts") {
+        setUnreadBoundary(null);
+        setAllReadOpenIntent(null);
+        setAutoSelectedEventId(null);
+        applyInboxSearchPatch({ item: null });
         return;
       }
 
+      if (selection.preserveSelection) {
+        return;
+      }
+
+      setUnreadBoundary(null);
+      setAllReadOpenIntent(null);
       applyInboxSearchPatch({ item: null });
       setAutoSelectedEventId(selection.autoSelectedEventId);
     },
@@ -543,6 +544,40 @@ export function HomeView({
       unreadOnly,
     ],
   );
+  React.useEffect(() => {
+    if (!selectedEventId || !selectedConversationId) {
+      lastProcessedSelectionOpenKeyRef.current = null;
+      setAllReadOpenIntent(null);
+      return;
+    }
+    if (!selectedItem) return;
+    const selectionOpenKey = `${selectedConversationId}:${selectedEventId}`;
+    if (lastProcessedSelectionOpenKeyRef.current === selectionOpenKey) return;
+    lastProcessedSelectionOpenKeyRef.current = selectionOpenKey;
+    if (unreadBoundaryEventId !== null) {
+      setAllReadOpenIntent(null);
+      return;
+    }
+    setAllReadOpenIntent((current) => {
+      if (
+        current?.conversationId === selectedConversationId &&
+        current.anchorEventId === selectedEventId
+      ) {
+        return current;
+      }
+      allReadOpenRequestIdRef.current += 1;
+      return {
+        anchorEventId: selectedEventId,
+        conversationId: selectedConversationId,
+        requestId: allReadOpenRequestIdRef.current,
+      };
+    });
+  }, [
+    selectedConversationId,
+    selectedEventId,
+    selectedItem,
+    unreadBoundaryEventId,
+  ]);
 
   if (isLoading && !feed) {
     return <HomeLoadingState />;
