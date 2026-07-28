@@ -161,6 +161,12 @@ export function HomeView({
     conversationId: string;
     eventId: string;
   } | null>(null);
+  const allReadOpenRequestIdRef = React.useRef(0);
+  const [allReadOpenIntent, setAllReadOpenIntent] = React.useState<{
+    anchorEventId: string;
+    conversationId: string;
+    requestId: number;
+  } | null>(null);
   const selectedEventId = urlSelectedItemId ?? autoSelectedEventId;
   const [managedChannelId, setManagedChannelId] = React.useState<string | null>(
     null,
@@ -505,6 +511,7 @@ export function HomeView({
       });
 
       setUnreadBoundary(null);
+      setAllReadOpenIntent(null);
       setSelectedDraftKey(null);
       setSelectedReminderId(null);
       setFilter(nextFilter);
@@ -672,14 +679,25 @@ export function HomeView({
               }}
               onSelect={(itemId) => {
                 const item = findInboxItemByEventId(inboxItems, itemId);
+                const wasUnread = item ? !effectiveDoneSet.has(item.id) : false;
                 setUnreadBoundary(
-                  item && !effectiveDoneSet.has(item.id)
+                  item && wasUnread
                     ? {
                         conversationId: item.conversationId,
                         eventId: item.id,
                       }
                     : null,
                 );
+                if (item && !wasUnread) {
+                  allReadOpenRequestIdRef.current += 1;
+                  setAllReadOpenIntent({
+                    anchorEventId: item.id,
+                    conversationId: item.conversationId,
+                    requestId: allReadOpenRequestIdRef.current,
+                  });
+                } else {
+                  setAllReadOpenIntent(null);
+                }
                 setSelectedDraftKey(null);
                 setSelectedReminderId(null);
                 handleUserSelectItem(itemId);
@@ -687,12 +705,14 @@ export function HomeView({
               }}
               onSelectDraft={(draftKey) => {
                 setUnreadBoundary(null);
+                setAllReadOpenIntent(null);
                 setSelectedReminderId(null);
                 handleUserSelectItem(null);
                 setSelectedDraftKey(draftKey);
               }}
               onSelectReminder={(reminderId) => {
                 setUnreadBoundary(null);
+                setAllReadOpenIntent(null);
                 setSelectedDraftKey(null);
                 handleUserSelectItem(null);
                 setSelectedReminderId(reminderId);
@@ -750,6 +770,7 @@ export function HomeView({
               hasThreadContextLoadError={threadContext.hasLoadError}
               isThreadContextLoading={threadContext.isLoading}
               item={selectedItem}
+              allReadOpenIntent={allReadOpenIntent}
               latchedDefaultParentId={latchedDefaultParentId}
               messages={contextMessages}
               profiles={feedProfiles}

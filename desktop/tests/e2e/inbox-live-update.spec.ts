@@ -144,6 +144,16 @@ async function getScrollTop(page: import("@playwright/test").Page) {
   });
 }
 
+async function getDetailBottomDistance(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const pane = document.querySelector(
+      '[data-testid="home-inbox-detail-scroll"]',
+    ) as HTMLElement | null;
+    if (!pane) return Number.POSITIVE_INFINITY;
+    return pane.scrollHeight - pane.clientHeight - pane.scrollTop;
+  });
+}
+
 /** Returns the last `send_channel_message` payload captured in the command log. */
 async function getLastSendPayload(page: import("@playwright/test").Page) {
   return page.evaluate(() => {
@@ -278,6 +288,122 @@ async function injectNewerSibling(
 // ─── tests ────────────────────────────────────────────────────────────────
 
 test.describe("inbox stable-conversation regressions", () => {
+  test("reopening an all-read inbox thread scrolls to the physical bottom", async ({
+    page,
+  }) => {
+    await installMockBridge(page);
+    await page.goto("/");
+    await expect(getListPane(page)).toBeVisible();
+    await waitForBridgeReady(page);
+
+    const { threadA, threadB } = await page.evaluate(
+      ({ channelId, currentPubkey, senderPubkey }) => {
+        const win = window as MockWindow;
+        const emit = win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+        const push = win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
+        if (!emit || !push) throw new Error("Bridge helpers not ready");
+
+        const rootA = emit({
+          channelName: "general",
+          content: "All-read long thread root.",
+          pubkey: senderPubkey,
+          id: "e0".repeat(32),
+        });
+        let latestA = rootA;
+        for (let i = 1; i <= 36; i++) {
+          latestA = emit({
+            channelName: "general",
+            content: `All-read long thread reply ${i} — enough text to make the inbox detail pane scroll when the thread is reopened after it has already been marked read.`,
+            parentEventId: rootA.id,
+            pubkey: senderPubkey,
+            mentionPubkeys: i === 36 ? [currentPubkey] : [],
+            id: (0xe000 + i).toString(16).repeat(16),
+          });
+        }
+        push({
+          id: latestA.id,
+          kind: latestA.kind,
+          pubkey: latestA.pubkey,
+          content: latestA.content,
+          created_at: latestA.created_at + 36,
+          channel_id: channelId,
+          channel_name: "general",
+          tags: latestA.tags,
+          category: "mention",
+        });
+
+        const rootB = emit({
+          channelName: "general",
+          content: "Second inbox thread root.",
+          pubkey: senderPubkey,
+          id: "f0".repeat(32),
+        });
+        const replyB = emit({
+          channelName: "general",
+          content: "Second inbox thread reply.",
+          parentEventId: rootB.id,
+          pubkey: senderPubkey,
+          mentionPubkeys: [currentPubkey],
+          id: "ff".repeat(32),
+        });
+        push({
+          id: replyB.id,
+          kind: replyB.kind,
+          pubkey: replyB.pubkey,
+          content: replyB.content,
+          created_at: replyB.created_at + 40,
+          channel_id: channelId,
+          channel_name: "general",
+          tags: replyB.tags,
+          category: "mention",
+        });
+
+        return { threadA: { root: rootA, latest: latestA }, threadB: replyB };
+      },
+      {
+        channelId: GENERAL_CHANNEL_ID,
+        currentPubkey: TEST_IDENTITIES.tyler.pubkey,
+        senderPubkey: TEST_IDENTITIES.alice.pubkey,
+      },
+    );
+
+    const threadARow = page.getByTestId(`home-inbox-item-${threadA.latest.id}`);
+    const threadBRow = page.getByTestId(`home-inbox-item-${threadB.id}`);
+    await expect(threadARow).toBeVisible();
+    await expect(threadBRow).toBeVisible();
+
+    await threadARow.click();
+    await expect(getDetailPane(page)).toContainText(
+      "All-read long thread reply 36",
+    );
+    await page.waitForFunction(() => {
+      const pane = document.querySelector(
+        '[data-testid="home-inbox-detail-scroll"]',
+      );
+      return pane?.getAttribute("aria-busy") !== "true";
+    });
+
+    await threadBRow.click();
+    await expect(getDetailPane(page)).toContainText(
+      "Second inbox thread reply",
+    );
+
+    await threadARow.click();
+    await expect(getDetailPane(page)).toContainText(
+      "All-read long thread reply 36",
+    );
+    await page.waitForFunction(() => {
+      const pane = document.querySelector(
+        '[data-testid="home-inbox-detail-scroll"]',
+      );
+      return pane?.getAttribute("aria-busy") !== "true";
+    });
+
+    await expect
+      .poll(() => getDetailBottomDistance(page))
+      .toBeLessThanOrEqual(2);
+  });
+
   test("scroll and focused draft preserved; new representative row selected when live sibling displaces anchor", async ({
     page,
   }) => {
