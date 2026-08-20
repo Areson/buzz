@@ -10,6 +10,7 @@ mod queue;
 mod relay;
 mod setup_mode;
 mod usage;
+mod wait_status;
 
 pub use usage::TurnUsage;
 
@@ -20,8 +21,8 @@ use std::time::Duration;
 use acp::{AcpClient, EnvVar, McpServer};
 use anyhow::Result;
 use buzz_core::kind::{
-    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
-    KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
+    KIND_AGENT_WAIT_STATUS, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_STREAM_MESSAGE, KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
 };
 use buzz_core::observer::{
     decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY,
@@ -1460,6 +1461,16 @@ async fn tokio_main() -> Result<()> {
         None
     };
     let mut typing_channels: HashMap<Uuid, ThreadTags> = HashMap::new();
+    let wait_liveness_interval = Duration::from_secs(config.turn_liveness_secs);
+    let mut wait_liveness_refresh = if wait_liveness_interval.is_zero() {
+        None
+    } else {
+        Some(tokio::time::interval_at(
+            tokio::time::Instant::now() + wait_liveness_interval,
+            wait_liveness_interval,
+        ))
+    };
+    let mut background_waits = wait_status::BackgroundWaits::default();
     let mut presence_task: Option<tokio::task::JoinHandle<()>> = None;
 
     // Runs at the TOP of every loop iteration via Instant check — cannot be
@@ -1771,6 +1782,8 @@ async fn tokio_main() -> Result<()> {
                                     // their sessions stripped when they return to the pool.
                                     removed_channels.insert(ch);
                                     typing_channels.remove(&ch);
+                                    let cleared_waits =
+                                        background_waits.clear_channel(ch, observer.as_ref());
                                     // Best-effort: clean up 👀 on drained events.
                                     // Note: the relay revokes membership before
                                     // emitting the notification, so this DELETE may
@@ -1791,9 +1804,36 @@ async fn tokio_main() -> Result<()> {
                                             channel_id = %ch,
                                             drained = drained_ids.len(),
                                             invalidated,
+                                            cleared_waits,
                                             "cleaned up after membership removal"
                                         );
                                     }
+                                }
+                                continue;
+                            }
+
+                            if kind_u32 == KIND_AGENT_WAIT_STATUS {
+                                if let Some(marker) = wait_status::parse_wait_marker(
+                                    &buzz_event.event,
+                                    buzz_event.channel_id,
+                                    &pubkey_hex,
+                                ) {
+                                    let channel_id = marker.channel_id;
+                                    let task_id = marker.task_id.clone();
+                                    let outcome =
+                                        background_waits.apply_marker(marker, observer.as_ref());
+                                    tracing::debug!(
+                                        channel_id = %channel_id,
+                                        task_id = %task_id,
+                                        ?outcome,
+                                        "processed background wait marker"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        channel_id = %buzz_event.channel_id,
+                                        sender = %buzz_event.event.pubkey.to_hex(),
+                                        "dropping invalid background wait marker"
+                                    );
                                 }
                                 continue;
                             }
@@ -1898,6 +1938,15 @@ async fn tokio_main() -> Result<()> {
                                                 channel_id = %buzz_event.channel_id,
                                                 invalidated,
                                                 "!rotate received — invalidated idle channel session(s)"
+                                            );
+                                        }
+                                        let cleared_waits = background_waits
+                                            .clear_channel(buzz_event.channel_id, observer.as_ref());
+                                        if cleared_waits > 0 {
+                                            tracing::info!(
+                                                channel_id = %buzz_event.channel_id,
+                                                cleared_waits,
+                                                "cleared background waits after session rotate"
                                             );
                                         }
                                         continue; // consume event — do NOT push to queue
@@ -2103,6 +2152,29 @@ async fn tokio_main() -> Result<()> {
                             }
                         }
                     }
+                    for (ch, thread_tags) in background_waits.typing_scopes() {
+                        if let Ok(event) = relay.build_typing_event(
+                            ch,
+                            thread_tags.root_event_id.as_deref(),
+                            thread_tags.parent_event_id.as_deref(),
+                        ) {
+                            if let Err(e) = relay.try_publish_event(event) {
+                                tracing::debug!("background wait typing indicator dropped for {ch}: {e}");
+                            }
+                        }
+                    }
+                    None
+                }
+                _ = async {
+                    match wait_liveness_refresh.as_mut() {
+                        Some(t) => t.tick().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    // End the split borrow before emitting observer frames from
+                    // this timer-only branch; it does not need pool state.
+                    let _ = result_rx;
+                    background_waits.emit_liveness(observer.as_ref());
                     None
                 }
                 _ = shutdown_rx.changed() => {
@@ -2117,6 +2189,16 @@ async fn tokio_main() -> Result<()> {
                 // Stop typing indicator for the completed channel.
                 if let PromptSource::Channel(ch) = &result.source {
                     typing_channels.remove(ch);
+                    if prompt_outcome_invalidates_session(&result.outcome) {
+                        let cleared_waits = background_waits.clear_channel(*ch, observer.as_ref());
+                        if cleared_waits > 0 {
+                            tracing::info!(
+                                channel_id = %ch,
+                                cleared_waits,
+                                "cleared background waits after agent session teardown"
+                            );
+                        }
+                    }
                 }
                 if handle_prompt_result(
                     &mut pool,
@@ -2155,6 +2237,20 @@ async fn tokio_main() -> Result<()> {
             }
             Some(PoolEvent::Panic(join_error)) => {
                 tracing::error!("agent task panicked: {join_error}");
+                if let Some(ch) = pool
+                    .task_map()
+                    .get(&join_error.id())
+                    .and_then(|meta| meta.channel_id)
+                {
+                    let cleared_waits = background_waits.clear_channel(ch, observer.as_ref());
+                    if cleared_waits > 0 {
+                        tracing::info!(
+                            channel_id = %ch,
+                            cleared_waits,
+                            "cleared background waits after agent task panic"
+                        );
+                    }
+                }
                 recover_panicked_agent(
                     &mut pool,
                     &mut queue,
@@ -2297,6 +2393,11 @@ async fn tokio_main() -> Result<()> {
         }
     }
 
+    let cleared_waits = background_waits.clear_all(observer.as_ref());
+    if cleared_waits > 0 {
+        tracing::info!(cleared_waits, "cleared background waits during shutdown");
+    }
+
     tracing::info!("shutdown: waiting for in-flight prompts");
     // 30 s is generous for in-flight prompts to be cancelled; using
     // max_turn_duration here would cause Ctrl+C to hang for up to an hour.
@@ -2401,6 +2502,19 @@ async fn tokio_main() -> Result<()> {
 enum LoopAction {
     Continue,
     Exit,
+}
+
+fn prompt_outcome_invalidates_session(outcome: &PromptOutcome) -> bool {
+    matches!(outcome, PromptOutcome::AgentExited | PromptOutcome::Timeout)
+        || matches!(
+            outcome,
+            PromptOutcome::Error(
+                acp::AcpError::Io(_)
+                    | acp::AcpError::WriteTimeout(_)
+                    | acp::AcpError::Timeout(_)
+                    | acp::AcpError::Protocol(_)
+            )
+        )
 }
 
 fn event_mentions_agent(event: &nostr::Event, agent_pubkey_hex: &str) -> bool {
@@ -3954,6 +4068,53 @@ mod build_mcp_servers_tests {
             servers[0].name, "mcp",
             "Path::new(\".\").file_stem() is None — should fall back to \"mcp\""
         );
+    }
+}
+
+#[cfg(test)]
+mod background_wait_teardown_policy_tests {
+    use super::*;
+    use crate::acp::{AcpError, StopReason};
+    use crate::pool::PromptOutcome;
+    use std::time::Duration;
+
+    #[test]
+    fn normal_prompt_completion_does_not_invalidate_background_waits() {
+        assert!(!prompt_outcome_invalidates_session(&PromptOutcome::Ok(
+            StopReason::EndTurn
+        )));
+        assert!(!prompt_outcome_invalidates_session(
+            &PromptOutcome::Cancelled
+        ));
+        assert!(!prompt_outcome_invalidates_session(&PromptOutcome::Error(
+            AcpError::IdleTimeout(Duration::from_secs(1))
+        )));
+        assert!(!prompt_outcome_invalidates_session(&PromptOutcome::Error(
+            AcpError::AgentError {
+                code: -32000,
+                message: "tool failed".into(),
+            }
+        )));
+    }
+
+    #[test]
+    fn session_invalidating_failures_clear_background_waits() {
+        assert!(prompt_outcome_invalidates_session(
+            &PromptOutcome::AgentExited
+        ));
+        assert!(prompt_outcome_invalidates_session(&PromptOutcome::Timeout));
+        assert!(prompt_outcome_invalidates_session(&PromptOutcome::Error(
+            AcpError::Io(std::io::Error::other("pipe broke"))
+        )));
+        assert!(prompt_outcome_invalidates_session(&PromptOutcome::Error(
+            AcpError::WriteTimeout(Duration::from_secs(1))
+        )));
+        assert!(prompt_outcome_invalidates_session(&PromptOutcome::Error(
+            AcpError::Timeout(Duration::from_secs(1))
+        )));
+        assert!(prompt_outcome_invalidates_session(&PromptOutcome::Error(
+            AcpError::Protocol("bad response".into())
+        )));
     }
 }
 

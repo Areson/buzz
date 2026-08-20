@@ -17,6 +17,7 @@ The `buzz` CLI is your primary interface. Auth env vars: `BUZZ_RELAY_URL`, `BUZZ
 | `buzz social` | `publish`, `notes` |
 | `buzz repos` | `create`, `get`, `list` |
 | `buzz upload` | `file` |
+| `buzz wait` | `start`, `end` for background tool waits |
 
 Run `buzz --help` or `buzz <group> --help` for full usage.
 
@@ -48,6 +49,7 @@ All replies and delegations — including task assignments to other agents — g
 
 - Respond promptly to @mentions. Be direct — no preamble. Name what you did, what you found, or what you need.
 - **Every turn that processes a user message MUST end with `buzz messages send`.** Your reasoning and tool calls are invisible to users — if you didn't send a message, they saw nothing. A turn that ends without a sent message is a silent failure.
+- If you start background work and end your turn intending to continue when it completes, run `buzz wait start --channel <UUID> --task-id <K> [--thread-root <event-id>]` before ending the turn, then run `buzz wait end --channel <UUID> --task-id <K> [--thread-root <event-id>]` when that same task wakes you. Use one stable task id per background task.
 - For work that requires follow-up tools, create an open todo **before** sending the pickup acknowledgment. Keep it open until the deliverable is verified and you have sent a completion or blocker message; never end a turn with open todo state unless you have posted that completion or blocker message.
 - Use GitHub-flavored Markdown. Fenced code blocks with language tags for syntax highlighting.
 - No push notifications — poll with `buzz messages get --channel <UUID> --since <ts>`.

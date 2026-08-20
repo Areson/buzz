@@ -60,8 +60,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 use std::time::Instant;
 
 use buzz_core::kind::{
-    KIND_AGENT_OBSERVER_FRAME, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
-    KIND_TYPING_INDICATOR,
+    KIND_AGENT_OBSERVER_FRAME, KIND_AGENT_WAIT_STATUS, KIND_MEMBER_ADDED_NOTIFICATION,
+    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_TYPING_INDICATOR,
 };
 use futures_util::{SinkExt, StreamExt};
 use nostr::{Event, EventBuilder, Keys, Kind, RelayUrl, Tag};
@@ -1118,13 +1118,8 @@ async fn execute_connected_command(
         }
         RelayCommand::Unsubscribe { channel_id } => {
             if let Some(sub_id) = state.active_subscriptions.remove(&channel_id) {
-                let msg = json!(["CLOSE", sub_id]);
-                if let Ok(text) = serde_json::to_string(&msg) {
-                    // Best-effort CLOSE — don't fail the command if send fails,
-                    // because the intent (unsubscribe) is already applied to state.
-                    let _ =
-                        ws_send_timeout(ws, Message::Text(text.into()), WS_SEND_TIMEOUT_SECS).await;
-                }
+                close_subscription(ws, &sub_id).await;
+                close_subscription(ws, &wait_sub_id(channel_id)).await;
                 debug!("unsubscribed from channel {channel_id}");
             }
             state.clear_channel_state(&channel_id);
@@ -2327,7 +2322,8 @@ async fn wait_for_reconnect(
 /// - On first subscribe (`since` is `None`) adds `since=now` to avoid replaying
 ///   history. On reconnect (`since` is `Some`) subtracts [`SINCE_SKEW_SECS`].
 ///
-/// Returns `true` if the REQ was successfully written to the WebSocket.
+/// Returns `true` if both the channel REQ and its internal wait-marker REQ were
+/// successfully written to the WebSocket.
 async fn send_subscribe(
     ws: &mut WsStream,
     _state: &BgState,
@@ -2337,7 +2333,6 @@ async fn send_subscribe(
     filter: &ChannelFilter,
 ) -> bool {
     let sub_id = channel_sub_id(channel_id);
-
     let mut req_filter = serde_json::Map::new();
 
     // kinds — omit entirely for wildcard subscriptions.
@@ -2353,15 +2348,7 @@ async fn send_subscribe(
         req_filter.insert("#p".into(), json!([agent_pubkey_hex]));
     }
 
-    // since — on first subscribe use current time to skip history; on reconnect
-    // subtract skew buffer to catch events missed during the disconnect window.
-    let since_ts = match since {
-        Some(ts) => ts.saturating_sub(SINCE_SKEW_SECS),
-        None => std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    };
+    let since_ts = subscribe_since_ts(since);
     req_filter.insert("since".into(), json!(since_ts));
 
     let req = json!(["REQ", sub_id, Value::Object(req_filter)]);
@@ -2378,7 +2365,7 @@ async fn send_subscribe(
                             " (since=now)"
                         }
                     );
-                    true
+                    send_wait_marker_subscribe(ws, channel_id, since).await
                 }
                 Err(e) => {
                     warn!("failed to send REQ for channel {channel_id}: {e}");
@@ -2390,6 +2377,73 @@ async fn send_subscribe(
             warn!("failed to serialize REQ for channel {channel_id}: {e}");
             false
         }
+    }
+}
+
+/// Send a host-internal NIP-01 REQ for agent background wait markers.
+///
+/// This subscription is intentionally separate from the user-facing channel
+/// subscription because `buzz wait` markers are authored by the agent and are
+/// consumed by the host before prompt matching. Mention-scoped channel filters
+/// cannot see them via `#p`, and widening those filters would conflate internal
+/// lifecycle events with ordinary channel traffic.
+async fn send_wait_marker_subscribe(
+    ws: &mut WsStream,
+    channel_id: Uuid,
+    since: Option<u64>,
+) -> bool {
+    let mut req_filter = serde_json::Map::new();
+    req_filter.insert("kinds".into(), json!([KIND_AGENT_WAIT_STATUS]));
+    req_filter.insert("#h".into(), json!([channel_id.to_string()]));
+    req_filter.insert("since".into(), json!(subscribe_since_ts(since)));
+
+    let req = json!(["REQ", wait_sub_id(channel_id), Value::Object(req_filter)]);
+
+    match serde_json::to_string(&req) {
+        Ok(text) => {
+            match ws_send_timeout(ws, Message::Text(text.into()), WS_SEND_TIMEOUT_SECS).await {
+                Ok(()) => {
+                    debug!(
+                        "subscribed to background wait markers for channel {channel_id}{}",
+                        if since.is_some() {
+                            " (with since filter)"
+                        } else {
+                            " (since=now)"
+                        }
+                    );
+                    true
+                }
+                Err(e) => {
+                    warn!(
+                        "failed to send background wait marker REQ for channel {channel_id}: {e}"
+                    );
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            warn!("failed to serialize background wait marker REQ for channel {channel_id}: {e}");
+            false
+        }
+    }
+}
+
+fn subscribe_since_ts(since: Option<u64>) -> u64 {
+    match since {
+        Some(ts) => ts.saturating_sub(SINCE_SKEW_SECS),
+        None => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    }
+}
+
+async fn close_subscription(ws: &mut WsStream, sub_id: &str) {
+    let msg = json!(["CLOSE", sub_id]);
+    if let Ok(text) = serde_json::to_string(&msg) {
+        // Best-effort CLOSE — don't fail the command if send fails, because the
+        // intent (unsubscribe) is already applied to state.
+        let _ = ws_send_timeout(ws, Message::Text(text.into()), WS_SEND_TIMEOUT_SECS).await;
     }
 }
 
@@ -2568,11 +2622,17 @@ pub(crate) fn channel_sub_id(channel_id: Uuid) -> String {
     format!("ch-{channel_id}")
 }
 
-/// Extract a channel UUID from a subscription ID of the form `ch-<uuid>`.
+/// Build the host-internal wait-marker subscription ID for a channel: `wait-<uuid>`.
+pub(crate) fn wait_sub_id(channel_id: Uuid) -> String {
+    format!("wait-{channel_id}")
+}
+
+/// Extract a channel UUID from a channel or wait-marker subscription ID.
 /// Returns `None` if the format doesn't match or the UUID is invalid.
 fn channel_id_from_sub_id(sub_id: &str) -> Option<Uuid> {
     sub_id
         .strip_prefix("ch-")
+        .or_else(|| sub_id.strip_prefix("wait-"))
         .and_then(|s| s.parse::<Uuid>().ok())
 }
 
@@ -2936,9 +2996,26 @@ mod tests {
     }
 
     #[test]
+    fn wait_sub_id_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(
+            wait_sub_id(uuid),
+            "wait-550e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    #[test]
     fn channel_id_from_sub_id_roundtrip() {
         let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let sub_id = channel_sub_id(uuid);
+        let recovered = channel_id_from_sub_id(&sub_id).unwrap();
+        assert_eq!(recovered, uuid);
+    }
+
+    #[test]
+    fn channel_id_from_wait_sub_id_roundtrip() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let sub_id = wait_sub_id(uuid);
         let recovered = channel_id_from_sub_id(&sub_id).unwrap();
         assert_eq!(recovered, uuid);
     }
@@ -2951,6 +3028,7 @@ mod tests {
     #[test]
     fn channel_id_from_sub_id_invalid_uuid() {
         assert!(channel_id_from_sub_id("ch-not-a-uuid").is_none());
+        assert!(channel_id_from_sub_id("wait-not-a-uuid").is_none());
     }
 
     #[test]

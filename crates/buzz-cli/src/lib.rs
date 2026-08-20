@@ -208,6 +208,9 @@ enum Cmd {
     /// Upload files to the relay's Blossom store
     #[command(subcommand)]
     Upload(UploadCmd),
+    /// Mark background agent work as waiting or complete
+    #[command(subcommand)]
+    Wait(WaitCmd),
     /// Agent engram management — persistent memory per NIP-AE
     #[command(subcommand)]
     Mem(MemCmd),
@@ -1332,6 +1335,34 @@ pub enum UploadCmd {
     },
 }
 
+#[derive(Subcommand)]
+pub enum WaitCmd {
+    /// Start keeping the agent wait timer alive for a background task
+    Start {
+        /// Channel UUID where the background work is scoped
+        #[arg(long)]
+        channel: String,
+        /// Stable background task id for this wait
+        #[arg(long)]
+        task_id: String,
+        /// Optional thread root event ID for thread-scoped waits
+        #[arg(long)]
+        thread_root: Option<String>,
+    },
+    /// Stop keeping the agent wait timer alive for a background task
+    End {
+        /// Channel UUID where the background work is scoped
+        #[arg(long)]
+        channel: String,
+        /// Stable background task id used by the matching wait start
+        #[arg(long)]
+        task_id: String,
+        /// Optional thread root event ID for thread-scoped waits
+        #[arg(long)]
+        thread_root: Option<String>,
+    },
+}
+
 /// Subcommands for `buzz mem`.
 #[derive(Subcommand)]
 pub enum MemCmd {
@@ -1580,6 +1611,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Issues(sub) => commands::issues::dispatch(sub, &client).await,
         Cmd::Pr(sub) => commands::pr::dispatch(sub, &client).await,
         Cmd::Upload(sub) => commands::upload::dispatch(sub, &client).await,
+        Cmd::Wait(sub) => commands::wait::dispatch(sub, &client).await,
         Cmd::Mem(sub) => commands::mem::dispatch(sub, &client).await,
         Cmd::Moderation(sub) => commands::moderation::dispatch(sub, &client, &cli.format).await,
         Cmd::Pack(_) => unreachable!("handled above"),
@@ -1618,6 +1650,7 @@ mod tests {
             "social",
             "upload",
             "users",
+            "wait",
             "workflows",
         ];
 
@@ -1739,6 +1772,7 @@ mod tests {
             vec!["create", "get", "list", "status"]
         );
         assert_eq!(names(&cmd, "upload"), vec!["file"]);
+        assert_eq!(names(&cmd, "wait"), vec!["end", "start"]);
         assert_eq!(names(&cmd, "pack"), vec!["inspect", "validate"]);
         assert_eq!(
             names(&cmd, "moderation"),
@@ -1773,6 +1807,7 @@ mod tests {
             ("social", 7),
             ("upload", 1),
             ("users", 4),
+            ("wait", 2),
             ("workflows", 8),
         ];
 
