@@ -23,7 +23,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use nostr::{EventBuilder, Kind, Tag};
+use nostr::{Event, EventBuilder, Keys, Kind, Tag};
 use serde::Deserialize;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -31,6 +31,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use buzz_auth::generate_challenge;
+use buzz_core::kind::KIND_HUDDLE_ENDED;
 use buzz_core::tenant::TenantContext;
 use buzz_db::channel::MemberRole;
 
@@ -848,15 +849,7 @@ async fn handle_active_audio_connection(
                     .audio_rooms
                     .cleanup_if_empty(tenant.community(), channel_id);
 
-                emit_participant_event(
-                    &state,
-                    &tenant,
-                    Kind::Custom(48103),
-                    channel_id,
-                    parent_id_for_event,
-                    &pubkey_hex,
-                )
-                .await;
+                emit_huddle_ended(&state, &tenant, channel_id, parent_id_for_event).await;
             }
         }
     } else {
@@ -1271,27 +1264,67 @@ async fn emit_participant_event(
         }
     };
 
+    publish_relay_channel_event(state, tenant, event, parent_channel_id).await;
+}
+
+/// Build the relay-signed terminal event shared by audio drain and TTL reaping.
+pub fn build_huddle_ended_event(
+    relay_keypair: &Keys,
+    ephemeral_channel_id: Uuid,
+    parent_channel_id: Uuid,
+) -> Result<Event, String> {
+    let content = serde_json::json!({
+        "ephemeral_channel_id": ephemeral_channel_id.to_string(),
+    })
+    .to_string();
+    let h_tag = Tag::parse(["h", &parent_channel_id.to_string()])
+        .map_err(|e| format!("failed to parse h tag: {e}"))?;
+
+    EventBuilder::new(Kind::Custom(KIND_HUDDLE_ENDED as u16), content)
+        .tags([h_tag])
+        .sign_with_keys(relay_keypair)
+        .map_err(|e| format!("failed to sign lifecycle event: {e}"))
+}
+
+/// Emit a relay-signed kind:48103 marker to a huddle's parent channel.
+pub async fn emit_huddle_ended(
+    state: &AppState,
+    tenant: &TenantContext,
+    ephemeral_channel_id: Uuid,
+    parent_channel_id: Uuid,
+) {
+    let event = match build_huddle_ended_event(
+        &state.relay_keypair,
+        ephemeral_channel_id,
+        parent_channel_id,
+    ) {
+        Ok(event) => event,
+        Err(e) => {
+            warn!(channel_id = %ephemeral_channel_id, "huddle: {e}");
+            return;
+        }
+    };
+
+    publish_relay_channel_event(state, tenant, event, parent_channel_id).await;
+}
+
+async fn publish_relay_channel_event(
+    state: &AppState,
+    tenant: &TenantContext,
+    event: Event,
+    parent_channel_id: Uuid,
+) {
     let event_id_hex = event.id.to_hex();
 
     // 1. Persist to DB so late-joining clients can reconstruct huddle state
     //    from historical queries. Without this, lifecycle events only exist
     //    for the duration of the Redis pub/sub delivery and are lost forever.
-    let stored = match state
+    let (stored, was_inserted) = match state
         .db
         .insert_event(tenant.community(), &event, Some(parent_channel_id))
         .await
     {
-        Ok((stored, true)) => stored,
-        Ok((_, false)) => {
-            // Duplicate — already persisted (e.g. concurrent emit). Skip fan-out
-            // to avoid double-delivery, matching the side_effects.rs pattern.
-            debug!(
-                event_id = %event_id_hex,
-                channel_id = %parent_channel_id,
-                "audio lifecycle event already persisted — skipping fan-out"
-            );
-            return;
-        }
+        Ok(result) => result,
         Err(e) => {
             // DB failure during disconnect cleanup. Still broadcast so live
             // subscribers see the leave/end event immediately — suppressing it
@@ -1301,11 +1334,51 @@ async fn emit_participant_event(
                 event_id = %event_id_hex,
                 channel_id = %parent_channel_id,
                 kind = %event.kind.as_u16(),
-                "audio: failed to persist lifecycle event: {e}"
+                "huddle: failed to persist lifecycle event: {e}"
             );
-            StoredEvent::new(event.clone(), Some(parent_channel_id))
+            (
+                StoredEvent::new(event.clone(), Some(parent_channel_id)),
+                true,
+            )
         }
     };
+
+    publish_persisted_relay_channel_event(state, tenant, stored, was_inserted, parent_channel_id)
+        .await;
+}
+
+/// Fan out a huddle-ended event that was durably stored with its reaper archive transaction.
+pub async fn publish_persisted_huddle_ended(
+    state: &AppState,
+    tenant: &TenantContext,
+    stored: StoredEvent,
+    was_inserted: bool,
+    parent_channel_id: Uuid,
+) {
+    publish_persisted_relay_channel_event(state, tenant, stored, was_inserted, parent_channel_id)
+        .await;
+}
+
+async fn publish_persisted_relay_channel_event(
+    state: &AppState,
+    tenant: &TenantContext,
+    stored: StoredEvent,
+    was_inserted: bool,
+    parent_channel_id: Uuid,
+) {
+    let event = &stored.event;
+    let event_id_hex = event.id.to_hex();
+
+    if !was_inserted {
+        // Duplicate — already persisted (e.g. concurrent emit). Skip fan-out
+        // to avoid double-delivery, matching the side_effects.rs pattern.
+        debug!(
+            event_id = %event_id_hex,
+            channel_id = %parent_channel_id,
+            "huddle lifecycle event already persisted — skipping fan-out"
+        );
+        return;
+    }
 
     // 2. Mark as locally-published before Redis broadcast to prevent
     //    double-delivery when the event echoes back through the subscriber loop.
@@ -1321,7 +1394,7 @@ async fn emit_participant_event(
     // 4. Cross-node broadcast via Redis pub/sub.
     if let Err(e) = state
         .pubsub
-        .publish_event(tenant, EventTopic::Channel(parent_channel_id), &event)
+        .publish_event(tenant, EventTopic::Channel(parent_channel_id), event)
         .await
     {
         state
@@ -1330,7 +1403,7 @@ async fn emit_participant_event(
         warn!(
             event_id = %event_id_hex,
             channel_id = %parent_channel_id,
-            "audio: failed to publish lifecycle event: {e}"
+            "huddle: failed to publish lifecycle event: {e}"
         );
     }
 }
@@ -1346,6 +1419,35 @@ mod tests {
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     use super::*;
+
+    #[test]
+    fn huddle_ended_event_has_authoritative_marker_shape() {
+        let relay_keypair = Keys::generate();
+        let ephemeral_channel_id = Uuid::new_v4();
+        let parent_channel_id = Uuid::new_v4();
+        let event =
+            build_huddle_ended_event(&relay_keypair, ephemeral_channel_id, parent_channel_id)
+                .expect("build huddle-ended event");
+
+        assert_eq!(event.kind, Kind::Custom(KIND_HUDDLE_ENDED as u16));
+        assert_eq!(event.pubkey, relay_keypair.public_key());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&event.content)
+                .expect("parse huddle-ended content"),
+            serde_json::json!({
+                "ephemeral_channel_id": ephemeral_channel_id.to_string(),
+            })
+        );
+        let tags: Vec<Vec<String>> = event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().iter().map(ToString::to_string).collect())
+            .collect();
+        assert_eq!(
+            tags,
+            vec![vec!["h".to_owned(), parent_channel_id.to_string()]]
+        );
+    }
 
     #[test]
     fn audio_connection_permits_share_the_global_websocket_budget() {

@@ -732,15 +732,25 @@ pub struct BotChannelEntry {
     pub id: String,
 }
 
-/// A channel archived by the ephemeral-channel reaper.
+/// An expired ephemeral channel eligible for archival by the reaper.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReapedEphemeralChannel {
-    /// Community that owns the archived channel.
+pub struct ExpiredEphemeralChannel {
+    /// Community that owns the expired channel.
     pub community_id: CommunityId,
     /// Normalized host mapped to that community.
     pub host: String,
-    /// Archived channel UUID.
+    /// Expired channel UUID.
     pub channel_id: Uuid,
+    /// Public key of the user who created the expired channel.
+    pub created_by: Vec<u8>,
+}
+
+/// Result of atomically archiving an expired ephemeral channel.
+#[derive(Debug, Clone)]
+pub struct ReapedEphemeralChannel {
+    /// Persisted huddle-ended event and whether this transaction inserted it.
+    /// Ordinary ephemeral channels have no lifecycle event.
+    pub huddle_end: Option<(buzz_core::StoredEvent, bool)>,
 }
 
 /// Bot member record — a user with role=bot, with their channel memberships aggregated.
@@ -1312,22 +1322,23 @@ pub async fn get_member_role(
     Ok(row.map(|r| r.try_get("role")).transpose()?)
 }
 
-/// Archive ephemeral channels whose TTL deadline has passed.
+/// List ephemeral channels whose TTL deadline has passed and are eligible for archival.
 ///
-/// Returns the `(community_id, host, channel_id)` list that was archived. Idempotent — the
-/// `archived_at IS NULL` guard prevents double-archiving even if called
-/// concurrently from multiple relay pods.
-pub async fn reap_expired_ephemeral_channels(pool: &PgPool) -> Result<Vec<ReapedEphemeralChannel>> {
+/// This query is intentionally read-only. The reaper resolves and signs any required terminal
+/// huddle event before [`reap_expired_ephemeral_channel`] atomically persists that event with the
+/// archive transition.
+pub async fn list_expired_ephemeral_channels(
+    pool: &PgPool,
+) -> Result<Vec<ExpiredEphemeralChannel>> {
     let rows = sqlx::query(
-        "UPDATE channels AS ch SET archived_at = NOW() \
-         FROM communities AS c \
-         WHERE ch.community_id = c.id \
-           AND ch.ttl_seconds IS NOT NULL \
+        "SELECT ch.community_id, c.host, ch.id, ch.created_by \
+         FROM channels AS ch \
+         JOIN communities AS c ON ch.community_id = c.id \
+         WHERE ch.ttl_seconds IS NOT NULL \
            AND ch.ttl_deadline < NOW() \
            AND ch.archived_at IS NULL \
            AND ch.deleted_at IS NULL \
-           AND c.archived_at IS NULL \
-         RETURNING ch.community_id, c.host, ch.id",
+           AND c.archived_at IS NULL",
     )
     .fetch_all(pool)
     .await?;
@@ -1337,22 +1348,78 @@ pub async fn reap_expired_ephemeral_channels(pool: &PgPool) -> Result<Vec<Reaped
             let community_id: Uuid = row.try_get("community_id")?;
             let host: String = row.try_get("host")?;
             let channel_id: Uuid = row.try_get("id")?;
-            Ok(ReapedEphemeralChannel {
+            let created_by: Vec<u8> = row.try_get("created_by")?;
+            Ok(ExpiredEphemeralChannel {
                 community_id: CommunityId::from_uuid(community_id),
                 host,
                 channel_id,
+                created_by,
             })
         })
         .collect()
+}
+
+/// Atomically archive one expired ephemeral channel and persist its optional huddle-ended event.
+///
+/// Returns `None` when another reaper won the conditional archive update. Any event insertion
+/// failure rolls back the archive, leaving the channel eligible for a later reaper tick.
+pub async fn reap_expired_ephemeral_channel(
+    pool: &PgPool,
+    channel: &ExpiredEphemeralChannel,
+    huddle_end: Option<(&nostr::Event, Uuid)>,
+) -> Result<Option<ReapedEphemeralChannel>> {
+    let mut tx = pool.begin().await?;
+    let archived = sqlx::query(
+        "UPDATE channels AS ch SET archived_at = NOW() \
+         WHERE ch.community_id = $1 \
+           AND ch.id = $2 \
+           AND ch.ttl_seconds IS NOT NULL \
+           AND ch.ttl_deadline < NOW() \
+           AND ch.archived_at IS NULL \
+           AND ch.deleted_at IS NULL \
+           AND EXISTS ( \
+               SELECT 1 FROM communities AS c \
+               WHERE c.id = ch.community_id AND c.archived_at IS NULL \
+           )",
+    )
+    .bind(channel.community_id.as_uuid())
+    .bind(channel.channel_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        > 0;
+
+    if !archived {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+
+    let huddle_end = if let Some((event, parent_channel_id)) = huddle_end {
+        Some(
+            crate::event::insert_event_with_thread_metadata_tx(
+                &mut tx,
+                channel.community_id,
+                event,
+                Some(parent_channel_id),
+                None,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    tx.commit().await?;
+    Ok(Some(ReapedEphemeralChannel { huddle_end }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::user::{ensure_user, set_agent_owner};
-    use nostr::Keys;
+    use nostr::{EventBuilder, Keys, Kind};
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
 
     async fn setup_pool() -> PgPool {
         PgPool::connect(TEST_DB_URL)
@@ -1658,11 +1725,11 @@ mod tests {
             "unarchive should renew ttl_deadline into the future"
         );
 
-        let reaped = reap_expired_ephemeral_channels(&pool)
+        let expired = list_expired_ephemeral_channels(&pool)
             .await
-            .expect("run reaper");
+            .expect("list expired channels");
         assert!(
-            !reaped
+            !expired
                 .iter()
                 .any(|row| row.community_id == community && row.channel_id == channel.id),
             "reaper should not immediately rearchive renewed channel"
@@ -1671,7 +1738,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn reap_expired_ephemeral_channels_returns_row_community_and_host() {
+    async fn list_expired_ephemeral_channels_returns_row_provenance() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
         let community = CommunityId::from_uuid(community_id);
@@ -1707,16 +1774,202 @@ mod tests {
         .await
         .expect("expire channel");
 
-        let reaped = reap_expired_ephemeral_channels(&pool)
+        let expired = list_expired_ephemeral_channels(&pool)
             .await
-            .expect("run reaper");
+            .expect("list expired channels");
         assert!(
-            reaped.iter().any(|row| {
+            expired.iter().any(|row| {
                 row.community_id == community
                     && row.host == expected_host
                     && row.channel_id == channel.id
+                    && row.created_by == owner_pk
             }),
-            "reaper should carry the archived row's community id and host"
+            "reaper candidate should carry the row's community, host, and creator"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn list_expired_ephemeral_channels_skips_already_archived_channel() {
+        let pool = setup_pool().await;
+        let community_id = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_id);
+        let owner_pk = random_pubkey();
+        ensure_user(&pool, community, &owner_pk)
+            .await
+            .expect("ensure owner");
+        let channel = create_test_channel(
+            &pool,
+            community_id,
+            "test-reaper-skips-archived",
+            ChannelType::Stream,
+            ChannelVisibility::Open,
+            None,
+            &owner_pk,
+            Some(60),
+        )
+        .await
+        .expect("create ephemeral channel");
+        sqlx::query(
+            "UPDATE channels SET archived_at = NOW(), ttl_deadline = NOW() - interval '1 second' \
+             WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community_id)
+        .bind(channel.id)
+        .execute(&pool)
+        .await
+        .expect("archive expired channel");
+
+        let expired = list_expired_ephemeral_channels(&pool)
+            .await
+            .expect("list expired channels");
+        assert!(
+            expired.iter().all(|row| row.channel_id != channel.id),
+            "a cleanly archived huddle must not be returned for a duplicate end marker"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reap_expired_ephemeral_channel_persists_end_marker_with_archive() {
+        let pool = setup_pool().await;
+        let community_id = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_id);
+        let owner_pk = random_pubkey();
+        ensure_user(&pool, community, &owner_pk)
+            .await
+            .expect("ensure owner");
+        let channel = create_test_channel(
+            &pool,
+            community_id,
+            "test-reaper-atomic-success",
+            ChannelType::Stream,
+            ChannelVisibility::Open,
+            None,
+            &owner_pk,
+            Some(60),
+        )
+        .await
+        .expect("create ephemeral channel");
+        sqlx::query(
+            "UPDATE channels SET ttl_deadline = NOW() - interval '1 second' \
+             WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community_id)
+        .bind(channel.id)
+        .execute(&pool)
+        .await
+        .expect("expire channel");
+        let candidate = list_expired_ephemeral_channels(&pool)
+            .await
+            .expect("list expired channels")
+            .into_iter()
+            .find(|row| row.channel_id == channel.id)
+            .expect("find expired channel");
+        let parent_channel_id = Uuid::new_v4();
+        let event = EventBuilder::new(Kind::Custom(48103), "{}")
+            .sign_with_keys(&Keys::generate())
+            .expect("sign huddle end");
+
+        let reaped =
+            reap_expired_ephemeral_channel(&pool, &candidate, Some((&event, parent_channel_id)))
+                .await
+                .expect("reap expired channel")
+                .expect("win archive claim");
+        assert!(
+            reaped.huddle_end.is_some_and(|(_, inserted)| inserted),
+            "archive transaction should insert the huddle end marker"
+        );
+        assert!(
+            get_channel(&pool, community, channel.id)
+                .await
+                .expect("reload channel")
+                .archived_at
+                .is_some(),
+            "archive and marker should commit together"
+        );
+        let stored_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM events WHERE community_id = $1 AND id = $2")
+                .bind(community_id)
+                .bind(event.id.as_bytes().as_slice())
+                .fetch_one(&pool)
+                .await
+                .expect("count stored marker");
+        assert_eq!(stored_count, 1);
+
+        assert!(
+            reap_expired_ephemeral_channel(&pool, &candidate, None)
+                .await
+                .expect("retry archive claim")
+                .is_none(),
+            "only one reaper may claim an expired channel"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reap_expired_ephemeral_channel_rolls_back_archive_when_marker_fails() {
+        let pool = setup_pool().await;
+        let community_id = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_id);
+        let owner_pk = random_pubkey();
+        ensure_user(&pool, community, &owner_pk)
+            .await
+            .expect("ensure owner");
+        let channel = create_test_channel(
+            &pool,
+            community_id,
+            "test-reaper-atomic-rollback",
+            ChannelType::Stream,
+            ChannelVisibility::Open,
+            None,
+            &owner_pk,
+            Some(60),
+        )
+        .await
+        .expect("create ephemeral channel");
+        sqlx::query(
+            "UPDATE channels SET ttl_deadline = NOW() - interval '1 second' \
+             WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community_id)
+        .bind(channel.id)
+        .execute(&pool)
+        .await
+        .expect("expire channel");
+        let candidate = list_expired_ephemeral_channels(&pool)
+            .await
+            .expect("list expired channels")
+            .into_iter()
+            .find(|row| row.channel_id == channel.id)
+            .expect("find expired channel");
+        let rejected_auth_event = EventBuilder::new(Kind::Authentication, "secret")
+            .sign_with_keys(&Keys::generate())
+            .expect("sign auth event");
+
+        let error = reap_expired_ephemeral_channel(
+            &pool,
+            &candidate,
+            Some((&rejected_auth_event, Uuid::new_v4())),
+        )
+        .await
+        .expect_err("AUTH marker must be rejected");
+        assert!(matches!(error, DbError::AuthEventRejected));
+        assert!(
+            get_channel(&pool, community, channel.id)
+                .await
+                .expect("reload channel")
+                .archived_at
+                .is_none(),
+            "failed marker persistence must roll back the archive"
+        );
+        assert!(
+            list_expired_ephemeral_channels(&pool)
+                .await
+                .expect("list retryable channels")
+                .iter()
+                .any(|row| row.channel_id == channel.id),
+            "rolled-back channel should remain eligible for the next tick"
         );
     }
 

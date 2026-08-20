@@ -233,6 +233,53 @@ pub async fn huddle_started_link_exists(
         .any(|content| huddle_started_content_links(content, ephemeral_channel_id)))
 }
 
+/// Resolve the parent channel of a huddle from its creator-signed start event.
+///
+/// Returns `None` when no kind:48100 event authored by `creator_pubkey` links to
+/// `ephemeral_channel_id`. Soft-deleted starts remain valid provenance for the
+/// terminal marker: clients may still retain relay-signed lifecycle events
+/// after the start is deleted. Constraining the author prevents another channel
+/// member from redirecting the relay-authored huddle-ended marker.
+pub async fn huddle_parent_for_ephemeral(
+    pool: &PgPool,
+    community_id: CommunityId,
+    ephemeral_channel_id: Uuid,
+    creator_pubkey: &[u8],
+) -> Result<Option<Uuid>> {
+    let uuid_needle = format!("%{}%", ephemeral_channel_id);
+    let candidates = sqlx::query(
+        r#"
+        SELECT channel_id, content
+        FROM events
+        WHERE community_id = $1
+          AND channel_id IS NOT NULL
+          AND kind = $2
+          AND pubkey = $3
+          AND octet_length(content) <= $4
+          AND content ILIKE $5
+        ORDER BY created_at DESC, id ASC
+        LIMIT $6
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(KIND_HUDDLE_STARTED as i32)
+    .bind(creator_pubkey)
+    .bind(HUDDLE_LINK_CONTENT_MAX_BYTES)
+    .bind(uuid_needle)
+    .bind(HUDDLE_LINK_CANDIDATE_LIMIT)
+    .fetch_all(pool)
+    .await?;
+
+    for row in candidates {
+        let content: String = row.try_get("content")?;
+        if huddle_started_content_links(&content, ephemeral_channel_id) {
+            return Ok(Some(row.try_get("channel_id")?));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Insert a Nostr event. Rejects AUTH and ephemeral kinds.
 ///
 /// Returns `(StoredEvent, was_inserted)` — `was_inserted` is `false` on duplicate.
@@ -1000,7 +1047,7 @@ pub struct ThreadMetadataParams<'a> {
     pub broadcast: bool,
 }
 
-async fn insert_event_with_thread_metadata_tx(
+pub(crate) async fn insert_event_with_thread_metadata_tx(
     tx: &mut Transaction<'_, Postgres>,
     community_id: CommunityId,
     event: &Event,
@@ -1430,7 +1477,7 @@ mod tests {
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Tag};
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
 
     async fn setup_pool() -> PgPool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
@@ -2304,5 +2351,176 @@ mod tests {
         .to_string();
         assert!(!huddle_started_content_links(&wrong_field, channel_id));
         assert!(!huddle_started_content_links("not-json", channel_id));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn huddle_parent_for_ephemeral_returns_creator_signed_parent() {
+        let pool = setup_pool().await;
+        let community_uuid = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_uuid);
+        let parent_channel_id = make_test_channel(&pool, community_uuid, None).await;
+        let ephemeral_channel_id = Uuid::new_v4();
+        let creator = Keys::generate();
+        let event = EventBuilder::new(
+            Kind::Custom(KIND_HUDDLE_STARTED as u16),
+            serde_json::json!({
+                "ephemeral_channel_id": ephemeral_channel_id.to_string(),
+            })
+            .to_string(),
+        )
+        .sign_with_keys(&creator)
+        .expect("sign huddle start");
+        insert_event(&pool, community, &event, Some(parent_channel_id))
+            .await
+            .expect("insert huddle start");
+
+        assert_eq!(
+            huddle_parent_for_ephemeral(
+                &pool,
+                community,
+                ephemeral_channel_id,
+                &creator.public_key().to_bytes(),
+            )
+            .await
+            .expect("resolve huddle parent"),
+            Some(parent_channel_id)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn huddle_parent_for_ephemeral_returns_none_without_start() {
+        let pool = setup_pool().await;
+        let community_uuid = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_uuid);
+        let creator = Keys::generate();
+
+        assert_eq!(
+            huddle_parent_for_ephemeral(
+                &pool,
+                community,
+                Uuid::new_v4(),
+                &creator.public_key().to_bytes(),
+            )
+            .await
+            .expect("resolve huddle parent"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn huddle_parent_for_ephemeral_rejects_spoofed_author() {
+        let pool = setup_pool().await;
+        let community_uuid = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_uuid);
+        let parent_channel_id = make_test_channel(&pool, community_uuid, None).await;
+        let ephemeral_channel_id = Uuid::new_v4();
+        let creator = Keys::generate();
+        let attacker = Keys::generate();
+        let event = EventBuilder::new(
+            Kind::Custom(KIND_HUDDLE_STARTED as u16),
+            serde_json::json!({
+                "ephemeral_channel_id": ephemeral_channel_id.to_string(),
+            })
+            .to_string(),
+        )
+        .sign_with_keys(&attacker)
+        .expect("sign spoofed huddle start");
+        insert_event(&pool, community, &event, Some(parent_channel_id))
+            .await
+            .expect("insert spoofed huddle start");
+
+        assert_eq!(
+            huddle_parent_for_ephemeral(
+                &pool,
+                community,
+                ephemeral_channel_id,
+                &creator.public_key().to_bytes(),
+            )
+            .await
+            .expect("resolve huddle parent"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn huddle_parent_for_ephemeral_confirms_exact_content_field() {
+        let pool = setup_pool().await;
+        let community_uuid = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_uuid);
+        let parent_channel_id = make_test_channel(&pool, community_uuid, None).await;
+        let ephemeral_channel_id = Uuid::new_v4();
+        let creator = Keys::generate();
+        let event = EventBuilder::new(
+            Kind::Custom(KIND_HUDDLE_STARTED as u16),
+            serde_json::json!({
+                "other": ephemeral_channel_id.to_string(),
+            })
+            .to_string(),
+        )
+        .sign_with_keys(&creator)
+        .expect("sign malformed huddle start");
+        insert_event(&pool, community, &event, Some(parent_channel_id))
+            .await
+            .expect("insert malformed huddle start");
+
+        assert_eq!(
+            huddle_parent_for_ephemeral(
+                &pool,
+                community,
+                ephemeral_channel_id,
+                &creator.public_key().to_bytes(),
+            )
+            .await
+            .expect("resolve huddle parent"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn huddle_parent_for_ephemeral_uses_deleted_start_provenance() {
+        let pool = setup_pool().await;
+        let community_uuid = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_uuid);
+        let parent_channel_id = make_test_channel(&pool, community_uuid, None).await;
+        let ephemeral_channel_id = Uuid::new_v4();
+        let creator = Keys::generate();
+        let event = EventBuilder::new(
+            Kind::Custom(KIND_HUDDLE_STARTED as u16),
+            serde_json::json!({
+                "ephemeral_channel_id": ephemeral_channel_id.to_string(),
+            })
+            .to_string(),
+        )
+        .sign_with_keys(&creator)
+        .expect("sign huddle start");
+        insert_event(&pool, community, &event, Some(parent_channel_id))
+            .await
+            .expect("insert huddle start");
+        sqlx::query(
+            "UPDATE events SET deleted_at = NOW() \
+             WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community_uuid)
+        .bind(event.id.as_bytes())
+        .execute(&pool)
+        .await
+        .expect("soft-delete huddle start");
+
+        assert_eq!(
+            huddle_parent_for_ephemeral(
+                &pool,
+                community,
+                ephemeral_channel_id,
+                &creator.public_key().to_bytes(),
+            )
+            .await
+            .expect("resolve huddle parent"),
+            Some(parent_channel_id)
+        );
     }
 }

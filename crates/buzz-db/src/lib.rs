@@ -1120,6 +1120,22 @@ impl Db {
         .await
     }
 
+    /// Resolve the parent channel linked by a creator-signed huddle-start event.
+    pub async fn huddle_parent_for_ephemeral(
+        &self,
+        community_id: CommunityId,
+        ephemeral_channel_id: Uuid,
+        creator_pubkey: &[u8],
+    ) -> Result<Option<Uuid>> {
+        event::huddle_parent_for_ephemeral(
+            &self.pool,
+            community_id,
+            ephemeral_channel_id,
+            creator_pubkey,
+        )
+        .await
+    }
+
     /// Fetch the latest replaceable event for a (kind, pubkey) pair.
     ///
     /// Uses canonical NIP-16 ordering: `created_at DESC, id ASC`.
@@ -1688,11 +1704,20 @@ impl Db {
         channel::get_member_role(&self.pool, community_id, channel_id, pubkey).await
     }
 
-    /// Archive ephemeral channels whose TTL deadline has passed.
-    pub async fn reap_expired_ephemeral_channels(
+    /// List ephemeral channels whose TTL deadline has passed.
+    pub async fn list_expired_ephemeral_channels(
         &self,
-    ) -> Result<Vec<channel::ReapedEphemeralChannel>> {
-        channel::reap_expired_ephemeral_channels(&self.pool).await
+    ) -> Result<Vec<channel::ExpiredEphemeralChannel>> {
+        channel::list_expired_ephemeral_channels(&self.pool).await
+    }
+
+    /// Atomically archive an expired channel and persist its optional huddle-ended event.
+    pub async fn reap_expired_ephemeral_channel(
+        &self,
+        channel: &channel::ExpiredEphemeralChannel,
+        huddle_end: Option<(&nostr::Event, Uuid)>,
+    ) -> Result<Option<channel::ReapedEphemeralChannel>> {
+        channel::reap_expired_ephemeral_channel(&self.pool, channel, huddle_end).await
     }
 
     /// Query due reminders ready for delivery.

@@ -15,5 +15,7 @@ pub mod mesh;
 pub mod room;
 pub mod wire;
 
-pub use handler::ws_audio_handler;
+pub use handler::{
+    build_huddle_ended_event, emit_huddle_ended, publish_persisted_huddle_ended, ws_audio_handler,
+};
 pub use room::AudioRoomManager;

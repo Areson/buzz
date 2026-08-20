@@ -597,10 +597,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move { wf_cron.run().await });
 
     // Ephemeral channel reaper — archives channels whose TTL deadline has passed.
-    // Runs every 60s, matching the workflow cron loop pattern. The SQL UPDATE
-    // uses `archived_at IS NULL` as a guard, so concurrent runs from multiple
-    // pods are harmless (at worst, duplicate system messages — same trade-off
-    // as the workflow cron loop). Will be upgraded to use pg_advisory_lock
+    // Runs every 60s, matching the workflow cron loop pattern. Each candidate
+    // is conditionally archived in a transaction, so concurrent pods are
+    // harmless: only the UPDATE winner commits the row and terminal event.
+    // Will be upgraded to use pg_advisory_lock
     // together with the workflow engine in a future multi-pod coordination pass.
     {
         let reaper_state = Arc::clone(&state);
@@ -616,7 +616,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(reaper_interval_secs)).await;
 
-                let expired = match reaper_state.db.reap_expired_ephemeral_channels().await {
+                let expired = match reaper_state.db.list_expired_ephemeral_channels().await {
                     Ok(ids) => ids,
                     Err(e) => {
                         error!("Ephemeral reaper tick failed: {e}");
@@ -628,18 +628,85 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
 
-                info!(count = expired.len(), "Ephemeral reaper archived channels");
-
+                let mut reaped_count = 0usize;
                 for channel in &expired {
                     // Per-row tenant: the reaper crosses communities, so each
-                    // archived channel carries its own server-resolved
-                    // `(community, host)` from the DB RETURNING. Build the
+                    // expired channel carries its own server-resolved
+                    // `(community, host)` from the DB query. Build the
                     // `TenantContext` from that row — never a default tenant.
                     let tenant = buzz_core::tenant::TenantContext::resolved(
                         channel.community_id,
                         channel.host.clone(),
                     );
                     let channel_id = channel.channel_id;
+                    // Huddles are linked to their parent by a creator-signed
+                    // kind:48100. Resolve and sign before claiming the row so a
+                    // transient failure leaves it eligible for the next tick.
+                    let parent_channel_id = match reaper_state
+                        .db
+                        .huddle_parent_for_ephemeral(
+                            channel.community_id,
+                            channel_id,
+                            &channel.created_by,
+                        )
+                        .await
+                    {
+                        Ok(parent_channel_id) => parent_channel_id,
+                        Err(e) => {
+                            error!(channel = %channel_id, "reaper huddle-end lookup failed: {e}");
+                            continue;
+                        }
+                    };
+                    let huddle_end = match parent_channel_id {
+                        Some(parent_channel_id) => {
+                            match buzz_relay::audio::build_huddle_ended_event(
+                                &reaper_state.relay_keypair,
+                                channel_id,
+                                parent_channel_id,
+                            ) {
+                                Ok(event) => Some(event),
+                                Err(e) => {
+                                    error!(channel = %channel_id, "reaper huddle-end build failed: {e}");
+                                    continue;
+                                }
+                            }
+                        }
+                        None => None,
+                    };
+
+                    // The conditional archive and optional 48103 insert commit
+                    // together. A transient DB failure rolls both back; a
+                    // concurrent reaper that lost the UPDATE returns `None`.
+                    let reaped = match reaper_state
+                        .db
+                        .reap_expired_ephemeral_channel(
+                            channel,
+                            huddle_end.as_ref().zip(parent_channel_id),
+                        )
+                        .await
+                    {
+                        Ok(Some(reaped)) => reaped,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            error!(channel = %channel_id, "reaper archive transaction failed: {e}");
+                            continue;
+                        }
+                    };
+                    reaped_count += 1;
+
+                    if let (Some((stored, was_inserted)), Some(parent_channel_id)) =
+                        (reaped.huddle_end, parent_channel_id)
+                    {
+                        buzz_relay::audio::publish_persisted_huddle_ended(
+                            &reaper_state,
+                            &tenant,
+                            stored,
+                            was_inserted,
+                            parent_channel_id,
+                        )
+                        .await;
+                    }
+
                     // Emit a system message so members see why the channel was archived.
                     if let Err(e) = buzz_relay::handlers::side_effects::emit_system_message(
                         &tenant,
@@ -673,6 +740,10 @@ async fn main() -> anyhow::Result<()> {
                         channel_id,
                     )
                     .await;
+                }
+
+                if reaped_count > 0 {
+                    info!(count = reaped_count, "Ephemeral reaper archived channels");
                 }
             }
         });
