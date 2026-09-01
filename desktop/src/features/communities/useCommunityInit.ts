@@ -21,6 +21,7 @@ import {
   initDraftStore,
 } from "@/features/messages/lib/useDrafts";
 import { resetRenderScopedReactionHydration } from "@/features/messages/lib/renderScopedReactions";
+import { resetAudioMediaLoadScheduler } from "@/features/messages/lib/audioMediaLoadScheduler";
 import { resetBackgroundMediaUploads } from "@/features/messages/lib/backgroundMediaUploadStore";
 import { resetLinkPreviewPreparations } from "@/features/messages/lib/linkPreviewPreparationStore";
 import { resetPersistentAgentAudienceStore } from "@/features/messages/lib/persistentAgentAudience";
@@ -74,6 +75,7 @@ async function resetCommunityState({
   resetMediaCaches();
   resetLinkPreviewMetadataCache();
   resetVideoPlayerState();
+  resetAudioMediaLoadScheduler();
   resetRenderScopedReactionHydration();
   resetBackgroundMediaUploads();
   resetLinkPreviewPreparations();
