@@ -1802,6 +1802,10 @@ mod tests {
         ///
         /// Cleanup also drops every schema and role named `{name}_*`, so a test
         /// that needs extra schemas or roles derives their names from `name`.
+        ///
+        /// Bind the guard to a named variable such as `_scratch` for the whole
+        /// test: `let (pool, _) = scratch_pool().await` drops it, and the
+        /// schema with it, immediately.
         pub(in crate::store::partition) struct ScratchSchema {
             pub(in crate::store::partition) admin: PgPool,
             pub(in crate::store::partition) name: String,
@@ -1828,7 +1832,6 @@ mod tests {
                         .build()
                         .map_err(|error| error.to_string())?
                         .block_on(drop_scratch_objects(&url, &name, &backends))
-                        .map_err(|error| error.to_string())
                 })
                 .join();
                 let error = match cleanup {
@@ -1843,50 +1846,85 @@ mod tests {
             }
         }
 
-        async fn drop_scratch_objects(url: &str, name: &str, backends: &[i32]) -> sqlx::Result<()> {
-            let mut connection = PgConnection::connect(url).await?;
-            sqlx::query("SET lock_timeout = '10s'")
+        async fn drop_scratch_objects(
+            url: &str,
+            name: &str,
+            backends: &[i32],
+        ) -> std::result::Result<(), String> {
+            let mut connection = PgConnection::connect(url)
+                .await
+                .map_err(|error| error.to_string())?;
+            // Every step is idempotent, so keep going after a failure and
+            // report all of them rather than skipping the remaining objects.
+            let mut errors = Vec::new();
+            let mut record = |step: &str, result: sqlx::Result<()>| {
+                if let Err(error) = result {
+                    errors.push(format!("{step}: {error}"));
+                }
+            };
+            let result = sqlx::query("SET lock_timeout = '10s'")
                 .execute(&mut connection)
-                .await?;
+                .await
+                .map(drop);
+            record("set lock_timeout", result);
             // A panicking test can leave a transaction holding locks in the
             // schema; its rollback would only run on the blocked test runtime.
-            sqlx::query(
+            let result = sqlx::query(
                 "SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity \
                  WHERE pid = ANY($1) AND datname = current_database()",
             )
             .bind(backends)
             .execute(&mut connection)
-            .await?;
+            .await
+            .map(drop);
+            record("terminate test backends", result);
             let schemas: Vec<String> = sqlx::query_scalar(
                 "SELECT nspname::text FROM pg_namespace \
                  WHERE nspname = $1 OR starts_with(nspname, $1 || '_')",
             )
             .bind(name)
             .fetch_all(&mut connection)
-            .await?;
+            .await
+            .unwrap_or_else(|error| {
+                record("list schemas", Err(error));
+                Vec::new()
+            });
             for schema in schemas {
-                sqlx::query(sqlx::AssertSqlSafe(format!(
+                let result = sqlx::query(sqlx::AssertSqlSafe(format!(
                     "DROP SCHEMA IF EXISTS {} CASCADE",
                     quote_identifier(&schema)
                 )))
                 .execute(&mut connection)
-                .await?;
+                .await
+                .map(drop);
+                record(&format!("drop schema {schema}"), result);
             }
             let roles: Vec<String> = sqlx::query_scalar(
                 "SELECT rolname::text FROM pg_roles WHERE starts_with(rolname, $1 || '_')",
             )
             .bind(name)
             .fetch_all(&mut connection)
-            .await?;
+            .await
+            .unwrap_or_else(|error| {
+                record("list roles", Err(error));
+                Vec::new()
+            });
             for role in roles {
-                sqlx::query(sqlx::AssertSqlSafe(format!(
+                let result = sqlx::query(sqlx::AssertSqlSafe(format!(
                     "DROP ROLE IF EXISTS {}",
                     quote_identifier(&role)
                 )))
                 .execute(&mut connection)
-                .await?;
+                .await
+                .map(drop);
+                record(&format!("drop role {role}"), result);
             }
-            connection.close().await
+            record("close connection", connection.close().await);
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
         }
 
         /// Pool options that record each connection's backend pid in `backends`
@@ -1916,6 +1954,8 @@ mod tests {
             })
         }
 
+        /// A pool whose `search_path` is a fresh scratch schema, plus the guard
+        /// that drops it. Bind the guard to a named variable, never `_`.
         pub(in crate::store::partition) async fn scratch_pool() -> (PgPool, ScratchSchema) {
             scratch_pool_with_max_connections(4).await
         }
@@ -2139,6 +2179,15 @@ mod tests {
                     .execute(&scratch.admin)
                     .await
                     .expect("create sibling schema");
+                    for statement in [
+                        format!("CREATE ROLE {}_reader NOLOGIN", scratch.name),
+                        format!("GRANT USAGE ON SCHEMA {0} TO {0}_reader", scratch.name),
+                    ] {
+                        sqlx::query(sqlx::AssertSqlSafe(statement))
+                            .execute(&scratch.admin)
+                            .await
+                            .expect("create scratch role");
+                    }
                     let mut holder = pool.begin().await.expect("begin lock holder");
                     sqlx::query("LOCK TABLE events IN ACCESS EXCLUSIVE MODE")
                         .execute(&mut *holder)
@@ -2154,23 +2203,29 @@ mod tests {
             assert!(outcome.is_err(), "the scratch test body must panic");
             let name = name_receiver.recv().expect("scratch schema name");
 
-            let leftovers: Vec<String> = runtime().block_on(async {
+            let (schemas, roles): (Vec<String>, Vec<String>) = runtime().block_on(async {
                 let mut connection = PgConnection::connect(&crate::test_support::database_url())
                     .await
                     .expect("connect leftover check");
-                sqlx::query_scalar(
+                let schemas = sqlx::query_scalar(
                     "SELECT nspname::text FROM pg_namespace \
                      WHERE nspname = $1 OR starts_with(nspname, $1 || '_')",
                 )
                 .bind(&name)
                 .fetch_all(&mut connection)
                 .await
-                .expect("list leftover schemas")
+                .expect("list leftover schemas");
+                let roles = sqlx::query_scalar(
+                    "SELECT rolname::text FROM pg_roles WHERE starts_with(rolname, $1 || '_')",
+                )
+                .bind(&name)
+                .fetch_all(&mut connection)
+                .await
+                .expect("list leftover roles");
+                (schemas, roles)
             });
-            assert!(
-                leftovers.is_empty(),
-                "leaked scratch schemas: {leftovers:?}"
-            );
+            assert!(schemas.is_empty(), "leaked scratch schemas: {schemas:?}");
+            assert!(roles.is_empty(), "leaked scratch roles: {roles:?}");
         }
 
         #[tokio::test]
